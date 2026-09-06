@@ -43,7 +43,7 @@ dsh plugin --profile web remove dsh-heartbeat
 
 ## 使用
 
-日常无需任何操作。想看琥珀的动向：
+日常无需任何操作。想看Agent的动向：
 
 ```powershell
 node <插件目录>/dist/cli/index.js status        # 运行状态摘要
