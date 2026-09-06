@@ -1,0 +1,8 @@
+node_modules/
+data/
+.reference/
+*.log
+*.tmp
+Thumbs.db
+设计要求.md
+scripts/

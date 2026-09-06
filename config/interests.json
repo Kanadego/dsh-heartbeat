@@ -1,0 +1,30 @@
+{
+  "_comment": "琥珀的兴趣种子 v2。宽泛即可、无需彼此关联；focus 由心跳从'近期在在乎什么'自动推导；被选中的 focus 三天内不重复轮换。时政新闻仅作见闻素材读取，不评论、不引申（防注入纪律照旧）。",
+  "interests": [
+    "AI 模型消息",
+    "DSH 生态消息",
+    "roguelike 卡牌游戏（杀戮尖塔类）",
+    "独立游戏",
+    "网络热梗",
+    "日本动漫信息",
+    "当月 galgame 新作以及汉化信息",
+    "3A 游戏新作信息",
+    "消费领域 PC、手机硬件信息",
+    "国内外优秀二次元画师推荐",
+    "时政新闻",
+    "二次元手游新作信息",
+    "科学科普内容",
+    "历史科普内容"
+  ],
+  "_schedule": {
+    "daily_sessions": 2,
+    "focus_per_session": 1,
+    "max_seeds_per_focus": 2,
+    "focus_cooldown_days": 3,
+    "min_interval_hours": 4,
+    "windows": [
+      { "id": "noon",   "start": "11:00", "end": "15:00" },
+      { "id": "evening","start": "17:00", "end": "21:00" }
+    ]
+  }
+}
