@@ -1,0 +1,9 @@
+{
+  "_comment": "琥珀的兴趣追踪清单 v1。type=npm|github。新增一行=多一个好奇方向。查询频率由 browse.mjs 内置节流(默认6h/轮)，此处无需配置。",
+  "targets": [
+    { "id": "dsh-core", "type": "npm", "name": "@deepseek-ai/dsh", "note": "DeepSeek Harness 本体——我的家，升级前必知" },
+    { "id": "presence-watch", "type": "github", "repo": "tomsteve1102/presence-watch", "note": "presence-watch——本项目的讨论起点（在场感知模块），值得长期围观" },
+    { "id": "eco-spec", "type": "github", "repo": "T-Auto/dsh-ecosystem-spec", "note": "dsh 生态适配器规范——关系到我们的多版本适配路线" },
+    { "id": "dsh-std", "type": "github", "repo": "Yan-Zero/dsh-std", "note": "dsh-std 元协议——同上，未来可能的迁移目标" }
+  ]
+}

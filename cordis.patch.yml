@@ -1,0 +1,14 @@
+# dsh-heartbeat bundle layer: applied automatically when the package is
+# installed into a DSH profile (package.json declares dsh.bundle.patch).
+# The profile's own cordis.patch.yml loads after this layer and may override
+# these rows by id.
+#
+# To pin the runtime data dir to a specific location, add an id-targeted
+# override in the PROFILE's cordis.patch.yml (user-owned, not shipped here):
+#   - id: heartbeat
+#     config:
+#       dataDir: D:/your/workspace/data
+# Default: <packageRoot>/data.
+- insert:
+    - id: heartbeat
+      name: dsh-heartbeat

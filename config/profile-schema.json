@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "_comment": "profile-schema.json is the machine-executable collection boundary (privacy charter). Partitions/topics/subtopics NOT listed here are rejected by code, no matter what the consolidation LLM proposes. Each sub_topic declares its ALLOWED temporal tiers and the DEFAULT tier; the LLM nominates within the allowed set only. Unlisted defaults to 'stable' (asymmetric risk: mislabeling stable->volatile costs forgetting; the reverse is absorbed by the low-activity marker). psy is additionally gated by policy.profile.psyEnabled. Edit the copy in data/settings/ - this factory file is read-only.",
+  "partitions": {
+    "interest": {
+      "topics": {
+        "games": {
+          "subtopics": {
+            "current": { "allowed": ["volatile"], "default": "volatile" },
+            "preference": { "allowed": ["stable"], "default": "stable" }
+          }
+        },
+        "anime_manga": {
+          "subtopics": {
+            "current": { "allowed": ["volatile"], "default": "volatile" },
+            "preference": { "allowed": ["stable"], "default": "stable" }
+          }
+        },
+        "tech": {
+          "subtopics": {
+            "current": { "allowed": ["volatile"], "default": "volatile" },
+            "preference": { "allowed": ["stable"], "default": "stable" }
+          }
+        },
+        "creator_content": {
+          "subtopics": {
+            "current": { "allowed": ["volatile"], "default": "volatile" },
+            "preference": { "allowed": ["stable"], "default": "stable" }
+          }
+        }
+      }
+    },
+    "projects": {
+      "topics": {
+        "active_work": {
+          "subtopics": {
+            "ongoing": { "allowed": ["volatile"], "default": "volatile" }
+          }
+        },
+        "delegated": {
+          "subtopics": {
+            "promise": { "allowed": ["stable", "volatile"], "default": "stable" }
+          }
+        }
+      }
+    },
+    "comm": {
+      "topics": {
+        "expression": {
+          "subtopics": {
+            "style": { "allowed": ["stable"], "default": "stable" },
+            "boundaries": { "allowed": ["stable"], "default": "stable" }
+          }
+        }
+      }
+    },
+    "psy": {
+      "topics": {
+        "baseline": {
+          "subtopics": {
+            "rhythm": { "allowed": ["stable", "volatile"], "default": "stable" },
+            "stress": { "allowed": ["volatile"], "default": "volatile" }
+          }
+        }
+      }
+    }
+  }
+}
