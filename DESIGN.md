@@ -197,7 +197,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 |---|---|---|
 | `plugin_init` / `orchestrator_started` / `orchestrator_disposed` | 插件装载/定时器启动/卸载 | started 后紧跟 disposed = 效果作用域被立即销毁（effect 契约错误） |
 | `beat_start` | 一跳开始 | 没有它 = 定时器没活（看 disposed 是否过早/插件是否加载） |
-| `agent_create_start/ok/failed`、`agent_resume_start/ok`、`agent_reuse_live`、`agent_acquire_failed` | 专用会话获取三态 | failed 带 error：identity 冲突→应走 resume；while it is live→应走 get；timeout→工厂挂起 |
+| `agent_create_start/ok/failed`、`agent_resume_start/ok`、`agent_reuse_live`、`agent_acquire_failed`、`agent_resume_failed` | 专用会话获取三态 + 自愈 | failed 带 error：identity 冲突→应走 resume；while it is live→应走 get；timeout→工厂挂起；resume 失败（正身被删）自动 fallback create（`selfHealed: true`），心跳不死 |
+| `home_reset` | `bind remove` 了正身会话 | 正身已重置，下次心跳创建新正身；旧会话从此安静 |
 | `phase_done: maintenance/collect/wander` | 各相完成锚点 | 停在哪相，问题在哪相 |
 | `silent`（reason） | 沉默判定 | reason：quiet hours / busy window(...) / master actively typing / daily cap / cooldown / model chose silence |
 | `spoke` | 已开口（文本前 80 字） | 应伴随 toast；`delivered` 行 = 绑定会话投递 |

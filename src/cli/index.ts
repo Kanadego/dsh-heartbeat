@@ -428,10 +428,15 @@ export async function main(argv: string[]): Promise<number> {
       switch (sub) {
         case 'list': {
           const data = loadBindings(guard, paths.settingsDir);
+          let own: string | null = null;
+          try {
+            own = (JSON.parse(loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json')) ?? '{}') as { sessionId?: string }).sessionId ?? null;
+          } catch { /* absent */ }
+          if (own) console.log(`心跳正身: ${own}（决策轮次发生地；bind remove 它 = 重置正身）`);
           for (const b of data.bindings) {
             console.log(`${b.sessionId}  deliver:${b.deliver ? '√' : '×'} observe:${b.observe ? '√' : '×'}`);
           }
-          if (data.bindings.length === 0) console.log('(no bindings — expressions stay in the dedicated heartbeat session)');
+          if (data.bindings.length === 0 && !own) console.log('(no bindings — expressions stay in the dedicated heartbeat session)');
           return 0;
         }
         case 'add': {
@@ -453,6 +458,16 @@ export async function main(argv: string[]): Promise<number> {
             return 1;
           }
           console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : 'NOT_FOUND');
+          // Unbinding the HOME session resets it: the next beat creates a
+          // fresh dedicated session (the old one goes quiet after restart).
+          try {
+            const state = JSON.parse(loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json')) ?? '{}') as { sessionId?: string };
+            if (state.sessionId === id) {
+              fs.rmSync(guard.assert(path.join(paths.dataDir, 'gate.json')), { force: true });
+              console.log('注意：这是心跳正身会话。已重置——下次心跳将创建新的正身会话（旧会话不再有心跳）');
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'home_reset', oldSessionId: id });
+            }
+          } catch { /* gate.json absent: nothing to reset */ }
           return 0;
         }
         default:
