@@ -11,7 +11,7 @@
 
 ## 这是什么
 
-一个 DeepSeek Harness 插件：定时唤醒 agent（默认 20 分钟一跳），按七相循环运行——
+一个 DeepSeek Harness 插件：定时唤醒 agent（出厂默认 20 分钟一跳，设置页可调），按七相循环运行——
 
 ```
 维护（素材池 gc / 日志保留 / 画像合并）→ 采集（屏幕 / 温度计 / 追踪）
@@ -43,18 +43,29 @@ dsh plugin --profile web remove dsh-heartbeat
 
 ## 使用
 
-日常无需任何操作。想看Agent的动向：
+日常无需任何操作。**设置页 → 心跳** 卡片（截图见下）提供六个分区，全部鼠标操作：
+
+| 分区 | 内容 |
+|---|---|
+| 心跳状态 | 上次心跳时间 / 结果（沉默原因或开口摘要）/ 今日表达计数 / 当前是否静默时段 |
+| 会话绑定 | 列出持久化会话（含标题与 live 标记），绑定/解绑投递与观察 |
+| 素材池 | 列表、归档/恢复/删除素材（删除需二次确认） |
+| 用户画像（只读） | 画像摘要 + 导出（解密导出 Markdown 供人审） |
+| 账本 | 打开账本（host 拉起编辑器，只读快捷方式） |
+| 节律配置 | 心跳间隔（分钟）/ 每日表达上限（条）→ 保存；间隔即时生效 |
+
+![心跳设置卡片](docs/settings-heartbeat-ui.png)
+
+CLI 依然可用（高级/脚本场景）：
 
 ```powershell
 node <插件目录>/dist/cli/index.js status        # 运行状态摘要
-node <插件目录>/dist/cli/index.js gate status   # 今日表达余量/冷却/静默窗
-node <插件目录>/dist/cli/index.js seeds stats   # 素材池
+node <插件目录>/dist/cli/index.js seeds stats   # 素材池统计
 node <插件目录>/dist/cli/index.js profile export  # 画像解密导出（人可审）
+node <插件目录>/dist/cli/index.js ledger list --pending  # 账本待办
 ```
 
-**设置页 → 心跳** 卡片：心跳间隔、每日表达上限（保存后重启生效）。
-
-**主动投递与观察**（把心跳消息送进你常用的会话 / 让会话内容变成画像素材）：
+**主动投递与观察**：把心跳消息送进你常用的会话 / 让会话内容变成画像素材：
 
 ```powershell
 node dist/cli/index.js sessions list              # 枚举会话 id
@@ -65,7 +76,19 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 
 ## 配置
 
-三层优先级（低→高）：**出厂默认**（包内 `config/`，只读）→ **用户文件层**（`data/settings/policy.json`，deepMerge）→ **设置页**（间隔/上限，即时生效间隔重排定时器）。
+三层优先级（低→高）：**出厂默认**（包内 `config/`，只读）→ **用户文件层**（`data/settings/policy.json`，deepMerge）→ **设置页**（间隔/上限，间隔即时生效并重排定时器）。
+
+出厂默认值速览（完整表见 [DESIGN.md §6](DESIGN.md)）：
+
+| 参数 | 出厂默认 |
+|---|---|
+| 心跳间隔 | 20 分钟；首跳 boot+15s |
+| 每日表达上限 | 3 条（成功投递才计数） |
+| 静默时段 | 01:00 – 08:00；冷却 30 分钟 |
+| 闲逛窗口 | 11:00–15:00 / 17:00–21:00，≥4h 间隔 |
+| 素材池上限 / TTL | 30 条活跃；news 3 / fandom 14 / scene 60 / promise 90 天 |
+| 画像容量 / 触发 | 50 / 分区；合并触发 12–24h 或积压 30 条 |
+| 日志保留 | envpulse 流 48h；决策日志 30 天 |
 
 | 常用参数 | 位置 |
 |---|---|
@@ -73,8 +96,6 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 | 画像能记什么（隐私白名单） | `data/settings/profile-schema.json` |
 | 追踪哪些 npm/GitHub / 兴趣种子 | `config/watchlist.json`、`config/interests.json`（用户层同名文件整体替换） |
 | 忙闲类别表（哪些进程算忙） | `config/busy-rules.json` |
-
-完整参数表与生效方式见 [DESIGN.md §6](DESIGN.md)。
 
 ## 数据与隐私
 
@@ -96,7 +117,7 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 npm install
 npm run build        # tsup → dist/
 npm run typecheck
-npm test             # 88 个单元测试（判定逻辑全注入时间，无 sleep）
+npm test             # 105 个单元测试（判定逻辑全注入时间，无 sleep）
 ```
 
 工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。

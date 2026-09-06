@@ -13,7 +13,7 @@
 | 形态 | DSH cordis 插件（进程内服务 + web client 卡片 + 独立 CLI） |
 | 宿主 | DSH 0.1.1-rc.2，web profile，Node ≥ 22.19（实测 24.19） |
 | 平台 | Windows 专属（PowerShell 探针 + DPAPI + WinRT toast） |
-| 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，88 个 |
+| 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，105 个 |
 | 运行数据 | `dataDir`（默认 `<包根>/data`；可在 profile 的 cordis.patch.yml 按 id 覆盖钉到自定义位置） |
 | 心跳节律 | 默认 20 min/跳（设置页/CLI 可调）；沉默轮零模型调用 |
 | 核心循环 | `core/orchestrator.ts`：§7 七相（维护→采集→闲逛→闸门→Digest→聚焦推理→投递→留痕） |
@@ -143,7 +143,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `browse/` | watchlist（npm/GitHub，6h 节流，首见不产素材；fetcher 可注入便于测试）+ 闲逛裁决（窗口/间隔/focus 冷却轮换）+ `completeWander` 代码登记（D10） |
 | `ledger/` | 唯一账本，Markdown 行格式 `- [YYYY-MM-DD HH:MM][open|done][#id] text`；手写乱行原样保留；`pendingOlderThan` 供跟进时机 |
 | `notify/` | AUMID 自注册（HKCU+开始菜单快捷方式，无需管理员）；**D12：仅"有新消息"提示，不承载正文** |
-| `ui/client.js` | 见 §3 C9；卡片 v1：间隔+cap 编辑；绑定列表/账本按钮未上 UI（CLI 已提供） |
+| `ui/client.js` | 见 §3 C9 + §14 M6：六分区卡片（心跳状态 30s 轮询/会话绑定/素材池/画像只读/账本/节律配置），全部经 `/heartbeat` RPC 与 host 通信 |
 
 ## 5. 数据文件字典（data/）
 
@@ -217,7 +217,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 有 `plugin_init` 无 `beat_start` | `orchestrator_started` 后紧跟 `orchestrator_disposed`？= 定时器被立即销毁（effect 返回值契约，见 C2）；或 fiber 被宿主卸载 |
 | `agent_create_failed: already owns this identity` | 会话已持久化，应走 resume——确认 dist 是最新（C10 复制安装） |
 | `agent_acquire_failed: while it is live` | 会话在 UI 开着（live），应先 `agents.get`——确认三态获取代码在 |
-| 一直沉默（`silent: quiet hours`） | 正常（夜间）；白天仍静默看 reason：cap 满（`gate status`）/ 冷却未过 / 忙时窗口 |
+| 一直沉默（`silent: quiet hours`） | 正常（夜间）；白天仍静默看 reason：cap 满（`status` 的摘要）/ 冷却未过 / 忙时窗口 |
 | 开口了但没通知 | `spoke` 行存在则 toast 环节查 `notify check`；通知只提示不承载正文（D12） |
 | 通知出现但会话里是沉默 | 沉默误判为开口（r5 修过：标记任意位置匹配 + 中文兜底闸）；确认 dist 已同步最新 |
 | `spoke_failed: unparseable / non-Chinese` | 模型输出不合契约；`turn_extraction_empty` 事件会带事件窗口形态（升级宿主后重点复查 C5） |
@@ -227,8 +227,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 ### 7.3 诊断 CLI 速查
 
 ```
-node dist/cli/index.js status            # 工作区 + 策略摘要
-node dist/cli/index.js gate status       # 今日 cap/冷却/静默窗
+node dist/cli/index.js status            # 工作区 + 策略摘要（含今日 cap/冷却/静默窗概要）
 node dist/cli/index.js seeds stats|list [--archived] | gc
 node dist/cli/index.js ledger list --pending
 node dist/cli/index.js browse status|dry # 闲逛裁决链路
@@ -252,7 +251,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 9. 测试
 
-- 运行：`npm test`（node --test + tsx，88 个）；`npm run typecheck`；`npm run build`。
+- 运行：`npm test`（node --test + tsx，105 个）；`npm run typecheck`；`npm run build`。
 - 必测项与锚点：路径守卫 5 组向量（含 junction 逃逸）、闸门五闸顺序与 A5 语义、淘汰四规则+保护+合并、画像守卫（白名单/evidence/封顶/INVALIDATE 归属/老化）、journal verify/rebuild（含撕裂尾）、inbox 去重截断、闲逛裁决与 watchlist 假 fetcher、burn 预演与设置保留、配置两层合并与 fail-closed。
 - 时间全部注入（`now` 参数），无 sleep 依赖；vault 类测试真实 spawn PowerShell。
 
@@ -275,7 +274,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 ## 12. 已知限制与 v1.1 方向
 
 1. 表达轮工具为"prompt 纪律 + agent 级白名单"，未做 per-turn 翻转（宿主 restrict 栈语义未验）；
-2. 绑定管理在 CLI（设置页卡片 v1 只有间隔/cap；绑定列表上 UI 需 client `sessions` 服务枚举，API 已知存在）；
+2. 绑定管理已上 UI（§14 M6 RPC：会话绑定分区，list/add/remove）；~~CLI 兜底也可用~~（保留 CLI 供脚本场景）；
 3. `logs/envpulse.jsonl` 原始脉冲流 ✅ 已落地（2026-09-06：collectPulse 每拍追加 `{event:'pulse',...}`，维护相按 envPulseHours 剪枝；纯聚合统计、明文，无窗口标题/进程名）；v1.1 可选：流内加围绕聚合的派生字段；
 4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名——该服务为 LLM provider 自动命名机制，心跳 agent 会话不适用，未做）；
 5. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
