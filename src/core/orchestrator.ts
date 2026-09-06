@@ -195,26 +195,21 @@ function assistantText(e: { type: string; data?: unknown }): string {
   return '';
 }
 
+/** Strict host message factory. Throws if dsh-llm is unavailable — we NEVER
+ * splice hand-rolled messages: they lack message ids and corrupt the
+ * persisted session (r5: SessionPersistenceCorruptionError root cause). */
+async function hostUserMessage(text: string, label: string): Promise<unknown> {
+  const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
+  });
+}
+
 /** Run one model turn on the heartbeat agent; returns the assistant text. */
 async function agentTurn(deps: OrchestratorDeps, agent: HostAgent, prompt: string, label: string): Promise<string> {
   const before = agent.session.events.length;
-  let message: unknown;
-  try {
-    // Host-owned message factory (same primitive official time-context uses).
-    const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
-    message = createUserMessage({
-      content: [{ type: 'text', text: prompt }],
-      source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
-    });
-  } catch {
-    // dsh-llm resolution failed: fall back to the minimal shape.
-    message = {
-      role: 'user',
-      content: [{ type: 'text', text: prompt }],
-      source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
-    };
-  }
-  agent.followup(message);
+  agent.followup(await hostUserMessage(prompt, label));
   await withTimeout(agent.whenIdle(), IDLE_WAIT_TIMEOUT_MS, `${label}: whenIdle timeout`);
   const events = agent.session.events;
   // Scan backwards: the LAST assistant text wins (final step over reasoning).
@@ -474,12 +469,17 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_skipped', sessionId: b.sessionId, reason: 'not live' });
         continue;
       }
-      target.followup({
-        role: 'user',
-        content: [{ type: 'text', text: `（心跳投递，请在下轮回应中自然带出这句话：）${text}` }],
-        source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text }] },
-      });
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: b.sessionId });
+      try {
+        // Strict factory only: a hand-rolled message would corrupt the target
+        // session's persisted log (missing message id, r5 lesson).
+        target.followup(await hostUserMessage(
+          `（心跳投递，请在下轮回应中自然带出这句话：）${text}`,
+          'delivery',
+        ));
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: b.sessionId });
+      } catch (e) {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_skipped', sessionId: b.sessionId, reason: String(e).slice(0, 120) });
+      }
     }
   } catch (e) {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_error', error: String(e).slice(0, 120) });
