@@ -27,7 +27,7 @@
     "win32"
   ],
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.1-rc.2"
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",

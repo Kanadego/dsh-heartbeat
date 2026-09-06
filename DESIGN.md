@@ -276,8 +276,8 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 1. 表达轮工具为"prompt 纪律 + agent 级白名单"，未做 per-turn 翻转（宿主 restrict 栈语义未验）；
 2. 绑定管理在 CLI（设置页卡片 v1 只有间隔/cap；绑定列表上 UI 需 client `sessions` 服务枚举，API 已知存在）；
-3. `logs/envpulse.jsonl` 原始脉冲流 retention 已接线但流本身未落盘（v1.1：原始样本先落流再聚合）；
-4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名）；
+3. `logs/envpulse.jsonl` 原始脉冲流 ✅ 已落地（2026-09-06：collectPulse 每拍追加 `{event:'pulse',...}`，维护相按 envPulseHours 剪枝；纯聚合统计、明文，无窗口标题/进程名）；v1.1 可选：流内加围绕聚合的派生字段；
+4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名——该服务为 LLM provider 自动命名机制，心跳 agent 会话不适用，未做）；
 5. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
 6. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
-7. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。
+7. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。
