@@ -276,3 +276,36 @@ export function archiveSeedById(
   savePool(guard, file, db);
   return s;
 }
+
+/** Restore an archived seed to the active pool (UI operation; resets TTL). */
+export function restoreSeed(
+  guard: PathGuard,
+  file: string,
+  policy: Policy,
+  id: string,
+  now = Date.now(),
+): { ok: true; seed: Seed } | { ok: false; reason: string } {
+  const db = loadPool(guard, file);
+  const s = db.seeds.find((x) => x.id === id && x.status === 'archived');
+  if (!s) return { ok: false, reason: 'archived seed not found' };
+  if (activeSeeds(db).length >= policy.seeds.maxActive) {
+    return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
+  }
+  s.status = 'active';
+  s.retireReason = undefined;
+  s.retiredAt = undefined;
+  s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
+  s.lastEvidenceAt = new Date(now).toISOString();
+  savePool(guard, file, db);
+  return { ok: true, seed: s };
+}
+
+/** Hard delete (UI explicit action with confirm; audit lives in the CLI/log). */
+export function deleteSeed(guard: PathGuard, file: string, id: string): boolean {
+  const db = loadPool(guard, file);
+  const before = db.seeds.length;
+  db.seeds = db.seeds.filter((x) => x.id !== id);
+  if (db.seeds.length === before) return false;
+  savePool(guard, file, db);
+  return true;
+}

@@ -437,6 +437,29 @@ function archiveSeedById(guard, file, id, reason = "completed", now = Date.now()
   savePool(guard, file, db);
   return s;
 }
+function restoreSeed(guard, file, policy, id, now = Date.now()) {
+  const db = loadPool(guard, file);
+  const s = db.seeds.find((x) => x.id === id && x.status === "archived");
+  if (!s) return { ok: false, reason: "archived seed not found" };
+  if (activeSeeds(db).length >= policy.seeds.maxActive) {
+    return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
+  }
+  s.status = "active";
+  s.retireReason = void 0;
+  s.retiredAt = void 0;
+  s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
+  s.lastEvidenceAt = new Date(now).toISOString();
+  savePool(guard, file, db);
+  return { ok: true, seed: s };
+}
+function deleteSeed(guard, file, id) {
+  const db = loadPool(guard, file);
+  const before = db.seeds.length;
+  db.seeds = db.seeds.filter((x) => x.id !== id);
+  if (db.seeds.length === before) return false;
+  savePool(guard, file, db);
+  return true;
+}
 
 // src/ledger/ledger.ts
 import path6 from "path";
@@ -1020,6 +1043,8 @@ export {
   gcPool,
   surfaceSeed,
   archiveSeedById,
+  restoreSeed,
+  deleteSeed,
   ledgerFilePath,
   readLedger,
   appendEntry,
@@ -1043,4 +1068,4 @@ export {
   ensureRegistered,
   sendNewMessageHint
 };
-//# sourceMappingURL=chunk-5K32NJ72.js.map
+//# sourceMappingURL=chunk-DR35M42C.js.map

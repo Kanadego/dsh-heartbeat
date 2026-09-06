@@ -51,13 +51,14 @@ function deliverTargets(data) {
 function observeTargets(data) {
   return data.bindings.filter((b) => b.observe);
 }
+
 export {
-  addBinding,
   bindingsFilePath,
-  deliverTargets,
   loadBindings,
-  observeTargets,
+  saveBindings,
+  addBinding,
   removeBinding,
-  saveBindings
+  deliverTargets,
+  observeTargets
 };
-//# sourceMappingURL=bindings-FF57YVRG.js.map
+//# sourceMappingURL=chunk-J6ZTRFFW.js.map

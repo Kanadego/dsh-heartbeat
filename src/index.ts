@@ -15,6 +15,7 @@ import { loadPolicy } from './config/load.js';
 import { deepMerge } from './config/schema.js';
 import { setRuntime, getRuntime } from './core/runtime.js';
 import { startOrchestrator, applyHeartbeatInterval, type OrchestratorDeps } from './core/orchestrator.js';
+import { installHeartbeatRpc } from './rpc.js';
 
 export const name = 'heartbeat';
 
@@ -39,7 +40,11 @@ export interface HeartbeatConfig {
   maxDailySend?: number;
 }
 
-export function apply(ctx: OrchestratorDeps['ctx'] & { get(name: string): unknown }, config: HeartbeatConfig = {}): void {
+export function apply(ctx: OrchestratorDeps['ctx'] & {
+  get(name: string): unknown;
+  /** Cordis lazy service declaration: callback runs once the named services mount. */
+  inject(services: string[], callback: (scoped: unknown) => void): void;
+}, config: HeartbeatConfig = {}): void {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
   const guard = createPathGuard(paths.dataDir);
   let policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
@@ -93,6 +98,11 @@ export function apply(ctx: OrchestratorDeps['ctx'] & { get(name: string): unknow
     guard.assert(paths.logsDir + '/heartbeat.jsonl'),
     { event: 'plugin_init', dataDir: paths.dataDir },
   );
+
+  // ── M6 拓展：正式 RPC 通道（决策 1 = B 方案，探针已验证）──────────
+  // connection 晚挂载 → ctx.inject(['connection'], ...) 声明式等待；
+  // 端点分发见 src/rpc.ts（bindings/seeds/status/profile/ledger）。
+  installHeartbeatRpc(ctx, { paths, guard, policy });
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
   startOrchestrator(deps);

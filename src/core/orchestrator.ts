@@ -75,6 +75,24 @@ const IDLE_WAIT_TIMEOUT_MS = 240_000;
 let agentPromise: Promise<HostAgent | null> | null = null;
 let beating = false;
 
+/** Latest beat outcome for the settings status card (RPC served). */
+export interface LastBeat {
+  at: string;
+  verdict?: 'spoke' | 'silent' | 'spoke_failed' | 'error';
+  text?: string;
+  reason?: string;
+}
+
+let lastBeat: LastBeat | null = null;
+
+export function getLastBeat(): LastBeat | null {
+  return lastBeat;
+}
+
+function noteBeat(verdict: NonNullable<LastBeat['verdict']>, detail?: { text?: string; reason?: string }): void {
+  lastBeat = { at: new Date().toISOString(), verdict, ...detail };
+}
+
 function stateFile(paths: WorkspacePaths): string {
   return path.join(paths.dataDir, 'gate.json');
 }
@@ -383,17 +401,21 @@ async function wanderPhase(bc: BeatContext): Promise<void> {
   appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'wander', focus: advice.focus, registered });
 }
 
-/** ③ 闸门 → ④ Digest → ⑤ 聚焦推理 → ⑥ 投递 → ⑦ 留痕 */
+/** ③ 闸门 → ④ Digest → ⑤ 决策（引擎室）→ ⑥ 表达（投递目标会话出声）→ ⑦ 留痕
+ *  两轮设计（r5）：决策轮的机器输出留在正身（引擎室），开口的表达轮改在
+ *  投递目标会话的 agent 上执行——话只出现在用户读的会话里。 */
 async function expressionPhases(bc: BeatContext): Promise<void> {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const decision = runGate(guard, policy, paths, now);
   if (decision.verdict === 'SILENT') {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: decision.reason });
+    noteBeat('silent', { reason: decision.reason });
     return;
   }
   if (!bc.agent) {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'no heartbeat agent' });
+    noteBeat('spoke_failed', { reason: 'no heartbeat agent' });
     return;
   }
   const digest = buildDigest(guard, paths, policy, { windowClass: decision.window.cls });
@@ -401,89 +423,86 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   const seedsTop = offered.map((s) => `${s.id}: ${s.text.slice(0, 50)}`).join('\n');
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5)
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
-  const prompt = [
-    '这是心跳轮次：判断此刻有没有值得对主人说的一句话。沉默是常态。',
-    '表达四律：有来处 / 短（一两句以内）/ 自然收尾（问句或开放语）/ 去模板化；禁止复述时间或"心跳/唤醒"字样。',
-    '不要使用任何工具。全程只使用中文。',
-    '输出规则（严格遵守，不要输出思考过程，不要输出英文）：',
-    '- 决定沉默：只输出——[沉默]',
-    '- 决定开口：只输出要说的话本身（一两句中文，不要 JSON、不要解释、不要标记）。',
+
+  // ⑤a 决策轮（引擎室，零工具；机器输出留在正身，不投递）
+  const decisionPrompt = [
+    '这是心跳轮次的决策环节：判断此刻有没有值得对主人说的一句话。沉默是常态。',
+    '判断参考：有来处（素材/账本/画像）/ 不打扰 / 频率克制。',
+    '不要使用任何工具。只输出一个 JSON 对象：',
+    '- 沉默：{"speak":false}',
+    '- 开口：{"speak":true,"text":"想说的一句话（一两句中文）","seed_ids":["sN"]}',
+    '（seed_ids = 本轮用到的素材 id；没用到就给空数组）',
     '',
     '## 此刻处境', digest.tact,
     '## 素材池候选（id: 内容）', seedsTop || '(空)',
     '## 画像话题', digest.topic,
     '## 账本待跟进', staleLedger || '(空)',
   ].join('\n');
-  const raw = await agentTurn(bc.deps, bc.agent, prompt, 'expression');
-  // r5 contract: natural-text output. Strip reasoning wrappers, then decide.
-  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  // Silence decision: the bracketed marker ANYWHERE in the output means the
-  // model chose silence (it may leak reasoning around the marker — r5 fix:
-  // "Still empty... [沉默].[沉默]" must never classify as speech). A real
-  // expression would never contain the literal bracketed token.
-  const isSilence = stripped === ''
-    || /\[\s*沉默\s*\]|【\s*沉默\s*】/.test(stripped)
-    || /(?:^|\n)\s*[\[【]?\s*沉默\s*[\]】]?[。.…]?\s*$/.test(stripped);
-  if (isSilence) {
+  const raw = await agentTurn(bc.deps, bc.agent, decisionPrompt, 'decision');
+  let parsed: { speak?: boolean; text?: string; seed_ids?: string[] };
+  try {
+    parsed = parseJsonBlock(raw) as typeof parsed;
+  } catch (e) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'unparseable decision output', error: String(e).slice(0, 120) });
+    noteBeat('spoke_failed', { reason: 'unparseable decision output' });
+    return;
+  }
+  if (!parsed.speak || !parsed.text) {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'model chose silence' });
+    noteBeat('silent', { reason: 'model chose silence' });
     return;
   }
-  // Spoken: strip any marker leftovers; if the model leaked multi-line
-  // reasoning, the expression is the last non-empty line (one-two sentences).
-  const cleaned = stripped.replace(/\[\s*沉默\s*\]|【\s*沉默\s*】/g, '').trim();
-  const lines = cleaned.split('\n').map((l) => l.trim()).filter((l) => l);
-  let text = (lines.length > 1 ? lines[lines.length - 1]! : cleaned).slice(0, 200);
-  // Sanity gate: the companion speaks Chinese; a pure-ASCII "expression" is
-  // leaked reasoning, never deliverable.
-  if (!/[\u4e00-\u9fff]/.test(text)) {
+
+  // ⑤b 表达轮：在投递目标会话的 agent 上出声（无 live 目标则回落正身）。
+  const { loadBindings, deliverTargets } = await import('./bindings.js');
+  const data = loadBindings(guard, paths.settingsDir);
+  const homeId = bc.agent.session?.id ?? null;
+  const liveTarget = deliverTargets(data)
+    .map((b) => ({ sessionId: b.sessionId, agent: ctx_getAgent(deps, b.sessionId) }))
+    .find((x) => x.agent && x.sessionId !== homeId);
+  const voiceAgent = liveTarget?.agent ?? bc.agent;
+  const voiceSessionId = voiceAgent.session?.id ?? null;
+
+  const phrasePrompt = [
+    '用你自己的口吻，自然地说出下面这句心声（一两句中文；不要解释、不要引号、不要复述本指令；不要使用工具；全程只使用中文）：',
+    `『${parsed.text}』`,
+  ].join('\n');
+  const spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression');
+  // 表达文本：剥离思考块后取最后一行非空内容（模型可能漏出思考过程）。
+  const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+    .split('\n').map((l) => l.trim()).filter((l) => l);
+  const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1]! : '').slice(0, 200);
+  // 兜底闸：陪伴者说中文；纯英文输出是泄漏的思考，永不投递。
+  if (!text || !/[\u4e00-\u9fff]/.test(text)) {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
+    noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
     return;
   }
-  text = text.trim();
-  // ⑥ 投递：the assistant message already landed in the dedicated session
-  // (main channel). Toast is the auxiliary hint only (D12).
+
+  // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
   const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
   if (!confirm.ok) {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
+    noteBeat('spoke_failed', { reason: confirm.reason });
     return;
   }
-  // A2 attribution, post-hoc: surface offered seeds whose text the expression
-  // clearly drew from (substring match in either direction, min length 8).
+  // A2 attribution：决策给出的 seed_ids 优先，输出↔候选包含匹配兜底。
+  const usedIds = new Set(parsed.seed_ids ?? []);
   for (const s of offered) {
     const a = s.text.trim(), b = text;
-    if ((a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length)))))) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, s.id, now);
+    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
+      usedIds.add(s.id);
     }
+  }
+  for (const id of usedIds) {
+    surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
   }
   sendNewMessageHint(paths);
-  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80) });
-  // D13 deliver role: splice the expression into live deliver-bound sessions'
-  // inboxes (wakeup=true so the bound session's agent surfaces it there).
-  try {
-    const { loadBindings, deliverTargets } = await import('./bindings.js');
-    const data = loadBindings(guard, paths.settingsDir);
-    for (const b of deliverTargets(data)) {
-      if (b.sessionId === bc.agent.session?.id) continue; // dedicated session already has it
-      const target = ctx_getAgent(deps, b.sessionId);
-      if (!target) {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_skipped', sessionId: b.sessionId, reason: 'not live' });
-        continue;
-      }
-      try {
-        // Strict factory only: a hand-rolled message would corrupt the target
-        // session's persisted log (missing message id, r5 lesson).
-        target.followup(await hostUserMessage(
-          `（心跳投递，请在下轮回应中自然带出这句话：）${text}`,
-          'delivery',
-        ));
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: b.sessionId });
-      } catch (e) {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_skipped', sessionId: b.sessionId, reason: String(e).slice(0, 120) });
-      }
-    }
-  } catch (e) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_error', error: String(e).slice(0, 120) });
+  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
+  if (voiceSessionId && voiceSessionId !== homeId) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
   }
+  noteBeat('spoke', { text });
 }
 
 // ── the beat ────────────────────────────────────────────────────────────
@@ -508,6 +527,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
     try {
       appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'beat_error', error: String(e).slice(0, 200) });
+    noteBeat('error', { reason: String(e).slice(0, 120) });
     } catch { /* never rethrow from the heartbeat */ }
   } finally {
     beating = false;

@@ -29,7 +29,7 @@ import {
   shredFileSync,
   surfaceSeed,
   verifyProfile
-} from "../chunk-5K32NJ72.js";
+} from "../chunk-DR35M42C.js";
 import {
   initWorkspace,
   loadEncryptedText,
@@ -481,7 +481,7 @@ async function main(argv) {
       return 0;
     }
     case "bind": {
-      const { loadBindings, addBinding, removeBinding, bindingsFilePath } = await import("../bindings-FF57YVRG.js");
+      const { loadBindings, addBinding, removeBinding, bindingsFilePath } = await import("../bindings-XPPSKILN.js");
       switch (sub) {
         case "list": {
           const data = loadBindings(guard, paths.settingsDir);
