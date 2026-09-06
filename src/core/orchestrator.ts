@@ -126,15 +126,37 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
         //  1. live (session open in UI / already resumed) -> use the bare agent
         //  2. persisted but idle -> agents.resume
         //  3. no saved id -> agents.create (first boot)
+        // Self-healing (r5): if the user DELETED the home session, resume
+        // fails -> fall back to create so the heartbeat never dies.
         const live = safe(() => ctx.agents.get(savedId) as HostAgent | undefined, 'agents.get');
         if (live.ok && live.result) {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_reuse_live', sessionId: savedId });
           agent = live.result;
         } else {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_start', sessionId: savedId });
-          const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, setup })), 30_000, 'agents.resume timeout (30s)');
-          agent = unwrap(handle);
-          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_ok', sessionId: savedId });
+          try {
+            const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, setup })), 30_000, 'agents.resume timeout (30s)');
+            agent = unwrap(handle);
+            appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_ok', sessionId: savedId });
+          } catch (resumeErr) {
+            appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+              event: 'agent_resume_failed', sessionId: savedId,
+              error: String(resumeErr).slice(0, 160),
+            });
+            // Home session deleted/unrecoverable: recreate. Try the same id
+            // first (persistence gone = id is free), then a fresh uuid.
+            try {
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, setup })), 30_000, 'agents.create (self-heal) timeout');
+              agent = unwrap(handle);
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: savedId, selfHealed: true });
+            } catch {
+              const freshId = `session-${randomUUID()}`;
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: freshId, meta: { cwd: paths.dataDir }, setup })), 30_000, 'agents.create (fresh) timeout');
+              agent = unwrap(handle);
+              writeBeatState(guard, paths, { sessionId: agent.session?.id ?? freshId });
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: agent.session?.id ?? freshId, selfHealed: true, fresh: true });
+            }
+          }
         }
       } else {
         const sessionId = `session-${randomUUID()}`;

@@ -1258,9 +1258,28 @@ async function ensureAgent(deps) {
           agent = live.result;
         } else {
           appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_resume_start", sessionId: savedId });
-          const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, setup })), 3e4, "agents.resume timeout (30s)");
-          agent = unwrap(handle);
-          appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_resume_ok", sessionId: savedId });
+          try {
+            const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, setup })), 3e4, "agents.resume timeout (30s)");
+            agent = unwrap(handle);
+            appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_resume_ok", sessionId: savedId });
+          } catch (resumeErr) {
+            appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+              event: "agent_resume_failed",
+              sessionId: savedId,
+              error: String(resumeErr).slice(0, 160)
+            });
+            try {
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, setup })), 3e4, "agents.create (self-heal) timeout");
+              agent = unwrap(handle);
+              appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_create_ok", sessionId: savedId, selfHealed: true });
+            } catch {
+              const freshId = `session-${randomUUID2()}`;
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: freshId, meta: { cwd: paths.dataDir }, setup })), 3e4, "agents.create (fresh) timeout");
+              agent = unwrap(handle);
+              writeBeatState(guard, paths, { sessionId: agent.session?.id ?? freshId });
+              appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_create_ok", sessionId: agent.session?.id ?? freshId, selfHealed: true, fresh: true });
+            }
+          }
         }
       } else {
         const sessionId = `session-${randomUUID2()}`;
