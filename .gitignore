@@ -3,6 +3,7 @@ data/
 .reference/
 *.log
 *.tmp
+.npmrc
 Thumbs.db
 设计要求.md
 scripts/migrate-v1-seeds.mjs
