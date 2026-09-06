@@ -30,7 +30,7 @@
           结果由【代码】入池 seeds + completeWander 登记节流（D10，模型不碰登记）
  ③ 闸门   纯代码：静默窗 → 忙时窗口类别 → 在场联动 → 每日 cap → 冷却；判定留痕
  ④ Digest 现拼三切面（tact/topic/wander，≤800 tok）+ 时间 + 素材池 top + 账本待办
- ⑤ 聚焦推理 模型调用（零工具）：沉默→输出「[沉默]」；开口→只输出表达文本（r5 自然文本契约）
+ ⑤ 决策+表达 两轮（r6）：决策轮（引擎室，零工具）输出机器 JSON {speak,text,seed_ids}；开口时表达轮在投递目标会话的 agent 上执行措辞（零工具），话落在用户读的会话
  ⑥ 投递   正身=专用心跳会话（followup 轮次已落盘）+ toast 提示（仅"有新消息"）+ D13 绑定会话投递
  ⑦ 留痕   heartbeat.jsonl（spoke/silent/spoke_failed + 原因）+ ledger + confirmSend（仅成功时计数，A5）
 ```
@@ -298,3 +298,15 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 必须按 magic（28 B5 2F FD）切帧逐帧解压再拼接（脚本已实现，含假切分自动合并）。损坏特征扫描必须
 用精确签名（plugin 来源 + 顶层缺 id）——宿主自己的 assistant 推理事件（`message.reasoning`）天然没有
 顶层 id，宽松匹配会误报上千条。
+
+## 14. M6 拓展：RPC 数据通道与设置页卡片
+
+**通道**：宿主 `src/rpc.ts` 经 `ctx.inject(['connection'], ...)` 注册 `/heartbeat` 通道（connection 为晚挂载服务，必须声明式等待——直接属性访问会报 without inject）；浏览器 `ctx.get('connection').rpc.call('/heartbeat', endpoint, payload)` 调用，返回 `{ok,value}|{ok:false,error}`。
+
+**端点**：`status`（状态卡片）/ `sessions.list`（持久化会话+title+live+绑定标记）/ `bindings.get|add|remove`（正身 add 拒绝、remove 触发 home_reset）/ `seeds.list|archive|restore|delete` / `profile.digest` / `profile.export` / `ledger.open`（宿主拉起编辑器）。全部处理器 try/catch，异常返回结构化错误。
+
+**会话名**：宿主读 `~/.dsh/storages/session_projcache.json` 的 `title.val`（标题服务持久化位置）合并进 sessions.list；client 端不再自行解析。
+
+**安全**：通道 authority 'trusted-host'；全部端点经路径守卫 + 既有模块执行；浏览器端无状态、无文件访问。
+
+**client 卡片**：六个分区（状态默认展开/会话绑定/素材池/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除二次确认；所有 RPC 异常按分区独立显示。

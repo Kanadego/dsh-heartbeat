@@ -4,10 +4,13 @@ import {
   adviseWander,
   appendAuditLine,
   applyOpsToDoc,
+  archiveSeedById,
+  archivedSeeds,
   atomicWriteJsonSync,
   completeWander,
   createPathGuard,
   deepMerge,
+  deleteSeed,
   ensureRegistered,
   gcPool,
   ledgerFilePath,
@@ -19,12 +22,13 @@ import {
   persistWithJournal,
   profileFilePath,
   pruneAuditFile,
+  restoreSeed,
   runDeterministicAging,
   scanPending,
   seedsFilePath,
   sendNewMessageHint,
   surfaceSeed
-} from "./chunk-5K32NJ72.js";
+} from "./chunk-DR35M42C.js";
 import {
   dedupeItems,
   inboxClear,
@@ -43,6 +47,11 @@ import {
   saveJson,
   writeText
 } from "./chunk-LLD7LUNN.js";
+import {
+  addBinding,
+  loadBindings,
+  removeBinding
+} from "./chunk-J6ZTRFFW.js";
 import {
   Binary,
   clone,
@@ -1231,6 +1240,13 @@ function applyHeartbeatInterval(deps, intervalMin) {
 var IDLE_WAIT_TIMEOUT_MS = 24e4;
 var agentPromise = null;
 var beating = false;
+var lastBeat = null;
+function getLastBeat() {
+  return lastBeat;
+}
+function noteBeat(verdict, detail) {
+  lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
+}
 function stateFile(paths) {
   return path6.join(paths.dataDir, "gate.json");
 }
@@ -1409,9 +1425,9 @@ async function collectPhase(bc) {
 async function observeBoundSessions(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
-  const { loadBindings, observeTargets } = await import("./bindings-FF57YVRG.js");
+  const { loadBindings: loadBindings2, observeTargets } = await import("./bindings-XPPSKILN.js");
   const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-MMLHISQV.js");
-  const data = loadBindings(guard, paths.settingsDir);
+  const data = loadBindings2(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
   const cursorFile = path6.join(paths.dataDir, "cursors.json");
@@ -1500,23 +1516,25 @@ async function expressionPhases(bc) {
   const decision = runGate(guard, policy, paths, now);
   if (decision.verdict === "SILENT") {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: decision.reason });
+    noteBeat("silent", { reason: decision.reason });
     return;
   }
   if (!bc.agent) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "no heartbeat agent" });
+    noteBeat("spoke_failed", { reason: "no heartbeat agent" });
     return;
   }
   const digest = buildDigest(guard, paths, policy, { windowClass: decision.window.cls });
   const offered = activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))).slice(0, 6);
   const seedsTop = offered.map((s) => `${s.id}: ${s.text.slice(0, 50)}`).join("\n");
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5).map((e) => `- ${e.text}\uFF08${e.date}\uFF09`).join("\n");
-  const prompt = [
-    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\uFF1A\u5224\u65AD\u6B64\u523B\u6709\u6CA1\u6709\u503C\u5F97\u5BF9\u4E3B\u4EBA\u8BF4\u7684\u4E00\u53E5\u8BDD\u3002\u6C89\u9ED8\u662F\u5E38\u6001\u3002",
-    '\u8868\u8FBE\u56DB\u5F8B\uFF1A\u6709\u6765\u5904 / \u77ED\uFF08\u4E00\u4E24\u53E5\u4EE5\u5185\uFF09/ \u81EA\u7136\u6536\u5C3E\uFF08\u95EE\u53E5\u6216\u5F00\u653E\u8BED\uFF09/ \u53BB\u6A21\u677F\u5316\uFF1B\u7981\u6B62\u590D\u8FF0\u65F6\u95F4\u6216"\u5FC3\u8DF3/\u5524\u9192"\u5B57\u6837\u3002',
-    "\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\u3002\u5168\u7A0B\u53EA\u4F7F\u7528\u4E2D\u6587\u3002",
-    "\u8F93\u51FA\u89C4\u5219\uFF08\u4E25\u683C\u9075\u5B88\uFF0C\u4E0D\u8981\u8F93\u51FA\u601D\u8003\u8FC7\u7A0B\uFF0C\u4E0D\u8981\u8F93\u51FA\u82F1\u6587\uFF09\uFF1A",
-    "- \u51B3\u5B9A\u6C89\u9ED8\uFF1A\u53EA\u8F93\u51FA\u2014\u2014[\u6C89\u9ED8]",
-    "- \u51B3\u5B9A\u5F00\u53E3\uFF1A\u53EA\u8F93\u51FA\u8981\u8BF4\u7684\u8BDD\u672C\u8EAB\uFF08\u4E00\u4E24\u53E5\u4E2D\u6587\uFF0C\u4E0D\u8981 JSON\u3001\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u6807\u8BB0\uFF09\u3002",
+  const decisionPrompt = [
+    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\u7684\u51B3\u7B56\u73AF\u8282\uFF1A\u5224\u65AD\u6B64\u523B\u6709\u6CA1\u6709\u503C\u5F97\u5BF9\u4E3B\u4EBA\u8BF4\u7684\u4E00\u53E5\u8BDD\u3002\u6C89\u9ED8\u662F\u5E38\u6001\u3002",
+    "\u5224\u65AD\u53C2\u8003\uFF1A\u6709\u6765\u5904\uFF08\u7D20\u6750/\u8D26\u672C/\u753B\u50CF\uFF09/ \u4E0D\u6253\u6270 / \u9891\u7387\u514B\u5236\u3002",
+    "\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\u3002\u53EA\u8F93\u51FA\u4E00\u4E2A JSON \u5BF9\u8C61\uFF1A",
+    '- \u6C89\u9ED8\uFF1A{"speak":false}',
+    '- \u5F00\u53E3\uFF1A{"speak":true,"text":"\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF08\u4E00\u4E24\u53E5\u4E2D\u6587\uFF09","seed_ids":["sN"]}',
+    "\uFF08seed_ids = \u672C\u8F6E\u7528\u5230\u7684\u7D20\u6750 id\uFF1B\u6CA1\u7528\u5230\u5C31\u7ED9\u7A7A\u6570\u7EC4\uFF09",
     "",
     "## \u6B64\u523B\u5904\u5883",
     digest.tact,
@@ -1527,57 +1545,60 @@ async function expressionPhases(bc) {
     "## \u8D26\u672C\u5F85\u8DDF\u8FDB",
     staleLedger || "(\u7A7A)"
   ].join("\n");
-  const raw = await agentTurn(bc.deps, bc.agent, prompt, "expression");
-  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-  const isSilence = stripped === "" || /\[\s*沉默\s*\]|【\s*沉默\s*】/.test(stripped) || /(?:^|\n)\s*[\[【]?\s*沉默\s*[\]】]?[。.…]?\s*$/.test(stripped);
-  if (isSilence) {
+  const raw = await agentTurn(bc.deps, bc.agent, decisionPrompt, "decision");
+  let parsed;
+  try {
+    parsed = parseJsonBlock(raw);
+  } catch (e) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "unparseable decision output", error: String(e).slice(0, 120) });
+    noteBeat("spoke_failed", { reason: "unparseable decision output" });
+    return;
+  }
+  if (!parsed.speak || !parsed.text) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "model chose silence" });
+    noteBeat("silent", { reason: "model chose silence" });
     return;
   }
-  const cleaned = stripped.replace(/\[\s*沉默\s*\]|【\s*沉默\s*】/g, "").trim();
-  const lines = cleaned.split("\n").map((l) => l.trim()).filter((l) => l);
-  let text = (lines.length > 1 ? lines[lines.length - 1] : cleaned).slice(0, 200);
-  if (!/[\u4e00-\u9fff]/.test(text)) {
+  const { loadBindings: loadBindings2, deliverTargets } = await import("./bindings-XPPSKILN.js");
+  const data = loadBindings2(guard, paths.settingsDir);
+  const homeId = bc.agent.session?.id ?? null;
+  const liveTarget = deliverTargets(data).map((b) => ({ sessionId: b.sessionId, agent: ctx_getAgent(deps, b.sessionId) })).find((x) => x.agent && x.sessionId !== homeId);
+  const voiceAgent = liveTarget?.agent ?? bc.agent;
+  const voiceSessionId = voiceAgent.session?.id ?? null;
+  const phrasePrompt = [
+    "\u7528\u4F60\u81EA\u5DF1\u7684\u53E3\u543B\uFF0C\u81EA\u7136\u5730\u8BF4\u51FA\u4E0B\u9762\u8FD9\u53E5\u5FC3\u58F0\uFF08\u4E00\u4E24\u53E5\u4E2D\u6587\uFF1B\u4E0D\u8981\u89E3\u91CA\u3001\u4E0D\u8981\u5F15\u53F7\u3001\u4E0D\u8981\u590D\u8FF0\u672C\u6307\u4EE4\uFF1B\u4E0D\u8981\u4F7F\u7528\u5DE5\u5177\uFF1B\u5168\u7A0B\u53EA\u4F7F\u7528\u4E2D\u6587\uFF09\uFF1A",
+    `\u300E${parsed.text}\u300F`
+  ].join("\n");
+  const spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression");
+  const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l);
+  const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1] : "").slice(0, 200);
+  if (!text || !/[\u4e00-\u9fff]/.test(text)) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
+    noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
     return;
   }
-  text = text.trim();
   const confirm = confirmSend(guard, policy, paths, "topic", text, now);
   if (!confirm.ok) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: confirm.reason });
+    noteBeat("spoke_failed", { reason: confirm.reason });
     return;
   }
+  const usedIds = new Set(parsed.seed_ids ?? []);
   for (const s of offered) {
     const a = s.text.trim(), b = text;
     if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, s.id, now);
+      usedIds.add(s.id);
     }
+  }
+  for (const id of usedIds) {
+    surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
   }
   sendNewMessageHint(paths);
-  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80) });
-  try {
-    const { loadBindings, deliverTargets } = await import("./bindings-FF57YVRG.js");
-    const data = loadBindings(guard, paths.settingsDir);
-    for (const b of deliverTargets(data)) {
-      if (b.sessionId === bc.agent.session?.id) continue;
-      const target = ctx_getAgent(deps, b.sessionId);
-      if (!target) {
-        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_skipped", sessionId: b.sessionId, reason: "not live" });
-        continue;
-      }
-      try {
-        target.followup(await hostUserMessage(
-          `\uFF08\u5FC3\u8DF3\u6295\u9012\uFF0C\u8BF7\u5728\u4E0B\u8F6E\u56DE\u5E94\u4E2D\u81EA\u7136\u5E26\u51FA\u8FD9\u53E5\u8BDD\uFF1A\uFF09${text}`,
-          "delivery"
-        ));
-        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: b.sessionId });
-      } catch (e) {
-        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_skipped", sessionId: b.sessionId, reason: String(e).slice(0, 120) });
-      }
-    }
-  } catch (e) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_error", error: String(e).slice(0, 120) });
+  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
+  if (voiceSessionId && voiceSessionId !== homeId) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
   }
+  noteBeat("spoke", { text });
 }
 async function beat(deps) {
   if (beating) return;
@@ -1599,6 +1620,7 @@ async function beat(deps) {
     deps.ctx.logger.error("heartbeat: beat failed: %s", String(e).slice(0, 200));
     try {
       appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "beat_error", error: String(e).slice(0, 200) });
+      noteBeat("error", { reason: String(e).slice(0, 120) });
     } catch {
     }
   } finally {
@@ -1643,6 +1665,182 @@ function startOrchestrator(deps) {
     };
   }, "heartbeat: timer");
   ensureRegistered(deps.paths);
+}
+
+// src/rpc.ts
+import { spawn } from "child_process";
+import fs7 from "fs";
+import os from "os";
+import path7 from "path";
+var RPC_CHANNEL = "/heartbeat";
+var ok = (value) => ({ ok: true, value });
+var err = (code, message) => ({ ok: false, error: { code, message } });
+function homeSessionId(paths, guard) {
+  try {
+    const raw = loadEncryptedText(guard, path7.join(paths.dataDir, "gate.json"));
+    return JSON.parse(raw ?? "{}").sessionId ?? null;
+  } catch {
+    return null;
+  }
+}
+function loadSessionTitles() {
+  try {
+    const raw = JSON.parse(fs7.readFileSync(path7.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const titles = {};
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node)) {
+        if (key.startsWith("session-") && value && typeof value === "object") {
+          const rows = value.rows;
+          const t = rows?.title ?? value.title;
+          if (t && typeof t.val === "string" && t.val) titles[key] = t.val;
+        }
+        walk(value);
+      }
+    };
+    walk(raw);
+    return titles;
+  } catch {
+    return {};
+  }
+}
+function installHeartbeatRpc(ctx, deps) {
+  ctx.inject(["connection"], (scoped) => {
+    const remoteCtx = scoped;
+    const isLive = (sessionId) => {
+      try {
+        return !!remoteCtx.agents.get(sessionId);
+      } catch {
+        return false;
+      }
+    };
+    const handler = async (endpoint, payload) => {
+      const { guard, paths, policy } = deps;
+      const p = payload ?? {};
+      try {
+        switch (endpoint) {
+          case "status": {
+            const now = Date.now();
+            const sent = readSentState(guard, paths, now);
+            const beat2 = getLastBeat();
+            return ok({
+              now: new Date(now).toISOString(),
+              intervalMin: policy.heartbeat.intervalMin,
+              cap: { used: sent.items.length, max: policy.gate.maxDailySend },
+              quiet: inQuietHours(policy, now),
+              lastBeat: beat2,
+              homeSessionId: homeSessionId(paths, guard),
+              bindings: loadBindings(guard, paths.settingsDir).bindings.length
+            });
+          }
+          case "sessions.list": {
+            const root = path7.join(os.homedir(), ".dsh", "sessions");
+            const bindings = loadBindings(guard, paths.settingsDir).bindings;
+            const home = homeSessionId(paths, guard);
+            const titles = loadSessionTitles();
+            const out = [];
+            if (fs7.existsSync(root)) {
+              for (const slug of fs7.readdirSync(root)) {
+                for (const id of fs7.readdirSync(path7.join(root, slug))) {
+                  const binding = bindings.find((b) => b.sessionId === id);
+                  out.push({
+                    id,
+                    title: titles[id] ?? null,
+                    cwdSlug: slug,
+                    live: isLive(id),
+                    home: id === home,
+                    deliver: binding?.deliver ?? false,
+                    observe: binding?.observe ?? false
+                  });
+                }
+              }
+            }
+            return ok({ sessions: out });
+          }
+          case "bindings.get":
+            return ok(loadBindings(guard, paths.settingsDir));
+          case "bindings.add": {
+            const id = String(p.sessionId ?? "");
+            if (!id.startsWith("session-")) return err("bad-request", "sessionId must look like session-...");
+            const home = homeSessionId(paths, guard);
+            if (id === home) return err("bad-request", "\u8BE5\u4F1A\u8BDD\u662F\u5FC3\u8DF3\u6B63\u8EAB\uFF0C\u65E0\u9700\u7ED1\u5B9A\uFF08\u51B3\u7B56\u8F6E\u6B21\u56FA\u5B9A\u53D1\u751F\u5728\u6B63\u8EAB\uFF09");
+            const b = addBinding(guard, paths.settingsDir, id, {
+              deliver: p.deliver !== false,
+              observe: p.observe === true
+            });
+            return ok(b);
+          }
+          case "bindings.remove": {
+            const id = String(p.sessionId ?? "");
+            const removed = removeBinding(guard, paths.settingsDir, id);
+            let homeReset = false;
+            if (id === homeSessionId(paths, guard)) {
+              try {
+                fs7.rmSync(guard.assert(path7.join(paths.dataDir, "gate.json")), { force: true });
+                homeReset = true;
+              } catch {
+              }
+            }
+            return ok({ removed, homeReset });
+          }
+          case "seeds.list": {
+            const db = loadPool(guard, seedsFilePath(paths.dataDir));
+            return ok({
+              active: activeSeeds(db),
+              archived: archivedSeeds(db),
+              cap: policy.seeds.maxActive
+            });
+          }
+          case "seeds.archive": {
+            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ""), "completed");
+            return s ? ok(s) : err("not-found", "active seed not found");
+          }
+          case "seeds.restore": {
+            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ""));
+            return r.ok ? ok(r.seed) : err("restore-failed", r.reason);
+          }
+          case "seeds.delete": {
+            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? "")) });
+          }
+          case "profile.digest": {
+            const d = buildDigest(guard, paths, policy, {});
+            return ok({
+              tact: d.tact,
+              topic: d.topic,
+              wander: d.wander,
+              withinBudget: d.withinBudget
+            });
+          }
+          case "profile.export": {
+            const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+            const lines = [`# \u753B\u50CF\u5BFC\u51FA ${(/* @__PURE__ */ new Date()).toISOString()}`, ""];
+            for (const part of ["interest", "projects", "comm", "psy"]) {
+              lines.push(`## ${part}`);
+              for (const e of doc.partitions[part].entries) {
+                if (e.validTo !== null) continue;
+                lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
+              }
+            }
+            const out = path7.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+            writeText(guard, out, lines.join("\n") + "\n");
+            return ok({ path: out });
+          }
+          case "ledger.open": {
+            const f = ledgerFilePath(paths.dataDir);
+            if (!fs7.existsSync(guard.assert(f))) fs7.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+            spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+            return ok({ path: f });
+          }
+          default:
+            return err("bad-request", `unknown endpoint ${JSON.stringify(endpoint)}`);
+        }
+      } catch (e) {
+        return err("internal", String(e).slice(0, 200));
+      }
+    };
+    remoteCtx.connection.rpc.handle(RPC_CHANNEL, handler, { authority: "trusted-host" });
+    ctx.logger.info("heartbeat: rpc channel ready (%s)", RPC_CHANNEL);
+  });
 }
 
 // src/index.ts
@@ -1707,6 +1905,7 @@ function apply(ctx, config = {}) {
     guard.assert(paths.logsDir + "/heartbeat.jsonl"),
     { event: "plugin_init", dataDir: paths.dataDir }
   );
+  installHeartbeatRpc(ctx, { paths, guard, policy });
   startOrchestrator(deps);
   ctx.effect(() => {
     return () => {
