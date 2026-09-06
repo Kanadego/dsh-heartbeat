@@ -117,7 +117,7 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 npm install
 npm run build        # tsup → dist/
 npm run typecheck
-npm test             # 105 个单元测试（判定逻辑全注入时间，无 sleep）
+npm test             # 91 个单元测试（判定逻辑全注入时间，无 sleep）
 ```
 
 工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。

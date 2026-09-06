@@ -13,7 +13,7 @@
 | 形态 | DSH cordis 插件（进程内服务 + web client 卡片 + 独立 CLI） |
 | 宿主 | DSH 0.1.1-rc.2，web profile，Node ≥ 22.19（实测 24.19） |
 | 平台 | Windows 专属（PowerShell 探针 + DPAPI + WinRT toast） |
-| 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，105 个 |
+| 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，91 个 |
 | 运行数据 | `dataDir`（默认 `<包根>/data`；可在 profile 的 cordis.patch.yml 按 id 覆盖钉到自定义位置） |
 | 心跳节律 | 默认 20 min/跳（设置页/CLI 可调）；沉默轮零模型调用 |
 | 核心循环 | `core/orchestrator.ts`：§7 七相（维护→采集→闲逛→闸门→Digest→聚焦推理→投递→留痕） |
@@ -251,7 +251,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 9. 测试
 
-- 运行：`npm test`（node --test + tsx，105 个）；`npm run typecheck`；`npm run build`。
+- 运行：`npm test`（node --test + tsx，91 个）；`npm run typecheck`；`npm run build`。
 - 必测项与锚点：路径守卫 5 组向量（含 junction 逃逸）、闸门五闸顺序与 A5 语义、淘汰四规则+保护+合并、画像守卫（白名单/evidence/封顶/INVALIDATE 归属/老化）、journal verify/rebuild（含撕裂尾）、inbox 去重截断、闲逛裁决与 watchlist 假 fetcher、burn 预演与设置保留、配置两层合并与 fail-closed。
 - 时间全部注入（`now` 参数），无 sleep 依赖；vault 类测试真实 spawn PowerShell。
 

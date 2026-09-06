@@ -1,6 +1,6 @@
 {
   "name": "dsh-heartbeat",
-  "version": "2.0.0-alpha.1",
+  "version": "1.0.0",
   "description": "Heartbeat plugin for DeepSeek Harness: scheduled autonomous reflection loop with user profile, material pool, pace gate, and gated proactive expression.",
   "type": "module",
   "main": "dist/index.js",
