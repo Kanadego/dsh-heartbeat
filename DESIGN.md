@@ -281,3 +281,20 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 5. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
 6. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
 7. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。
+
+## 13. 会话修复工具（scripts/repair-session.mjs）
+
+故障特征：会话加载报 `SessionPersistenceCorruptionError: session event at seq N lacks an identified message`。
+根因（r5 已修）：投递/注入曾使用手写消息对象（缺 message id）写入会话事件流；现所有消息一律经宿主
+`createUserMessage` 严格工厂（orchestrator.hostUserMessage），工厂不可用即放弃投递并留痕。
+
+修复流程：
+1. **先关闭 DSH**（避免 flush 覆盖修复结果）；
+2. `node scripts/repair-session.mjs inspect "C:/Users/<user>/.dsh/sessions/<slug>/<sessionId>"` —— 只读扫描；
+3. `node scripts/repair-session.mjs fix <session-dir>` —— 自动备份 `.bak-<ts>` 后补 id（crypto.randomUUID）；
+4. 复验 inspect 应为 0；重启 DSH 重开会话。
+
+技术备忘：会话存储为**多帧 zstd**（宿主每次 flush 追加一帧）——`zstdDecompressSync` 只解第一帧，
+必须按 magic（28 B5 2F FD）切帧逐帧解压再拼接（脚本已实现，含假切分自动合并）。损坏特征扫描必须
+用精确签名（plugin 来源 + 顶层缺 id）——宿主自己的 assistant 推理事件（`message.reasoning`）天然没有
+顶层 id，宽松匹配会误报上千条。

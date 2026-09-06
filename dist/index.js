@@ -1327,23 +1327,16 @@ function assistantText(e) {
   }
   return "";
 }
+async function hostUserMessage(text, label) {
+  const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
+  return createUserMessage({
+    content: [{ type: "text", text }],
+    source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
+  });
+}
 async function agentTurn(deps, agent, prompt, label) {
   const before = agent.session.events.length;
-  let message;
-  try {
-    const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
-    message = createUserMessage({
-      content: [{ type: "text", text: prompt }],
-      source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
-    });
-  } catch {
-    message = {
-      role: "user",
-      content: [{ type: "text", text: prompt }],
-      source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
-    };
-  }
-  agent.followup(message);
+  agent.followup(await hostUserMessage(prompt, label));
   await withTimeout(agent.whenIdle(), IDLE_WAIT_TIMEOUT_MS, `${label}: whenIdle timeout`);
   const events = agent.session.events;
   for (let i = events.length - 1; i >= before; i--) {
@@ -1572,12 +1565,15 @@ async function expressionPhases(bc) {
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_skipped", sessionId: b.sessionId, reason: "not live" });
         continue;
       }
-      target.followup({
-        role: "user",
-        content: [{ type: "text", text: `\uFF08\u5FC3\u8DF3\u6295\u9012\uFF0C\u8BF7\u5728\u4E0B\u8F6E\u56DE\u5E94\u4E2D\u81EA\u7136\u5E26\u51FA\u8FD9\u53E5\u8BDD\uFF1A\uFF09${text}` }],
-        source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text }] }
-      });
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: b.sessionId });
+      try {
+        target.followup(await hostUserMessage(
+          `\uFF08\u5FC3\u8DF3\u6295\u9012\uFF0C\u8BF7\u5728\u4E0B\u8F6E\u56DE\u5E94\u4E2D\u81EA\u7136\u5E26\u51FA\u8FD9\u53E5\u8BDD\uFF1A\uFF09${text}`,
+          "delivery"
+        ));
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: b.sessionId });
+      } catch (e) {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_skipped", sessionId: b.sessionId, reason: String(e).slice(0, 120) });
+      }
     }
   } catch (e) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "deliver_error", error: String(e).slice(0, 120) });
