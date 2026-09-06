@@ -58,7 +58,7 @@ node <插件目录>/dist/cli/index.js profile export  # 画像解密导出（人
 
 ```powershell
 node dist/cli/index.js sessions list              # 枚举会话 id
-node dist/cli/index.js bind add session-xxxx      # 绑定投递（琥珀开口也会说到那里）
+node dist/cli/index.js bind add session-xxxx      # 绑定投递（agent开口也会说到那里）
 node dist/cli/index.js bind add session-xxxx --observe   # 绑定观察（对话变画像素材）
 node dist/cli/index.js bind remove session-xxxx   # 解绑
 ```
