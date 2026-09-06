@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { appendAuditLine } from '../core/audit-log.js';
 import { timeContext } from './timeflow.js';
 import { classifyProcess, type BusyRules } from '../gate/busy-rules.js';
 import type { PathGuard } from '../core/path-guard.js';
@@ -83,7 +84,33 @@ export function collectPulse(
   } catch {
     // thermometer failure must not block the heartbeat
   }
+  // v1.1 (§12 #3): append the raw pulse to the streaming log. Retention
+  // (envPulseHours) is pruned by the maintenance phase; the stream is plaintext
+  // like envpulse.json (aggregate stats only, no window titles/process names).
+  writePulseStream(paths, snapshot);
   return snapshot;
+}
+
+/**
+ * Append one pulse to the streaming log (logs/envpulse.jsonl). Pure side
+ * effect; failures must never block the heartbeat (caller contract).
+ */
+export function writePulseStream(paths: WorkspacePaths, snapshot: EnvSnapshot): void {
+  try {
+    appendAuditLine(path.join(paths.logsDir, 'envpulse.jsonl'), {
+      event: 'pulse',
+      takenAt: snapshot.takenAt,
+      idleSeconds: snapshot.idleSeconds,
+      presence: snapshot.presence,
+      windowClass: snapshot.windowClass,
+      daypart: snapshot.daypart,
+      weekday: snapshot.weekday,
+      isWeekend: snapshot.isWeekend,
+      festival: snapshot.festival,
+    });
+  } catch {
+    // stream append failure must not block the heartbeat
+  }
 }
 
 /** Read the latest persisted snapshot (no probing). */

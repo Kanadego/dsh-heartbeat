@@ -796,7 +796,24 @@ function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ 
     fs2.writeFileSync(path2.join(paths.dataDir, "envpulse.json"), JSON.stringify(snapshot, null, 1), "utf8");
   } catch {
   }
+  writePulseStream(paths, snapshot);
   return snapshot;
+}
+function writePulseStream(paths, snapshot) {
+  try {
+    appendAuditLine(path2.join(paths.logsDir, "envpulse.jsonl"), {
+      event: "pulse",
+      takenAt: snapshot.takenAt,
+      idleSeconds: snapshot.idleSeconds,
+      presence: snapshot.presence,
+      windowClass: snapshot.windowClass,
+      daypart: snapshot.daypart,
+      weekday: snapshot.weekday,
+      isWeekend: snapshot.isWeekend,
+      festival: snapshot.festival
+    });
+  } catch {
+  }
 }
 function readPulse(guard, paths) {
   try {
