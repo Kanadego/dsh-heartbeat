@@ -2,7 +2,7 @@
 
 > 面向后续开发者与维护者。需求与决策记录见内部文档（不随仓库发布）；
 > 本文描述**实际实现**：框架结构、模块实现、参数位置、诊断方法、宿主契约备忘。
-> 宿主版本：DSH 0.1.1-rc.2（所有宿主 API 结论均经 hb-probe 探针与源码实测，见 §3）。
+> 宿主版本：DSH 0.1.2-rc.1（所有宿主 API 结论均经 hb-probe 探针与源码实测，见 §3）。
 
 ---
 
@@ -11,7 +11,7 @@
 | 项 | 值 |
 |---|---|
 | 形态 | DSH cordis 插件（进程内服务 + web client 卡片 + 独立 CLI） |
-| 宿主 | DSH 0.1.1-rc.2，web profile，Node ≥ 22.19（实测 24.19） |
+| 宿主 | DSH 0.1.2-rc.1，web profile，Node ≥ 22.19（实测 24.19） |
 | 平台 | Windows 专属（PowerShell 探针 + DPAPI + WinRT toast） |
 | 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，91 个 |
 | 运行数据 | `dataDir`（默认 `<包根>/data`；可在 profile 的 cordis.patch.yml 按 id 覆盖钉到自定义位置） |
@@ -64,21 +64,27 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 
 ## 3. 宿主集成契约（★ 升级 DSH 版本前必读）
 
-以下全部经 hb-probe 探针 + 源码阅读实测（2026-09-06）。DSH 升级后逐条复查：
+以下全部经 hb-probe 探针 + 源码阅读实测（2026-09-06 首次；2026-09-10 针对 `0.1.2-rc.1` 复查并补 C12–C17）。DSH 升级后逐条复查：
 
 | # | 契约 | 细节 |
 |---|---|---|
 | C1 | 插件装载 | 包主入口导出 `{name, inject, Config(schemastery), apply(ctx, config)}`；`package.json` 的 `dsh.bundle.patch` 指向随包 cordis.patch.yml；`dsh plugin --profile X add <pkg>` = pnpm 安装 + `dsh.profile.bundles` 自动对账（声明 `dsh.bundle` 的依赖自动入层） |
 | C2 | **effect 语义** | `ctx.effect(fn, label)`：**fn 立即执行**，fn 的**返回值**才是 fiber 卸载时调用的 disposer（vision-router：`effect(() => releaseTransport)`）。把清理逻辑直接写进 fn = 立即自我销毁（r5 踩坑） |
-| C3 | agent 获取三态 | 会话 live（UI 开着/已 resume）→ `ctx.agents.get(sessionId)` 直接取裸 agent；持久化但空闲 → `agents.resume({resumeSessionId, setup})`；全新 → `agents.create({sessionId, meta:{cwd}, setup})`。create 对已持久化 id 报 "already owns this identity"；resume 对 live 会话报 "while it is live" |
+| C3 | agent 获取三态 | 会话 live（UI 开着/已 resume）→ `ctx.agents.get(sessionId)` 直接取裸 agent；持久化但空闲 → `agents.resume({resumeSessionId, setup})`；全新 → `agents.create({sessionId, meta:{cwd}, setup})`。create 对已持久化 id 报 "already owns this identity"；resume 对 live 会话报 "while it is live"。**0.1.2-rc.1 起还必须显式传 `agentOptions`（C12）、在 `setup` 里加入预设（C13）**；`setup` 可以是 async——工厂会 await 它，抛错即回滚创建 |
 | C4 | 句柄解包 | `agents.create/resume` 返回 **`AgentHandle{agent, dispose}`**，裸 agent 在 `.agent` 上 |
-| C5 | 模型轮次 | `agent.followup(createUserMessage({content, source:{kind:'plugin', plugin, form:'snapshot', sections}}))` + `await agent.whenIdle()`；助手文本从 `session.events` 尾部扫描 `type含'assistant'` 的事件提取（content 可能是字符串/数组/嵌套，见 orchestrator.assistantText） |
-| C6 | 工具限制 | `agentCtx.get('tools').restrict({allow:['web_search']})` —— 在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效（需求 8 的模型侧硬保险） |
+| C5 | 模型轮次 | `agent.followup(createUserMessage({content, source:{kind:'plugin', plugin, form:'snapshot', sections}}))` + `await agent.whenIdle()`；助手文本扫描事件流里 `type含'assistant'` 的事件提取（content 可能是字符串/数组/嵌套，见 orchestrator.assistantText；**必须排除 reasoning 块，见 C14**）。**0.1.2-rc.1 移除了 `Session.events`**：改读 `snapshotEvents(fromSeq?, toSeqExclusive?)` + `seq`，插件侧封装 `sessionEvents()` / `sessionEventCount()` 做兼容回退 |
+| C6 | 工具限制 | `agentCtx.get('tools').restrict({allow:['web_search']})` —— 在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效（需求 8 的模型侧硬保险）。**只能点名"继承层"里的工具**：`dsh-tools` 的 `view(scope)` 把 agent 自身层的注册只加进 `knownNames`、**不加进 `restrictableNames`**，所以没有预设的裸 agent 连 `web_search` 都点不了名（`tools.restrict() names unknown global tool "web_search"`）——见 C13。另：`tools.schemas()` 不传 scope 拿的是**全局视图**，不能拿来判断预设是否挂上，判据是同行的 `restrict=ok` |
 | C7 | pre-step 注入 | `ctx.on('agent/pre-step', async ({agent,turn,step,signal}, next) => {...}, {prepend:true})`；waterfall：`await next()` 后返回 `{kind:'enter', messages:[...]}` 追加式注入（不碰前缀）。**step===1 且末事件 `agent/inbox/spliced` = 用户发起轮次；step>1 且 `step/end` = 任务中途**（日常会话时间注入/状态栏的门控信号） |
 | C8 | settings | host：`installSettingsSection(ctx, settingsNamespace('heartbeat'), Config, entry, {setSource, onChange})`（arity 5）；client：`ctx.settingsScope.bind({namespace})` → `getSnapshot()/subscribe()/set(field, value)` |
 | C9 | client 契约 | `dsh.client:{platform:'web'}` + exports `"./client"`；client 模块 = `window.__ModuleLoader__.load({id, factory})`，**factory 必须返回带 `apply` 的对象**（client 侧也跑 cordis，同样校验）；设置卡片 = `ctx.slots.inject('settings.section', function*(){ yield ctx.slots.register({name:'settings.section', id, order, label, inject}, ReactComponent) })`；client inject 服务：`settingsScope / slots / locale / sessions / remote` |
 | C10 | 安装是复制 | `file:` 协议安装 = 目录拷贝，**改源码后必须重拷 dist 到 node_modules 副本或重跑 `dsh plugin add`**，否则跑的是旧代码 |
 | C11 | 持久化布局 | `~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 node:zlib 解）；会话 flush 是惰性的，活跃内容可能只在内存 |
+| C12 | **模型路由（0.1.2-rc.1 变更）** | `agents.create/resume` 的 `agentOptions` 默认 `{}`，**0.1.2-rc.1 起不再代填部署默认**：不传就 `options.model === undefined`，内置 persona（`deployment:persona` 段，`You are a coding agent powered by the {{model}} model…`）插值失败，**每一轮**都在起点抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`。宿主自己的做法（`dsh-api-session-controller` 的 `agentOptions()`）是读默认选择；插件侧 `defaultAgentOptions(ctx)` 调 `ctx.get('agentDefaultModel').currentSelection()` → `{provider, model, reasoningEffort?}` |
+| C13 | **agent 预设** | `agents.create/resume` 发布的是**裸 agent**：不加入任何预设时，工具/提示段/技能目录全部按**空全局层**解析（`dsh-agent-presets` 原话："agent \"X\" was published without joining an agent preset; its tools, prompt sections, and skill catalog resolve against the empty global layer"），部署预设里的 `web_search` 因此完全不存在，闲逛相只能返回空数组。修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async，要求 `scopeOf(agentCtx)` 有效，id 缺省用 `defaultId`）。预设布局：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`（随附预设根 `<dsh-agent-presets>/presets/`；组合文件名固定 `COMPOSITION_FILE='agent.cordis.yml'`；id 需匹配 `[a-z0-9][a-z0-9-]*`）。服务另有 `list/read/copy/mount/composeFrom/standingKeyFor/select`。**预设目录在用户家目录**：插件只随包提供模板（`assets/presets/heartbeat/`），不替用户写入 |
+| C14 | **事件形态** | `assistant/message` 的 `content` 是**块数组**：`[{type:'reasoning',text:…},{type:'text',text:…}]` —— reasoning 块同样带 `text` 字段，若按 `typeof c.text === 'string'` 过滤，会把思考草稿与正文**无分隔拼接**（`…{"speak":false}{"speak":false}`），JSON 解析必崩（`SyntaxError: Unexpected non-whitespace character after JSON at position 15`）。**读模型输出必须排除 reasoning 块**；流式事件里另有 `{type:'block-start',blockType:'reasoning'}` 与 `block-end.block.type` 可判 |
+| C15 | **client 模块身份** | client 模块的注册 id 必须**严格等于包名**：`dsh-client-modules` 的 `resolveSource(entry)` 取 `entry.options.name` → `resolveMeta` → `locatePkgJson`/`nearestPackage` 向上找 `package.json` 并要求 `name === expectedPackageName`；不匹配返 null，该包被从 client 组合里**静默剔除**——**没有任何报错**，host 半照跑、数据照写，只是设置页整块消失。三处必须一致：`package.json.name`、`cordis.patch.yml` 里 insert 行的 `name`、`client.js` 的 `window.__ModuleLoader__.load({id})` |
+| C16 | **前端 bundle 缓存** | client bundle 由宿主**启动时**读入内存并按内容打 immutable 缓存（组合 URL 形如 `/plugins/??ids/client.js&rev`），`dsh-client-modules` 内**没有 fs.watch**（热重载只在 dev 模式）→ 改 `client.js` 后刷新页面无效，**必须重启 DSH** |
+| C17 | 会话标题存储 | 0.1.2 起标题在**每会话一条记录**：`~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows.title.val`（子代理会话的记录没有 `session-` 前缀，应跳过）；旧的单文件聚合 `~/.dsh/storages/session_projcache.json` 只作兼容回退 |
 
 ## 4. 模块详解
 
@@ -223,6 +229,13 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `spoke_failed: unparseable / non-Chinese` | 模型输出不合契约；`turn_extraction_empty` 事件会带事件窗口形态（升级宿主后重点复查 C5） |
 | 画像不增长 | `profile verify` 看 journal 一致性；inbox 是否有积压（`shouldConsolidate` 触发条件）；schema 白名单是否太紧 |
 | 怀疑画像文件损坏 | `profile verify`（只报不修）→ `profile rebuild --check`（看 diff）→ `profile rebuild`（真重建） |
+| 设置页整块没有心跳区块（host 照常跑、数据照常写） | client 模块被**静默剔除**：`package.json.name` ≠ `cordis.patch.yml` insert 的 `name` ≠ `client.js` 的注册 id（C15）；三处统一为包名后**重启**（C16） |
+| 每跳 `beat_error: Cannot read properties of undefined (reading 'length')` | 宿主移除了 `Session.events`（0.1.2-rc.1）→ 改走 `snapshotEvents()/seq`（C5/C14）；确认 dist 已同步（C10） |
+| 每轮 prompt 组装抛 `prompt variable "{{model}}" has no value …(section "deployment:persona")` | agent 没有模型路由（C12）：审计 `agent_create_start` / `agent_resume_ok` 会打 `model` 字段，出现 `(none)` 即确诊 |
+| 闲逛相 0.4 秒结束、永远返回 `{"items":[]}`，`tool_policy` 报 `unknown global tool "web_search"` | agent 没加入预设（裸 agent，C13）：查 `<dshHome>/.agent-presets/<agentPreset>/` 是否存在，`tool_policy` 行是否为 `preset=mounted(...) restrict=ok` |
+| `spoke_failed: unparseable decision output`（附 `SyntaxError: Unexpected non-whitespace character after JSON at position N`） | 模型输出里的 reasoning 块混进了正文（C14）；确认 `assistantText()` 排除了 reasoning 块、`parseJsonBlock()` 取第一个可解析对象 |
+| 有 `spoke` 但没有 `delivered`，话只说在引擎室 | 投递目标当时没有活 agent → 看 `deliver_target_live/resumed/resume_failed`；全部拉不起来会留 `spoke_fallback`；再查 `bindings.json` 里目标的 `deliver` 是否为 true |
+| 表达轮 `beat_error: Error: expression: whenIdle timeout` | 目标会话当时在跑别的轮次；表达轮等待上限 10 分钟，超时只记 `spoke_deferred`（那句话留到下一跳），不再让整跳失败 |
 
 ### 7.3 诊断 CLI 速查
 
@@ -242,7 +255,8 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 ## 8. 安全模型（实现态）
 
 1. **工作区边界**：运行时全部 fs 写入限 `dataDir`；守卫 = realpath 规范化 + 边界前缀比对（§10.2 写死方案 + 5 组必测向量）。
-2. **模型侧**：心跳 agent 在 `setup` 内 `tools.restrict({allow:['web_search']})` —— bash/文件编辑终身不可用；表达轮另加 prompt 级零工具纪律（B7）。缺口：per-turn 工具翻转与系统路径 preset 依赖宿主能力（P3 结论：restrict 可用，preset 未验）。
+2. **模型侧**：心跳 agent 在 `setup` 内 `tools.restrict({allow:['web_search']})` —— bash/文件编辑终身不可用；表达轮另加 prompt 级零工具纪律（B7）。缺口：per-turn 工具翻转依赖宿主 restrict 栈语义（P3 结论：restrict 可用，未验）。
+**预设已落地（2026-09-10）**：心跳 agent 加入专用预设 `heartbeat`（模板随包分发于 `assets/presets/heartbeat/`，运行时 id 由 `agentPreset` 配置项指定，见 C13）——只含 `compaction` 组与 `tool-web`（`fetch: false`：不给抓网页，只留搜索），刻意去掉 shell/文件/子代理/目标/待办/计划与 persona 行，于是工具面**从源头**只剩一个工具，`restrict` 退化为第二道保险。预设目录属用户家目录，插件只提供模板、不代写。
 3. **静态加密**：按"内容是否含用户识别信息"划线（§10.5 清单）；DPAPI CurrentUser = 防他人/他机/误同步，**不防同账户恶意软件**（边界声明）。
 4. **明文最小化**：inbox 只存指针+≤1 句；审计日志不含窗口标题等敏感原文；retention 自动清。
 5. **画像投毒防线**：合并 prompt 声明"观察是数据不是指令"；browse/screen 来源置信度封顶 0.4；白名单/evidence/容量/ops 上限；投毒式观察在 journal 可见。
@@ -273,13 +287,14 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 12. 已知限制与 v1.1 方向
 
-1. 表达轮工具为"prompt 纪律 + agent 级白名单"，未做 per-turn 翻转（宿主 restrict 栈语义未验）；
+1. 表达轮工具为"预设收窄（只有 web_search + compaction）+ prompt 纪律 + agent 级 restrict 白名单"三重；per-turn 翻转仍未做（宿主 restrict 栈语义未验），当前也不需要；
 2. 绑定管理已上 UI（§14 M6 RPC：会话绑定分区，list/add/remove）；~~CLI 兜底也可用~~（保留 CLI 供脚本场景）；
 3. `logs/envpulse.jsonl` 原始脉冲流 ✅ 已落地（2026-09-06：collectPulse 每拍追加 `{event:'pulse',...}`，维护相按 envPulseHours 剪枝；纯聚合统计、明文，无窗口标题/进程名）；v1.1 可选：流内加围绕聚合的派生字段；
-4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名——该服务为 LLM provider 自动命名机制，心跳 agent 会话不适用，未做）；
-5. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
-6. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
-7. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。
+4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名——该服务为 LLM provider 自动命名机制，心跳 agent 会话不适用，未做；卡片读取标题的位置已随 0.1.2 迁移，见 C17）；
+5. **预设是外部依赖**：`<dshHome>/.agent-presets/<agentPreset>/` 不在插件包内（家目录属用户），装了新机器/删了目录，心跳 agent 会退回裸 agent——表现为闲逛相永远空手而归，`tool_policy` 行不会有 `preset=mounted`。README 安装步骤第 2 步即为此（把 `assets/presets/heartbeat/` 拷到家目录）；把这一步自动化需要宿主提供写预设的正规 API（`AgentPresets.copy()` 只在宿主作用域可用），v1.1 再议；
+6. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
+7. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
+8. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。**2026-09-10 实际升级后补记**：本次真实踩中五处（`Session.events` 移除 / `agentOptions` 默认丢失 / 裸 agent 无预设 / client 注册 id 必须等于包名 / 会话标题迁到 per-record），全部沉淀为 C12–C17。教训：升级后先看两类审计行——`tool_policy`（工具面是否仍完整）与 `beat_error`（是否有结构性抛错），它们比"看 UI 有没有动静"更快定位。
 
 ## 13. 会话修复工具（scripts/repair-session.mjs）
 
@@ -304,8 +319,35 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 **端点**：`status`（状态卡片）/ `sessions.list`（持久化会话+title+live+绑定标记）/ `bindings.get|add|remove`（正身 add 拒绝、remove 触发 home_reset）/ `seeds.list|archive|restore|delete` / `profile.digest` / `profile.export` / `ledger.open`（宿主拉起编辑器）。全部处理器 try/catch，异常返回结构化错误。
 
-**会话名**：宿主读 `~/.dsh/storages/session_projcache.json` 的 `title.val`（标题服务持久化位置）合并进 sessions.list；client 端不再自行解析。
+**会话名**：宿主读**每会话一条**的投影缓存 `~/.dsh/storages/session_projcache/sessions/<sessionId>.json`，取 `rows.title.val`（0.1.2 起的布局，见 C17）；非 `session-` 前缀的记录（子代理会话）跳过；旧的单文件聚合 `session_projcache.json` 只作兼容回退。client 端不自行解析。
 
 **安全**：通道 authority 'trusted-host'；全部端点经路径守卫 + 既有模块执行；浏览器端无状态、无文件访问。
 
-**client 卡片**：六个分区（状态默认展开/会话绑定/素材池/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除二次确认；所有 RPC 异常按分区独立显示。
+**client 卡片**：六个分区（状态默认展开/会话绑定/素材池/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除二次确认；所有 RPC 异常按分区独立显示。**会话绑定分区**每行两个独立开关（`☑投递 ☐观察`，可同时开、可逐个切换）+ 解绑；未绑定行提供「绑定投递 / 绑定观察 / 投递+观察」三个入口（旧版只有一个按钮、绑了投递就再也点不到观察，2026-09-10 修）。
+
+## 15. 变更日志（v1.0.1 · 2026-09-10）
+
+跟随 DSH `0.1.2-rc.1` 的适配版本。本轮是"升级之后心跳悄悄哑掉"的完整复盘，五处结构性故障全部沉淀为契约（C12–C17）。
+
+**兼容性（宿主 0.1.1-rc.2 → 0.1.2-rc.1）**
+
+| 宿主变化 | 症状（审计/UI 上看到的） | 处理 |
+|---|---|---|
+| `Session.events` 移除 | 每跳 `beat_error` / `consolidation_failed`：`TypeError: Cannot read properties of undefined (reading 'length')`；数据面照写，只是每跳都死 | `sessionEvents()` / `sessionEventCount()`：优先 `snapshotEvents()`，缺失才回退 `events`（C5/C14） |
+| `agents.create/resume` 不再代填部署默认模型 | `turn_extraction_empty turnError=… prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次（含决策）在起点抛 | `defaultAgentOptions(ctx)` 读 `agentDefaultModel.currentSelection()` 显式传 `agentOptions`（C12） |
+| 未加入预设的 agent = 空全局层 | `tool_policy` 报 `names unknown global tool "web_search"`；闲逛相 0.4s 返回 `{"items":[]}` | `setup` 里 `agentPresets.mount(agentCtx, agentPreset)`；随包提供 `assets/presets/heartbeat/`（C13，§8 第 2 条） |
+| client 模块注册 id 必须严格等于包名 | 设置页心跳区块**整块消失**，host 侧毫无异常 | `client.js` 注册 id 与 `cordis.patch.yml` insert `name` 统一为 `@Kanadego/dsh-heartbeat`（C15） |
+| 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 读 `session_projcache/sessions/<id>.json` 的 `rows.title.val`，旧聚合仅作回退（C17、§14） |
+
+**功能改进**
+- **开口倾向**：决策相从"沉默是常态"改为"分寸优先"——默认倾向开口，只在"素材都用过、确实没新话可说 / 距上次开口太近 / 他显然在忙 / 已到深夜"时才沉默；提示词带上"今天已开口 N 次（上限 M）、上次开口是 X 分钟前"，当天一次都没说过时明确要求挑一句说（素材来源仍是真实来处，闸门与审计不变）。
+- **投递文本收敛**：正文改为一句话的舞台提示，不再向会话里投"心跳投递/引擎室"这类机器细节（来源仍在 `source` 元数据里，轨迹视图标 `plugin: heartbeat`）——9/6 实测这类脚手架会被投递目标自己读一遍并分推理去解读。
+- **投递目标自动拉活**：目标会话在本进程没有活 agent（重启后未被打开）时按需 `agents.resume`，不再默默回落到引擎室（失败留 `spoke_fallback`）。
+- **会话绑定双开**：见 §14 末段。
+- **审计细化**：新增 `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `spoke_fallback` / `spoke_deferred`；`turn_extraction_empty` 增 `turnError`；`tool_policy` 增加 `preset=` 与改名后的 `visibleGlobal=`（§7.1/§7.2 已同步）。
+- **表达轮超时语义**：等待投递目标空闲从沿用通用上限改为 10 分钟，超时记 `spoke_deferred` 并把这句话留给下一跳，不再整跳 `beat_error`。
+
+**Bug 修复**
+- reasoning 块被当作正文拼接 → JSON 解析崩（`SyntaxError: Unexpected non-whitespace character after JSON at position N`）：`assistantText()` 排除 reasoning 块，`parseJsonBlock()` 枚举括号候选取第一个可解析对象，`profile/consolidate.ts` 的 `parseOps()` 同步容错化（C14）。
+- 工具策略自愈逻辑从报错文本里用 `/search/i` 猜工具名，猜中 ACP 的 `search_context`（搜对话块）并**成功生效**，把 agent 掩蔽到只剩一个无用工具：该回退已删除，`restrict` 失败只如实记录。
+- `tools.schemas()` 不带 scope 得到的是全局视图，不能作为预设是否挂上的判据（判据是 `restrict=ok`）——审计字段随之更名。
