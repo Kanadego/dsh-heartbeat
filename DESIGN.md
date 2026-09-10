@@ -245,6 +245,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `spoke_failed: unparseable decision output`（附 `SyntaxError: Unexpected non-whitespace character after JSON at position N`） | 模型输出里的 reasoning 块混进了正文（C14）；确认 `assistantText()` 排除了 reasoning 块、`parseJsonBlock()` 取第一个可解析对象 |
 | 有 `spoke` 但没有 `delivered`，话只说在引擎室 | 投递目标当时没有活 agent → 看 `deliver_target_live/resumed/resume_failed`；全部拉不起来会留 `spoke_fallback`；再查 `bindings.json` 里目标的 `deliver` 是否为 true |
 | 表达轮 `beat_error: Error: expression: whenIdle timeout` | 目标会话当时在跑别的轮次；表达轮等待上限 10 分钟，超时只记 `spoke_deferred`（那句话留到下一跳），不再让整跳失败 |
+| **侧栏某个会话行消失了**（会话内容还在，刷新就回来） | 心跳刚往那个"当时没打开"的会话投递过：审计会有 `deliver_target_resumed` + `delivered` + `deliver_target_released`。释放 agent → 宿主 `session/disposed` → `api-session/removed` → 前端删行（§12 第 9 条）。**不是会话损坏，刷新页面即回**；若伴随会话内容异常，才去查 §13 的会话修复工具 |
 
 ### 7.3 诊断 CLI 速查
 
@@ -307,6 +308,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 6. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
 7. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
 8. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。**2026-09-10 实际升级后补记**：本次真实踩中五处（`Session.events` 移除 / `agentOptions` 默认丢失 / 裸 agent 无预设 / client 注册 id 必须等于包名 / 会话标题迁到 per-record），全部沉淀为 C12–C17。教训：升级后先看两类审计行——`tool_policy`（工具面是否仍完整）与 `beat_error`（是否有结构性抛错），它们比"看 UI 有没有动静"更快定位。
+9. **投递后释放 agent 会让侧栏那一行暂时消失（已知副作用，2026-09-10 评估后决定保留）**：投递进"当时没有活 agent"的会话时，插件 resume 一个 agent、投完 `dispose()`（审计 `deliver_target_released`）→ 宿主 `session/disposed` → `ctx.emit("api-session/removed", session.id)`（`@deepseek-ai/dsh-api-session-controller/lib/index.js:2617-2618`）→ 前端 `ctx.remote.$on("api-session/removed", …) → sessions.handleSessionRemoved(sessionId)`（同包 `lib/client.js:2728-2730`）→ **侧栏移除该行；会话本体在持久化里，刷新页面即回**（前端重连后重新 list）。只影响当时没打开的会话（打开着的走 `deliver_target_live`，不碰）。曾评估的三个替代方案：①不释放、插件持有 handle（社区 `GengDaPeng/dsh-agent-message` 的做法）——但宿主 `createOrAdopt` 的 `const live = this.ctx.agents.get(sessionId); … if (live !== void 0) return live;`（`.../lib/index.js:406-408`）会**收养**这个 agent，而插件 resume 时给的 `setup` 复刻不了宿主 `composeAgent`（`.../lib/index.js:350-363` = `installSelection(agentCtx)` + `presets.mount(agentCtx, resolvedId)`）→ 那个真实会话会跑在缺预设/缺模型选择投影的半成品 agent 上（先例：2026-09-10 12:51 `deliver_target_live` 即一次收养，当场死于 `{{model}}`）；②只在目标会话已 live 时投递——心跳说话机会显著变少；③延迟释放——`removed` 只是晚到，不解决问题。用户拍板："都不能根治，就保持现状吧"，代价 = 需要时刷新一次页面。
 
 ## 13. 会话修复工具（scripts/repair-session.mjs）
 
