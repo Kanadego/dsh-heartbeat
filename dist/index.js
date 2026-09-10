@@ -1581,11 +1581,15 @@ async function acquireTargetAgent(deps, sessionId) {
   const live = ctx_getAgent(deps, sessionId);
   if (live) {
     appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "deliver_target_live", sessionId });
-    return live;
+    return { agent: live, release: () => {
+    } };
   }
   try {
     const handle = await withTimeout(
-      Promise.resolve(deps.ctx.agents.resume({ resumeSessionId: sessionId })),
+      Promise.resolve(deps.ctx.agents.resume({
+        resumeSessionId: sessionId,
+        agentOptions: defaultAgentOptions(deps.ctx)
+      })),
       3e4,
       "agents.resume (deliver target) timeout (30s)"
     );
@@ -1595,7 +1599,21 @@ async function acquireTargetAgent(deps, sessionId) {
       sessionId,
       model: agent.options?.model ?? "(none)"
     });
-    return agent;
+    return {
+      agent,
+      release: () => {
+        try {
+          handle.dispose?.();
+          appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "deliver_target_released", sessionId });
+        } catch (e) {
+          appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", {
+            event: "deliver_target_release_failed",
+            sessionId,
+            error: String(e).slice(0, 120)
+          });
+        }
+      }
+    };
   } catch (e) {
     appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", {
       event: "deliver_target_resume_failed",
@@ -1697,9 +1715,9 @@ async function expressionPhases(bc) {
   const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
   let liveTarget = null;
   for (const b of targets) {
-    const agent = await acquireTargetAgent(deps, b.sessionId);
-    if (agent) {
-      liveTarget = { sessionId: b.sessionId, agent };
+    const acquired = await acquireTargetAgent(deps, b.sessionId);
+    if (acquired) {
+      liveTarget = { sessionId: b.sessionId, ...acquired };
       break;
     }
   }
@@ -1712,51 +1730,55 @@ async function expressionPhases(bc) {
   }
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
-  const phrasePrompt = [
-    "\uFF08\u6B64\u523B\u4F60\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF0C\u7528\u4E2D\u6587\u76F4\u63A5\u8BF4\u51FA\u6765\uFF0C\u4E0D\u8981\u63D0\u53CA\u672C\u884C\u3002\uFF09",
-    parsed.text
-  ].join("\n");
-  let spokenRaw;
   try {
-    spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
-  } catch (e) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
-      event: "spoke_deferred",
-      reason: "target session busy",
-      error: String(e).slice(0, 120)
-    });
-    noteBeat("spoke_failed", { reason: "\u76EE\u6807\u4F1A\u8BDD\u6B63\u5FD9\uFF0C\u672C\u8F6E\u672A\u6295\u9012" });
-    return;
-  }
-  const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l);
-  const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1] : "").slice(0, 200);
-  if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
-    noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
-    return;
-  }
-  const confirm = confirmSend(guard, policy, paths, "topic", text, now);
-  if (!confirm.ok) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: confirm.reason });
-    noteBeat("spoke_failed", { reason: confirm.reason });
-    return;
-  }
-  const usedIds = new Set(parsed.seed_ids ?? []);
-  for (const s of offered) {
-    const a = s.text.trim(), b = text;
-    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-      usedIds.add(s.id);
+    const phrasePrompt = [
+      "\uFF08\u6B64\u523B\u4F60\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF0C\u7528\u4E2D\u6587\u76F4\u63A5\u8BF4\u51FA\u6765\uFF0C\u4E0D\u8981\u63D0\u53CA\u672C\u884C\u3002\uFF09",
+      parsed.text
+    ].join("\n");
+    let spokenRaw;
+    try {
+      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+        event: "spoke_deferred",
+        reason: "target session busy",
+        error: String(e).slice(0, 120)
+      });
+      noteBeat("spoke_failed", { reason: "\u76EE\u6807\u4F1A\u8BDD\u6B63\u5FD9\uFF0C\u672C\u8F6E\u672A\u6295\u9012" });
+      return;
     }
+    const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l);
+    const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1] : "").slice(0, 200);
+    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
+      noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
+      return;
+    }
+    const confirm = confirmSend(guard, policy, paths, "topic", text, now);
+    if (!confirm.ok) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: confirm.reason });
+      noteBeat("spoke_failed", { reason: confirm.reason });
+      return;
+    }
+    const usedIds = new Set(parsed.seed_ids ?? []);
+    for (const s of offered) {
+      const a = s.text.trim(), b = text;
+      if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
+        usedIds.add(s.id);
+      }
+    }
+    for (const id of usedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    }
+    sendNewMessageHint(paths);
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
+    if (voiceSessionId && voiceSessionId !== homeId) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
+    }
+    noteBeat("spoke", { text });
+  } finally {
+    liveTarget?.release();
   }
-  for (const id of usedIds) {
-    surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
-  }
-  sendNewMessageHint(paths);
-  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
-  if (voiceSessionId && voiceSessionId !== homeId) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
-  }
-  noteBeat("spoke", { text });
 }
 async function beat(deps) {
   if (beating) return;
