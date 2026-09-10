@@ -115,7 +115,7 @@ function sessionEventCount(session: HostSession | undefined): number {
 const TURN_TIMEOUT_MS = 180_000;
 const IDLE_WAIT_TIMEOUT_MS = 240_000;
 /**
- * 表达轮的等待上限单独放宽（2026-09-10）：投递目标是木偶人自己的会话，他（或琥珀）
+ * 表达轮的等待上限单独放宽（2026-09-10）：投递目标是用户自己的会话，他（或心跳正身）
  * 正在里面跑长回合时 `whenIdle()` 一直等不到空闲——那天 19:07 那句心声就是等了 4 分钟
  * 差 20 秒超时，整跳被打成 beat_error，话没送出去。10 分钟覆盖绝大多数长回合；
  * 超时也不再让整跳失败，只记一次 spoke_deferred 交给下一跳重来。
@@ -573,7 +573,7 @@ function ctx_getAgent(deps: OrchestratorDeps, sessionId: string): (HostAgent & {
  * Resume it on demand instead, mirroring the home session's acquisition.
  *
  * NOTE: never pass `setup` here. That closure mounts the heartbeat preset and
- * restricts tools to web_search — applying it to 木偶人's own session would
+ * restricts tools to web_search — applying it to the user's own session would
  * strip that session's normal toolset.
  */
 async function acquireTargetAgent(deps: OrchestratorDeps, sessionId: string): Promise<HostAgent | null> {
@@ -653,7 +653,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
 
   // ⑤a 决策轮（引擎室，零工具；机器输出留在正身，不投递）
   //
-  // 活泼度（2026-09-10 木偶人的要求：「一天下来一句话都没说，琥珀应该更活泼点」）：
+  // 活泼度（2026-09-10 用户的要求：一天下来一句话都没说，应该更活泼点）：
   // 原提示词以「沉默是常态」开头、判断参考里只有「不打扰 / 频率克制」，模型在
   // 素材陈旧时几乎必然输出 {"speak":false}，一天下来一句都没有。现在把默认倾向
   // 翻成「有话就说」，并把今天的开口次数 / 距上次开口的时长直接交给它自己掂量
@@ -715,13 +715,13 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
 
-  // 投递文本 = 写法①（木偶人 2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
+  // 投递文本 = 写法①（2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
   // 理由：9/6 那版（“请在下轮回应中自然带出这句话”）会让接收方先花推理去解析“这条注入是什么”，
   // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
   // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
   // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
   const phrasePrompt = [
-    '（此刻你想对木偶人说的一句话，用中文直接说出来，不要提及本行。）',
+    '（此刻你想说的一句话，用中文直接说出来，不要提及本行。）',
     parsed.text,
   ].join('\n');
   // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。

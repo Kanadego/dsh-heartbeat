@@ -1,5 +1,5 @@
 {
-  "_comment": "琥珀的兴趣追踪清单 v1。type=npm|github。新增一行=多一个好奇方向。查询频率由 browse.mjs 内置节流(默认6h/轮)，此处无需配置。",
+  "_comment": "心跳的兴趣追踪清单 v1。type=npm|github。新增一行=多一个好奇方向。查询频率由浏览相内置节流（默认 6h/轮），此处无需配置。",
   "targets": [
     { "id": "dsh-core", "type": "npm", "name": "@deepseek-ai/dsh", "note": "DeepSeek Harness 本体——我的家，升级前必知" },
     { "id": "presence-watch", "type": "github", "repo": "tomsteve1102/presence-watch", "note": "presence-watch——本项目的讨论起点（在场感知模块），值得长期围观" },

@@ -300,7 +300,7 @@ window.__ModuleLoader__.load({
 						null,
 						React.createElement("div", { style: rowStyle },
 							React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, "一键打开账本"),
-							React.createElement("span", { style: hintStyle }, ledgerMsg || "账本是琥珀的待办与话题来源，可直接手编")),
+							React.createElement("span", { style: hintStyle }, ledgerMsg || "账本是心跳 agent 的待办与话题来源，可直接手编")),
 					)),
 					React.createElement(Section, { title: "节律配置" }, React.createElement(ConfigSection, null)),
 				);

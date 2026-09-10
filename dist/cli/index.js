@@ -453,7 +453,7 @@ async function main(argv) {
       console.log("\u9884\u6F14\uFF08\u4E0D\u4F1A\u6267\u884C\uFF09:");
       for (const p of plan) console.log(`  [${p.exists ? "\u5B58\u5728" : "\u65E0  "}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
       if (!yes) {
-        console.log("\n\u6B64\u64CD\u4F5C\u8BA9\u7425\u73C0\u5931\u5FC6\u3002\u786E\u8BA4\u6267\u884C\u8BF7\u52A0 --yes\uFF08" + (all ? "\u542B --all \u8FDE\u7528\u6237\u8BBE\u5B9A" : "\u7528\u6237\u8BBE\u5B9A\u4FDD\u7559") + "\uFF09");
+        console.log("\n\u6B64\u64CD\u4F5C\u4F1A\u8BA9\u5FC3\u8DF3 agent \u5931\u5FC6\u3002\u786E\u8BA4\u6267\u884C\u8BF7\u52A0 --yes\uFF08" + (all ? "\u542B --all \u8FDE\u7528\u6237\u8BBE\u5B9A" : "\u7528\u6237\u8BBE\u5B9A\u4FDD\u7559") + "\uFF09");
         return 0;
       }
       const result = executeBurn(guard, paths, { all });
