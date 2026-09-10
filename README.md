@@ -15,7 +15,8 @@
 | **v1.1**（当前） | ≥ `0.1.2-rc.1` |
 | v1.0 | ≤ `0.1.1-rc.2` |
 
-> 两个版本都建议先装**心跳预设**（见〈安装〉第 2 步）：没有它，心跳 agent 是个"裸 agent"——工具面对空全局层求值，连 `web_search` 都看不见。
+> 两个版本都需要**心跳预设**：v1.1 会在插件首次启动时自动装好（见〈安装〉）；v1.0 要手动复制一次。
+> 没有它，心跳 agent 是个"裸 agent"——工具面对空全局层求值，连 `web_search` 都看不见。
 
 ---
 
@@ -43,23 +44,31 @@
 ## 安装 / 卸载
 
 ```powershell
-# 1) 装插件（构建产物随包分发，无需本地构建）
+# 装插件（构建产物随包分发，无需本地构建）——预设会在插件首次启动时自动装好
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
-
-# 2) 装心跳预设（必做，见下方说明）
-$preset = "$env:USERPROFILE\.dsh\.agent-presets\heartbeat"
-New-Item -ItemType Directory -Force -Path $preset | Out-Null
-Copy-Item <插件目录>\assets\presets\heartbeat\* $preset -Force
 
 # 卸载（插件本体干净移除；data/ 用户数据默认保留，--purge 才连删）
 dsh plugin --profile web remove dsh-heartbeat
 ```
 
-**为什么必须装预设**：心跳 agent 由宿主 `agents` 服务创建，**不经过会话启动选择器**，所以它默认不加入任何预设——
+**预设是自动装的**：插件启动时会检查 `<DSH_HOME>/.agent-presets/heartbeat/`——没有就按包内模板 `assets/presets/heartbeat/`
+建好（`agent.cordis.yml` + `preset.yml`），并且**已有文件永不覆写**（你自己改过的预设会被原样保留）。
+不需要任何手动复制；不想要这个行为就把插件 config 的 `installPreset` 设为 `false`。
+
+想手动检查或修复，用随包的 CLI：
+
+```powershell
+$env:HEARTBEAT_DATA_DIR = "<插件目录>\data"     # 与插件 config 的 dataDir 一致
+node <插件目录>\dist\cli\index.js preset status          # 装没装、跟模板是否一致
+node <插件目录>\dist\cli\index.js preset install         # 补装缺失的
+node <插件目录>\dist\cli\index.js preset install --force # 手改坏了、要还原成模板时用
+```
+
+**为什么要有预设**：心跳 agent 由宿主 `agents` 服务创建，**不经过会话启动选择器**，所以它默认不加入任何预设——
 而"没加入预设的 agent，其工具、prompt 段与技能目录一律对空全局层求值"。结果就是它看不到 `web_search`，
 闲逛相只能返回空素材。预设把这层补齐，同时把它的活法钉死：**只有 `tool-web` 一个工具 + `compaction` 折叠组**，
 没有 shell、文件、子代理、todo、skill。模板由随附的 `standard` 预设裁剪而来，随包在 `assets/presets/heartbeat/`；
-预设 id 可用插件 config 的 `agentPreset` 改。装好后审计日志里应出现 `preset=mounted(heartbeat) restrict=ok`——那就是成功了。
+预设 id 可用插件 config 的 `agentPreset` 改。装好后审计日志里应出现 `preset_install` 与 `preset=mounted(heartbeat) restrict=ok`——那就是成功了。
 
 重启 DSH 后生效。插件自动创建**专用心跳会话**并开始按节律运行。
 
@@ -126,6 +135,7 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 | 追踪哪些 npm/GitHub / 兴趣种子 | `config/watchlist.json`、`config/interests.json`（用户层同名文件整体替换） |
 | 忙闲类别表（哪些进程算忙） | `config/busy-rules.json` |
 | 心跳 agent 加入的预设 id（默认 `heartbeat`） | 插件 config（profile 的 `cordis.patch.yml` heartbeat 行 → `agentPreset`） |
+| 是否自动安装随包预设（默认 `true`） | 插件 config → `installPreset`（设为 `false` 即完全不管预设目录） |
 
 ## 数据与隐私
 
@@ -147,7 +157,7 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 npm install
 npm run build        # tsup → dist/
 npm run typecheck
-npm test             # 91 个单元测试（判定逻辑全注入时间，无 sleep）
+npm test             # 99 个单元测试（判定逻辑全注入时间，无 sleep）
 ```
 
 工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。
@@ -157,7 +167,8 @@ npm test             # 91 个单元测试（判定逻辑全注入时间，无 sl
 ### v1.1 · 2026-09-10
 
 这是**给新版宿主的版本**（DSH ≥ `0.1.2-rc.1`）：旧宿主请留在 v1.0。同时修掉几个把心跳按哑的 bug。
-**装之前请先看〈安装〉的第 2 步（装预设）**，详细的宿主契约变更见 [DESIGN.md §3](DESIGN.md) 与 §15。
+安装只需一条 `dsh plugin add`——**心跳预设由插件首次启动时自动装好**（已存在就一个字节都不动）。
+详细的宿主契约变更见 [DESIGN.md §3](DESIGN.md) 与 §15。
 
 **兼容性（DSH 0.1.1-rc.2 → 0.1.2-rc.1）**
 
@@ -165,7 +176,7 @@ npm test             # 91 个单元测试（判定逻辑全注入时间，无 sl
 |---|---|---|
 | `Session.events` 被移除，改 `snapshotEvents()` / `seq` | 每跳在 `agent.session.events.length` 上抛 `TypeError: Cannot read properties of undefined (reading 'length')`，整跳 `beat_error`、合并 `consolidation_failed` | 新增 `sessionEvents()` / `sessionEventCount()` 兼容层：优先 `snapshotEvents()`，缺失才回退 `events` |
 | `agents.create/resume` 不再代填部署默认模型 | agent 的 `options.model` 为 undefined → 每次 prompt 组装抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次在起点就死 | 新增 `defaultAgentOptions(ctx)`：读 `agentDefaultModel.currentSelection()`，显式传 `agentOptions` |
-| 未加入预设的 agent 只能看到空全局层 | `tools.restrict({allow:['web_search']})` 抛 `unknown global tool "web_search"`；闲逛相搜不了，只能返回 `{"items":[]}` | 新增**心跳预设**：`setup` 里 `agentPresets.mount(agentCtx, id)`，随包提供 `assets/presets/heartbeat/` |
+| 未加入预设的 agent 只能看到空全局层 | `tools.restrict({allow:['web_search']})` 抛 `unknown global tool "web_search"`；闲逛相搜不了，只能返回 `{"items":[]}` | 新增**心跳预设**：`setup` 里 `agentPresets.mount(agentCtx, id)`，随包提供 `assets/presets/heartbeat/`，**首次启动自动装到 `~/.dsh/.agent-presets/heartbeat/`** |
 | client 模块注册 id 必须严格等于包名 | id 不一致的包被从 client 组合里**静默剔除**：设置页心跳区块整块消失，host 侧却照常运行 | `client.js` 注册 id 与 `cordis.patch.yml` 的 insert name 统一为 `@Kanadego/dsh-heartbeat` |
 | 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 标题改读 `~/.dsh/storages/session_projcache/sessions/<id>.json`，旧的单文件聚合只作兼容回退 |
 | 前端 bundle 启动即读入内存、响应标 immutable，且无文件监听 | 改 `client.js` 后刷新页面拿不到新代码 | 前端改动必须重启 DSH（已写进文档） |
@@ -177,6 +188,7 @@ npm test             # 91 个单元测试（判定逻辑全注入时间，无 sl
 - **会话绑定可双开**：卡片的已绑定行新增 `☑投递 ☐观察` 两个独立开关（原来绑了投递就再也点不到"绑定观察"），未绑定列表增加一次「投递+观察」入口。
 - **投递目标自动拉活**：目标会话在本进程没有活 agent（重启后未被打开）时按需 `agents.resume`，不再默默说在自己房间里。
 - **审计更细**：新增 `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `spoke_fallback` / `spoke_deferred`；`turn_extraction_empty` 增加 `turnError` 字段（模型输出的终止错误原因）。
+- **预设自动安装**：插件启动时按 `agentPresets.roots` 找到真正的用户预设根，缺失就按包内模板补齐（审计打 `preset_install`）；**已有 composition 文件永不覆写**，手改过的自定义预设会被完整保留。CLI 加了 `preset status` / `preset install [--force]` 供人工检查修复——安装从"三步手工复制"变成"一条 add"。
 
 **Bug 修复**
 

@@ -1027,6 +1027,136 @@ function sendNewMessageHint(paths) {
   return r.status === 0 && /TOAST_SENT/.test(r.out);
 }
 
+// src/core/preset-install.ts
+import fs8 from "fs";
+import os from "os";
+import path11 from "path";
+import { fileURLToPath } from "url";
+var COMPOSITION_FILE = "agent.cordis.yml";
+var METADATA_FILE = "preset.yml";
+var BUNDLED_PRESET_ID = "heartbeat";
+function bundledPresetDir(moduleUrl, id = BUNDLED_PRESET_ID) {
+  let dir;
+  try {
+    dir = path11.dirname(fileURLToPath(moduleUrl));
+  } catch {
+    return void 0;
+  }
+  for (let depth = 0; depth < 5; depth += 1) {
+    const candidate = path11.join(dir, "assets", "presets", id);
+    if (fs8.existsSync(path11.join(candidate, COMPOSITION_FILE))) return candidate;
+    const parent = path11.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return void 0;
+}
+function userPresetRoot(roots) {
+  const found = roots?.find(
+    (root) => root?.trust === "user" && typeof root.path === "string" && root.path.length > 0
+  );
+  return found?.path === void 0 ? void 0 : path11.resolve(found.path);
+}
+function conventionalUserPresetRoot(env = process.env, home = os.homedir()) {
+  const override = env.DSH_HOME?.trim();
+  const root = override && override.length > 0 ? override : path11.join(home, ".dsh");
+  return path11.join(root, ".agent-presets");
+}
+function installBundledPreset(options) {
+  const id = options.id && options.id.length > 0 ? options.id : BUNDLED_PRESET_ID;
+  if (options.enabled === false) {
+    return { action: "skipped-disabled", id, detail: "installPreset=false" };
+  }
+  const bundledDir = bundledPresetDir(options.moduleUrl, BUNDLED_PRESET_ID);
+  if (id !== BUNDLED_PRESET_ID) {
+    return {
+      action: "skipped-custom-id",
+      id,
+      ...bundledDir === void 0 ? {} : { bundledDir },
+      detail: `only "${BUNDLED_PRESET_ID}" ships with the plugin; "${id}" is yours to provide`
+    };
+  }
+  if (bundledDir === void 0) {
+    return {
+      action: "error",
+      id,
+      detail: "bundled template not found next to the plugin (assets/presets/heartbeat)"
+    };
+  }
+  const root = options.root ?? (options.rosterKnown ? void 0 : conventionalUserPresetRoot());
+  if (root === void 0) {
+    return {
+      action: "skipped-no-root",
+      id,
+      bundledDir,
+      detail: "the roster mounts no user preset root (includeUserRoot=false)"
+    };
+  }
+  const dir = path11.join(root, id);
+  const composition = path11.join(dir, COMPOSITION_FILE);
+  try {
+    if (fs8.existsSync(composition)) {
+      if (options.force !== true) {
+        const drifted = !sameBytes(composition, path11.join(bundledDir, COMPOSITION_FILE));
+        return {
+          action: "exists",
+          id,
+          dir,
+          bundledDir,
+          detail: drifted ? "kept as-is (differs from the bundled template)" : "kept as-is"
+        };
+      }
+      fs8.copyFileSync(path11.join(bundledDir, COMPOSITION_FILE), composition);
+      return {
+        action: "restored",
+        id,
+        dir,
+        bundledDir,
+        detail: "composition replaced from the bundled template"
+      };
+    }
+    const existed = fs8.existsSync(dir);
+    fs8.mkdirSync(dir, { recursive: true });
+    fs8.copyFileSync(path11.join(bundledDir, COMPOSITION_FILE), composition);
+    const metadata = path11.join(dir, METADATA_FILE);
+    if (!fs8.existsSync(metadata)) fs8.copyFileSync(path11.join(bundledDir, METADATA_FILE), metadata);
+    return {
+      action: existed ? "repaired" : "created",
+      id,
+      dir,
+      bundledDir,
+      detail: existed ? "directory existed without a composition file (it occupied the id as a broken row)" : void 0
+    };
+  } catch (error) {
+    return { action: "error", id, dir, bundledDir, detail: String(error).slice(0, 200) };
+  }
+}
+function describeInstall(result) {
+  const where = result.dir === void 0 ? "" : ` (${result.dir})`;
+  const why = result.detail === void 0 ? "" : ` \u2014 ${result.detail}`;
+  return `preset ${result.id} ${result.action}${where}${why}`;
+}
+function presetStatus(moduleUrl, id = BUNDLED_PRESET_ID, root = conventionalUserPresetRoot()) {
+  const dir = path11.join(root, id);
+  const bundledDir = bundledPresetDir(moduleUrl, id);
+  const installed = fs8.existsSync(path11.join(dir, COMPOSITION_FILE));
+  return {
+    id,
+    dir,
+    ...bundledDir === void 0 ? {} : { bundledDir },
+    installed,
+    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path11.join(dir, COMPOSITION_FILE), path11.join(bundledDir, COMPOSITION_FILE)),
+    metadataMatches: bundledDir !== void 0 && fs8.existsSync(path11.join(dir, METADATA_FILE)) && sameBytes(path11.join(dir, METADATA_FILE), path11.join(bundledDir, METADATA_FILE))
+  };
+}
+function sameBytes(left, right) {
+  try {
+    return fs8.readFileSync(left).equals(fs8.readFileSync(right));
+  } catch {
+    return false;
+  }
+}
+
 export {
   createPathGuard,
   atomicWriteJsonSync,
@@ -1066,6 +1196,12 @@ export {
   verifyProfile,
   rebuildProfile,
   ensureRegistered,
-  sendNewMessageHint
+  sendNewMessageHint,
+  BUNDLED_PRESET_ID,
+  userPresetRoot,
+  conventionalUserPresetRoot,
+  installBundledPreset,
+  describeInstall,
+  presetStatus
 };
-//# sourceMappingURL=chunk-DR35M42C.js.map
+//# sourceMappingURL=chunk-2M35HRL6.js.map

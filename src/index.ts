@@ -16,6 +16,7 @@ import { deepMerge } from './config/schema.js';
 import { setRuntime, getRuntime } from './core/runtime.js';
 import { startOrchestrator, applyHeartbeatInterval, type OrchestratorDeps } from './core/orchestrator.js';
 import { installHeartbeatRpc } from './rpc.js';
+import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
 
 export const name = 'heartbeat';
 
@@ -38,6 +39,12 @@ export const Config = z.object({
    * against the empty global layer, so it cannot even see `web_search`.
    */
   agentPreset: z.string().default('heartbeat'),
+  /**
+   * Install the bundled preset (see `agentPreset`) into the roster's user root
+   * on first run, so setup needs no manual file copy. An existing preset is
+   * never overwritten; set false to manage the preset entirely by hand.
+   */
+  installPreset: z.boolean().default(true),
 });
 
 export interface HeartbeatConfig {
@@ -45,6 +52,7 @@ export interface HeartbeatConfig {
   intervalMin?: number;
   maxDailySend?: number;
   agentPreset?: string;
+  installPreset?: boolean;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
@@ -66,6 +74,40 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
 
   const deps: OrchestratorDeps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || 'heartbeat' };
   setRuntime({ paths, guard, policy });
+
+  // ── Bundled preset self-install (C13) ───────────────────────────────────
+  // The preset is what lets the heartbeat agent see `web_search` at all, and
+  // hand-copying two YAML files was the most error-prone step of setup, so the
+  // plugin installs its own template on first run. The target comes from the
+  // roster's own roots (`agentPresets.roots`, trust === "user") instead of a
+  // guessed `~/.dsh`, so `$DSH_HOME`/a configured home are honoured; an existing
+  // preset is never overwritten. Audit line: `preset_install`.
+  ctx.inject(['agentPresets'], (presetCtx: unknown) => {
+    const service = (presetCtx as {
+      agentPresets?: { roots?: Array<{ path?: string; trust?: string }> };
+    }).agentPresets;
+    const root = userPresetRoot(service?.roots);
+    const result = installBundledPreset({
+      moduleUrl: import.meta.url,
+      id: config.agentPreset || 'heartbeat',
+      ...(root === undefined ? { rosterKnown: service !== undefined } : { root }),
+      enabled: config.installPreset !== false,
+    });
+    try {
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
+        event: 'preset_install',
+        ...result,
+      });
+    } catch (e) {
+      ctx.logger.warn('heartbeat: preset_install audit failed (%s)', String(e).slice(0, 120));
+    }
+    const line = describeInstall(result);
+    if (result.action === 'error' || result.action === 'skipped-no-root') {
+      ctx.logger.warn('heartbeat: %s', line);
+    } else {
+      ctx.logger.info('heartbeat: %s', line);
+    }
+  });
 
   // M6: settings section (namespace 'heartbeat') - the web card edits this
   // namespace; resolved values apply live (interval reschedules the timer).

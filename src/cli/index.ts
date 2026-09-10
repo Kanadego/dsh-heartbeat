@@ -46,6 +46,13 @@ import {
 import { loadProfileSchema } from '../profile/schema.js';
 import { planBurn, executeBurn } from '../vault/burn-list.js';
 import { writeText } from '../vault/vault.js';
+import {
+  BUNDLED_PRESET_ID,
+  conventionalUserPresetRoot,
+  describeInstall,
+  installBundledPreset,
+  presetStatus,
+} from '../core/preset-install.js';
 
 function usage(): string {
   return [
@@ -79,6 +86,8 @@ function usage(): string {
     '  profile rebuild [--check]         rebuild materialized view from journal',
     '  profile wipe                      wipe profile data (asks --yes)',
     '  burn [--yes] [--all]              shred runtime data (settings kept unless --all)',
+    '  preset status                     bundled agent preset: target dir + installed?',
+    '  preset install [--force]          install the bundled preset (never overwrites unless --force)',
   ].join('\n');
 }
 
@@ -474,6 +483,42 @@ export async function main(argv: string[]): Promise<number> {
           console.error('usage: bind list | add <sessionId> | remove <sessionId>');
           return 1;
       }
+    }
+
+    case 'preset': {
+      const id = flag(argv, '--id') ?? BUNDLED_PRESET_ID;
+      // The plugin installs into the roster's own user root; the CLI has no
+      // roster, so it reports/uses the conventional one ($DSH_HOME or ~/.dsh).
+      const root = conventionalUserPresetRoot();
+      const status = presetStatus(import.meta.url, id, root);
+      if (sub === undefined || sub === 'status') {
+        console.log(`preset id   : ${status.id}`);
+        console.log(`installed   : ${status.installed ? 'yes' : 'no'}`);
+        console.log(`target dir  : ${status.dir}`);
+        console.log(`bundled at  : ${status.bundledDir ?? '(not found next to the plugin)'}`);
+        if (status.installed) {
+          console.log(
+            `composition : ${status.compositionMatches ? 'matches the bundled template' : 'differs from the bundled template (hand-edited, or an older version)'}`,
+          );
+        }
+        if (!status.installed) {
+          console.log('hint: the plugin installs this itself on the next DSH start (installPreset=true, default);');
+          console.log('      or run `preset install` now.');
+        }
+        return status.installed ? 0 : 1;
+      }
+      if (sub === 'install') {
+        const result = installBundledPreset({
+          moduleUrl: import.meta.url,
+          id,
+          root,
+          force: rest.includes('--force'),
+        });
+        console.log(describeInstall(result));
+        return result.action === 'error' ? 1 : 0;
+      }
+      console.error('usage: preset status | install [--force] [--id <presetId>]');
+      return 1;
     }
 
     default:
