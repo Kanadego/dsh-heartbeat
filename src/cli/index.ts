@@ -393,7 +393,7 @@ export async function main(argv: string[]): Promise<number> {
       console.log('预演（不会执行）:' );
       for (const p of plan) console.log(`  [${p.exists ? '存在' : '无  '}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
       if (!yes) {
-        console.log('\n此操作让琥珀失忆。确认执行请加 --yes（' + (all ? '含 --all 连用户设定' : '用户设定保留') + '）');
+        console.log('\n此操作会让心跳 agent 失忆。确认执行请加 --yes（' + (all ? '含 --all 连用户设定' : '用户设定保留') + '）');
         return 0;
       }
       const result = executeBurn(guard, paths, { all });

@@ -1710,7 +1710,7 @@ async function expressionPhases(bc) {
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
   const phrasePrompt = [
-    "\uFF08\u6B64\u523B\u4F60\u60F3\u5BF9\u6728\u5076\u4EBA\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF0C\u7528\u4E2D\u6587\u76F4\u63A5\u8BF4\u51FA\u6765\uFF0C\u4E0D\u8981\u63D0\u53CA\u672C\u884C\u3002\uFF09",
+    "\uFF08\u6B64\u523B\u4F60\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF0C\u7528\u4E2D\u6587\u76F4\u63A5\u8BF4\u51FA\u6765\uFF0C\u4E0D\u8981\u63D0\u53CA\u672C\u884C\u3002\uFF09",
     parsed.text
   ].join("\n");
   let spokenRaw;
