@@ -11,8 +11,10 @@ import {
   createPathGuard,
   deepMerge,
   deleteSeed,
+  describeInstall,
   ensureRegistered,
   gcPool,
+  installBundledPreset,
   ledgerFilePath,
   loadPolicy,
   loadPool,
@@ -27,8 +29,9 @@ import {
   scanPending,
   seedsFilePath,
   sendNewMessageHint,
-  surfaceSeed
-} from "./chunk-DR35M42C.js";
+  surfaceSeed,
+  userPresetRoot
+} from "./chunk-2M35HRL6.js";
 import {
   dedupeItems,
   inboxClear,
@@ -2030,7 +2033,13 @@ var Config = Schema.object({
    * Without a preset the agent is a BARE agent: tools/prompt sections resolve
    * against the empty global layer, so it cannot even see `web_search`.
    */
-  agentPreset: Schema.string().default("heartbeat")
+  agentPreset: Schema.string().default("heartbeat"),
+  /**
+   * Install the bundled preset (see `agentPreset`) into the roster's user root
+   * on first run, so setup needs no manual file copy. An existing preset is
+   * never overwritten; set false to manage the preset entirely by hand.
+   */
+  installPreset: Schema.boolean().default(true)
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
@@ -2044,6 +2053,30 @@ function apply(ctx, config = {}) {
   }
   const deps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || "heartbeat" };
   setRuntime({ paths, guard, policy });
+  ctx.inject(["agentPresets"], (presetCtx) => {
+    const service = presetCtx.agentPresets;
+    const root = userPresetRoot(service?.roots);
+    const result = installBundledPreset({
+      moduleUrl: import.meta.url,
+      id: config.agentPreset || "heartbeat",
+      ...root === void 0 ? { rosterKnown: service !== void 0 } : { root },
+      enabled: config.installPreset !== false
+    });
+    try {
+      appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), {
+        event: "preset_install",
+        ...result
+      });
+    } catch (e) {
+      ctx.logger.warn("heartbeat: preset_install audit failed (%s)", String(e).slice(0, 120));
+    }
+    const line = describeInstall(result);
+    if (result.action === "error" || result.action === "skipped-no-root") {
+      ctx.logger.warn("heartbeat: %s", line);
+    } else {
+      ctx.logger.info("heartbeat: %s", line);
+    }
+  });
   let sectionSource = null;
   const applySettingsOverrides = () => {
     try {

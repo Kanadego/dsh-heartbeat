@@ -81,7 +81,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C10 | 安装是复制 | `file:` 协议安装 = 目录拷贝，**改源码后必须重拷 dist 到 node_modules 副本或重跑 `dsh plugin add`**，否则跑的是旧代码 |
 | C11 | 持久化布局 | `~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 node:zlib 解）；会话 flush 是惰性的，活跃内容可能只在内存 |
 | C12 | **模型路由（0.1.2-rc.1 变更）** | `agents.create/resume` 的 `agentOptions` 默认 `{}`，**0.1.2-rc.1 起不再代填部署默认**：不传就 `options.model === undefined`，内置 persona（`deployment:persona` 段，`You are a coding agent powered by the {{model}} model…`）插值失败，**每一轮**都在起点抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`。宿主自己的做法（`dsh-api-session-controller` 的 `agentOptions()`）是读默认选择；插件侧 `defaultAgentOptions(ctx)` 调 `ctx.get('agentDefaultModel').currentSelection()` → `{provider, model, reasoningEffort?}` |
-| C13 | **agent 预设** | `agents.create/resume` 发布的是**裸 agent**：不加入任何预设时，工具/提示段/技能目录全部按**空全局层**解析（`dsh-agent-presets` 原话："agent \"X\" was published without joining an agent preset; its tools, prompt sections, and skill catalog resolve against the empty global layer"），部署预设里的 `web_search` 因此完全不存在，闲逛相只能返回空数组。修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async，要求 `scopeOf(agentCtx)` 有效，id 缺省用 `defaultId`）。预设布局：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`（随附预设根 `<dsh-agent-presets>/presets/`；组合文件名固定 `COMPOSITION_FILE='agent.cordis.yml'`；id 需匹配 `[a-z0-9][a-z0-9-]*`）。服务另有 `list/read/copy/mount/composeFrom/standingKeyFor/select`。**预设目录在用户家目录**：插件只随包提供模板（`assets/presets/heartbeat/`），不替用户写入 |
+| C13 | **agent 预设** | `agents.create/resume` 发布的是**裸 agent**：不加入任何预设时，工具/提示段/技能目录全部按**空全局层**解析（`dsh-agent-presets` 原话："agent \"X\" was published without joining an agent preset; its tools, prompt sections, and skill catalog resolve against the empty global layer"），部署预设里的 `web_search` 因此完全不存在，闲逛相只能返回空数组。修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async，要求 `scopeOf(agentCtx)` 有效，id 缺省用 `defaultId`）。预设布局：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`（随附预设根 `<dsh-agent-presets>/presets/`；组合文件名固定 `COMPOSITION_FILE='agent.cordis.yml'`；id 需匹配 `[a-z0-9][a-z0-9-]*`）。服务另有 `list/read/copy/mount/composeFrom/standingKeyFor/select`。**预设目录在用户家目录**，插件不要求用户手抄：模板随包在 `assets/presets/heartbeat/`，启动时自动补齐（见 C18） |
+| C18 | **预设自动安装** | 插件启动时（`ctx.inject(['agentPresets'], …)` 里）取 `agentPresets.roots`（**公开 getter**，返回 `resolvedRoots`）里 `trust === 'user'` 的那一项，作为真正被扫描的用户预设根——不必自己猜 `~/.dsh`，也不依赖 `@deepseek-ai/dsh-home-paths`（该包**不在** profile 的 node_modules 里，import 不到）。`installBundledPreset()` 的语义：目录/文件缺失 → 建（`created`）；目录在但缺 `agent.cordis.yml` → 补（`repaired`）；**已有 composition 文件一个字节都不动**（`exists`，手改过的自定义预设安全），只有 `force` 才覆盖（`restored`）；`installPreset:false` → `skipped-disabled`。CLI 走 `conventionalUserPresetRoot()`（`$DSH_HOME.trim() || home/.dsh` + `/.agent-presets`）。另：`dsh-agent-presets` 的 `list()` 每次调用都重新 readdir（`scanRoot`，**无缓存**），所以运行期新建的预设目录对下一次 `mount()` 立即可见，**不需要重启宿主** |
 | C14 | **事件形态** | `assistant/message` 的 `content` 是**块数组**：`[{type:'reasoning',text:…},{type:'text',text:…}]` —— reasoning 块同样带 `text` 字段，若按 `typeof c.text === 'string'` 过滤，会把思考草稿与正文**无分隔拼接**（`…{"speak":false}{"speak":false}`），JSON 解析必崩（`SyntaxError: Unexpected non-whitespace character after JSON at position 15`）。**读模型输出必须排除 reasoning 块**；流式事件里另有 `{type:'block-start',blockType:'reasoning'}` 与 `block-end.block.type` 可判 |
 | C15 | **client 模块身份** | client 模块的注册 id 必须**严格等于包名**：`dsh-client-modules` 的 `resolveSource(entry)` 取 `entry.options.name` → `resolveMeta` → `locatePkgJson`/`nearestPackage` 向上找 `package.json` 并要求 `name === expectedPackageName`；不匹配返 null，该包被从 client 组合里**静默剔除**——**没有任何报错**，host 半照跑、数据照写，只是设置页整块消失。三处必须一致：`package.json.name`、`cordis.patch.yml` 里 insert 行的 `name`、`client.js` 的 `window.__ModuleLoader__.load({id})` |
 | C16 | **前端 bundle 缓存** | client bundle 由宿主**启动时**读入内存并按内容打 immutable 缓存（组合 URL 形如 `/plugins/??ids/client.js&rev`），`dsh-client-modules` 内**没有 fs.watch**（热重载只在 dev 模式）→ 改 `client.js` 后刷新页面无效，**必须重启 DSH** |
@@ -94,6 +95,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 文件 | 职责 | 关键点 |
 |---|---|---|
 | `paths.ts` | dataDir 解析 + 包定位 | 优先级：env `HEARTBEAT_DATA_DIR` > 插件 config `dataDir` > `<包根>/data`；`initWorkspace` 幂等建目录（data/settings/logs/tmp/exports） |
+| `preset-install.ts` | 随包预设的安装/校验（C18） | `bundledPresetDir(moduleUrl, id)` 从模块 URL 向上 ≤5 层找 `assets/presets/<id>/agent.cordis.yml`（dist/index.js 与 dist/cli/index.js 两种深度都能命中）；`userPresetRoot(roots)` 取 roster 里 `trust==='user'` 的根；`installBundledPreset()` 永不覆写已有 composition；`presetStatus()` 供 `preset status` 比对模板 |
 | `path-guard.ts` | 路径白名单守卫 | **先 `fs.realpathSync` 规范化（不存在的目标：realpath 最深存在祖先 + 回拼缺失尾部），再与规范化后的 dataDir 做大小写不敏感、带分隔符边界的前缀比对**。必测向量：`..` 穿越/符号链接/8.3 短名/大小写/UNC（tests/path-guard.test.ts） |
 | `atomic-fs.ts` | 原子写 | 同目录随机 tmp + rename（Windows 下替换写）；`shredFileSync` 覆写 x N 后删除 |
 | `audit-log.ts` | JSONL 审计 | `appendAuditLine` / `readAuditLines`（坏行保留为标记）/ `pruneAuditFile`（按龄裁剪，原子重写） |
@@ -191,6 +193,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 忙闲类别表（哪些进程算忙） | `config/busy-rules.json`（busy/idle 进程映射 + 全屏游戏规则） | 重启 |
 | 数据目录位置 | profile 的 `cordis.patch.yml` → `id: heartbeat, config.dataDir`（本机已钉到工作区）；或 env `HEARTBEAT_DATA_DIR` | 重启 |
 | 日志保留期 | `policy.json` → `retention.*`（envpulse 流 48h / 决策日志 30 天） | 重启（维护相自动清理） |
+| 心跳 agent 用哪个预设 / 是否自动装预设 | profile 的 `cordis.patch.yml` → `id: heartbeat, config.agentPreset`（默认 `heartbeat`）/ `config.installPreset`（默认 `true`） | 重启 |
 
 > 原则（设计红线）：**画像只供给，不自动改配置**——rhythm 显示凌晨活跃也不会替你改 quiet_hours。
 
@@ -215,6 +218,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `consolidation` / `consolidation_failed` | 画像合并 | applied/rejected 计数 / LLM 输出不可用 |
 | `interval_changed` | settings/入口覆盖生效 | 确认卡片保存的值是否落到运行时 |
 | `retention` / `BURN_EVENT` | 清理/焚毁 | BURN_EVENT 是焚毁唯一痕迹 |
+| `preset_install` | 启动时对齐随包预设 | action：`exists`（已有，一字节没动）/ `created` / `repaired`（幽灵目录被补全）/ `restored`（force 覆盖）/ `skipped-*` / `error`；`skipped-no-root` = roster 里没有 user 根 |
 
 ### 7.2 症状 → 排查表
 
@@ -233,7 +237,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 设置页整块没有心跳区块（host 照常跑、数据照常写） | client 模块被**静默剔除**：`package.json.name` ≠ `cordis.patch.yml` insert 的 `name` ≠ `client.js` 的注册 id（C15）；三处统一为包名后**重启**（C16） |
 | 每跳 `beat_error: Cannot read properties of undefined (reading 'length')` | 宿主移除了 `Session.events`（0.1.2-rc.1）→ 改走 `snapshotEvents()/seq`（C5/C14）；确认 dist 已同步（C10） |
 | 每轮 prompt 组装抛 `prompt variable "{{model}}" has no value …(section "deployment:persona")` | agent 没有模型路由（C12）：审计 `agent_create_start` / `agent_resume_ok` 会打 `model` 字段，出现 `(none)` 即确诊 |
-| 闲逛相 0.4 秒结束、永远返回 `{"items":[]}`，`tool_policy` 报 `unknown global tool "web_search"` | agent 没加入预设（裸 agent，C13）：查 `<dshHome>/.agent-presets/<agentPreset>/` 是否存在，`tool_policy` 行是否为 `preset=mounted(...) restrict=ok` |
+| 闲逛相 0.4 秒结束、永远返回 `{"items":[]}`，`tool_policy` 报 `unknown global tool "web_search"` | agent 没加入预设（裸 agent，C13）：先 `node dist/cli/index.js preset status`（看 installed/是否与模板一致）；不一致或缺失就 `preset install`（手改过想还原加 `--force`，C18）；再看 `tool_policy` 行是否为 `preset=mounted(...) restrict=ok` |
+| `preset_install` 报 `skipped-no-root` / `agent-preset/not-found` | 用户预设根不在 roster（`$DSH_HOME` 被改过？）或 id 不在 `[a-z0-9][a-z0-9-]*`；`skipped-custom-id` = `agentPreset` 不是 `heartbeat`（插件不替你造自定义预设，请自行放好同名目录） |
 | `spoke_failed: unparseable decision output`（附 `SyntaxError: Unexpected non-whitespace character after JSON at position N`） | 模型输出里的 reasoning 块混进了正文（C14）；确认 `assistantText()` 排除了 reasoning 块、`parseJsonBlock()` 取第一个可解析对象 |
 | 有 `spoke` 但没有 `delivered`，话只说在引擎室 | 投递目标当时没有活 agent → 看 `deliver_target_live/resumed/resume_failed`；全部拉不起来会留 `spoke_fallback`；再查 `bindings.json` 里目标的 `deliver` 是否为 true |
 | 表达轮 `beat_error: Error: expression: whenIdle timeout` | 目标会话当时在跑别的轮次；表达轮等待上限 10 分钟，超时只记 `spoke_deferred`（那句话留到下一跳），不再让整跳失败 |
@@ -250,6 +255,8 @@ node dist/cli/index.js profile rebuild --check
 node dist/cli/index.js profile export    # 解密导出 Markdown 供人审
 node dist/cli/index.js logs cleanup --dry-run
 node dist/cli/index.js sessions list     # 枚举会话 id（绑定用）
+node dist/cli/index.js preset status     # 随包预设装没装、与模板是否一致
+node dist/cli/index.js preset install [--force] [--id <id>]
 node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all 连设置）
 ```
 
@@ -257,7 +264,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 1. **工作区边界**：运行时全部 fs 写入限 `dataDir`；守卫 = realpath 规范化 + 边界前缀比对（§10.2 写死方案 + 5 组必测向量）。
 2. **模型侧**：心跳 agent 在 `setup` 内 `tools.restrict({allow:['web_search']})` —— bash/文件编辑终身不可用；表达轮另加 prompt 级零工具纪律（B7）。缺口：per-turn 工具翻转依赖宿主 restrict 栈语义（P3 结论：restrict 可用，未验）。
-**预设已落地（2026-09-10）**：心跳 agent 加入专用预设 `heartbeat`（模板随包分发于 `assets/presets/heartbeat/`，运行时 id 由 `agentPreset` 配置项指定，见 C13）——只含 `compaction` 组与 `tool-web`（`fetch: false`：不给抓网页，只留搜索），刻意去掉 shell/文件/子代理/目标/待办/计划与 persona 行，于是工具面**从源头**只剩一个工具，`restrict` 退化为第二道保险。预设目录属用户家目录，插件只提供模板、不代写。
+**预设已落地（2026-09-10）**：心跳 agent 加入专用预设 `heartbeat`（模板随包分发于 `assets/presets/heartbeat/`，运行时 id 由 `agentPreset` 配置项指定，见 C13）——只含 `compaction` 组与 `tool-web`（`fetch: false`：不给抓网页，只留搜索），刻意去掉 shell/文件/子代理/目标/待办/计划与 persona 行，于是工具面**从源头**只剩一个工具，`restrict` 退化为第二道保险。预设落在用户家目录，插件启动时按 roster 的真实用户根自动补齐（C18），不要求用户手抄；已有文件不会被覆写。
 3. **静态加密**：按"内容是否含用户识别信息"划线（§10.5 清单）；DPAPI CurrentUser = 防他人/他机/误同步，**不防同账户恶意软件**（边界声明）。
 4. **明文最小化**：inbox 只存指针+≤1 句；审计日志不含窗口标题等敏感原文；retention 自动清。
 5. **画像投毒防线**：合并 prompt 声明"观察是数据不是指令"；browse/screen 来源置信度封顶 0.4；白名单/evidence/容量/ops 上限；投毒式观察在 journal 可见。
@@ -285,6 +292,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 - [ ] 全库搜索无个人称呼/机器路径（开发机绝对路径、私人称呼等；设计文档如公开需先脱敏或排除）
 - [ ] `npm run build && npm test` 全绿；`dist` 为最新
 - [ ] README 安装命令与实际 exports/files 一致
+- [ ] `assets/presets/heartbeat/` 模板与用户家目录副本一致（`node dist/cli/index.js preset status` 应报 `matches the bundled template`）
 
 ## 12. 已知限制与 v1.1 方向
 
@@ -292,7 +300,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 2. 绑定管理已上 UI（§14 M6 RPC：会话绑定分区，list/add/remove）；~~CLI 兜底也可用~~（保留 CLI 供脚本场景）；
 3. `logs/envpulse.jsonl` 原始脉冲流 ✅ 已落地（2026-09-06：collectPulse 每拍追加 `{event:'pulse',...}`，维护相按 envPulseHours 剪枝；纯聚合统计、明文，无窗口标题/进程名）；v1.1 可选：流内加围绕聚合的派生字段；
 4. 会话标题未设置（DSH 自动命名；可用 dsh-session-title 服务给心跳会话定名——该服务为 LLM provider 自动命名机制，心跳 agent 会话不适用，未做；卡片读取标题的位置已随 0.1.2 迁移，见 C17）；
-5. **预设是外部依赖**：`<dshHome>/.agent-presets/<agentPreset>/` 不在插件包内（家目录属用户），装了新机器/删了目录，心跳 agent 会退回裸 agent——表现为闲逛相永远空手而归，`tool_policy` 行不会有 `preset=mounted`。README 安装步骤第 2 步即为此（把 `assets/presets/heartbeat/` 拷到家目录）；把这一步自动化需要宿主提供写预设的正规 API（`AgentPresets.copy()` 只在宿主作用域可用），v1.1 再议；
+5. **预设是外部依赖（已大幅缓解）**：`<dshHome>/.agent-presets/<agentPreset>/` 不在插件包内（家目录属用户），删掉后心跳 agent 会退回裸 agent——表现为闲逛相永远空手而归、`tool_policy` 行没有 `preset=mounted`。v1.1 起插件会**在启动时自动补齐**该目录（C18；只补缺失，不动已有文件），所以这条从"必须手抄的安装步骤"降级为"删了会在下次启动自己回来"；仍未做的：把用户改过的旧模板自动升到新模板（会覆盖用户意图，故意不做，需要时用 `preset install --force`）；
 6. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
 7. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
 8. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。**2026-09-10 实际升级后补记**：本次真实踩中五处（`Session.events` 移除 / `agentOptions` 默认丢失 / 裸 agent 无预设 / client 注册 id 必须等于包名 / 会话标题迁到 per-record），全部沉淀为 C12–C17。教训：升级后先看两类审计行——`tool_policy`（工具面是否仍完整）与 `beat_error`（是否有结构性抛错），它们比"看 UI 有没有动静"更快定位。
@@ -338,7 +346,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 |---|---|---|
 | `Session.events` 移除 | 每跳 `beat_error` / `consolidation_failed`：`TypeError: Cannot read properties of undefined (reading 'length')`；数据面照写，只是每跳都死 | `sessionEvents()` / `sessionEventCount()`：优先 `snapshotEvents()`，缺失才回退 `events`（C5/C14） |
 | `agents.create/resume` 不再代填部署默认模型 | `turn_extraction_empty turnError=… prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次（含决策）在起点抛 | `defaultAgentOptions(ctx)` 读 `agentDefaultModel.currentSelection()` 显式传 `agentOptions`（C12） |
-| 未加入预设的 agent = 空全局层 | `tool_policy` 报 `names unknown global tool "web_search"`；闲逛相 0.4s 返回 `{"items":[]}` | `setup` 里 `agentPresets.mount(agentCtx, agentPreset)`；随包提供 `assets/presets/heartbeat/`（C13，§8 第 2 条） |
+| 未加入预设的 agent = 空全局层 | `tool_policy` 报 `names unknown global tool "web_search"`；闲逛相 0.4s 返回 `{"items":[]}` | `setup` 里 `agentPresets.mount(agentCtx, agentPreset)`；随包提供 `assets/presets/heartbeat/`，**启动时自动装到用户预设根**（C13/C18，§8 第 2 条） |
 | client 模块注册 id 必须严格等于包名 | 设置页心跳区块**整块消失**，host 侧毫无异常 | `client.js` 注册 id 与 `cordis.patch.yml` insert `name` 统一为 `@Kanadego/dsh-heartbeat`（C15） |
 | 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 读 `session_projcache/sessions/<id>.json` 的 `rows.title.val`，旧聚合仅作回退（C17、§14） |
 
@@ -349,6 +357,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 - **会话绑定双开**：见 §14 末段。
 - **审计细化**：新增 `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `spoke_fallback` / `spoke_deferred`；`turn_extraction_empty` 增 `turnError`；`tool_policy` 增加 `preset=` 与改名后的 `visibleGlobal=`（§7.1/§7.2 已同步）。
 - **表达轮超时语义**：等待投递目标空闲从沿用通用上限改为 10 分钟，超时记 `spoke_deferred` 并把这句话留给下一跳，不再整跳 `beat_error`。
+- **预设自动安装**（C18）：安装从"add 插件 + 手工复制两个文件到家目录"变成**一条 `dsh plugin add`**——启动时按 roster 的真实用户预设根补齐模板，**已有 composition 永不覆写**（手改过的自定义预设安全），审计打 `preset_install`；新增 CLI `preset status` / `preset install [--force]` 供人工检查与修复。
 
 **Bug 修复**
 - reasoning 块被当作正文拼接 → JSON 解析崩（`SyntaxError: Unexpected non-whitespace character after JSON at position N`）：`assistantText()` 排除 reasoning 块，`parseJsonBlock()` 枚举括号候选取第一个可解析对象，`profile/consolidate.ts` 的 `parseOps()` 同步容错化（C14）。

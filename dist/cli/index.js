@@ -1,4 +1,5 @@
 import {
+  BUNDLED_PRESET_ID,
   activeSeeds,
   addSeed,
   adviseWander,
@@ -9,9 +10,12 @@ import {
   browseStatus,
   checkWatchlist,
   completeWander,
+  conventionalUserPresetRoot,
   createPathGuard,
+  describeInstall,
   ensureRegistered,
   gcPool,
+  installBundledPreset,
   ledgerFilePath,
   loadInterests,
   loadPolicy,
@@ -19,6 +23,7 @@ import {
   loadProfile,
   loadWatchlist,
   markDone,
+  presetStatus,
   profileFilePath,
   pruneAuditFile,
   readLedger,
@@ -29,7 +34,7 @@ import {
   shredFileSync,
   surfaceSeed,
   verifyProfile
-} from "../chunk-DR35M42C.js";
+} from "../chunk-2M35HRL6.js";
 import {
   initWorkspace,
   loadEncryptedText,
@@ -155,7 +160,9 @@ function usage() {
     "  profile verify                    journal replay vs disk (report only)",
     "  profile rebuild [--check]         rebuild materialized view from journal",
     "  profile wipe                      wipe profile data (asks --yes)",
-    "  burn [--yes] [--all]              shred runtime data (settings kept unless --all)"
+    "  burn [--yes] [--all]              shred runtime data (settings kept unless --all)",
+    "  preset status                     bundled agent preset: target dir + installed?",
+    "  preset install [--force]          install the bundled preset (never overwrites unless --force)"
   ].join("\n");
 }
 function readStdinText() {
@@ -531,6 +538,39 @@ async function main(argv) {
           console.error("usage: bind list | add <sessionId> | remove <sessionId>");
           return 1;
       }
+    }
+    case "preset": {
+      const id = flag(argv, "--id") ?? BUNDLED_PRESET_ID;
+      const root = conventionalUserPresetRoot();
+      const status = presetStatus(import.meta.url, id, root);
+      if (sub === void 0 || sub === "status") {
+        console.log(`preset id   : ${status.id}`);
+        console.log(`installed   : ${status.installed ? "yes" : "no"}`);
+        console.log(`target dir  : ${status.dir}`);
+        console.log(`bundled at  : ${status.bundledDir ?? "(not found next to the plugin)"}`);
+        if (status.installed) {
+          console.log(
+            `composition : ${status.compositionMatches ? "matches the bundled template" : "differs from the bundled template (hand-edited, or an older version)"}`
+          );
+        }
+        if (!status.installed) {
+          console.log("hint: the plugin installs this itself on the next DSH start (installPreset=true, default);");
+          console.log("      or run `preset install` now.");
+        }
+        return status.installed ? 0 : 1;
+      }
+      if (sub === "install") {
+        const result = installBundledPreset({
+          moduleUrl: import.meta.url,
+          id,
+          root,
+          force: rest.includes("--force")
+        });
+        console.log(describeInstall(result));
+        return result.action === "error" ? 1 : 0;
+      }
+      console.error("usage: preset status | install [--force] [--id <presetId>]");
+      return 1;
     }
     default:
       console.error(`unknown command: ${cmd}`);
