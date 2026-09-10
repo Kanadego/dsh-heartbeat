@@ -62,11 +62,21 @@ export function shouldConsolidate(
   return { due: false, reason: 'not due', inboxBacklog: backlog };
 }
 
+/** Parse the model's JSON array, tolerating fences, surrounding prose, or a
+ * repeated array (scan every bracket-bounded candidate, left edge ascending,
+ * right edge descending, take the first slice that parses — a naive
+ * first-`[`-to-last-`]` slice can span two arrays and throw). */
 function parseOps(raw: string): ProfileOp[] {
-  const start = raw.indexOf('[');
-  const end = raw.lastIndexOf(']');
-  if (start < 0 || end < 0) throw new Error('no JSON array in LLM output');
-  return JSON.parse(raw.slice(start, end + 1)) as ProfileOp[];
+  const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  for (let start = text.indexOf('['); start >= 0; start = text.indexOf('[', start + 1)) {
+    for (let end = text.lastIndexOf(']'); end > start; end = text.lastIndexOf(']', end - 1)) {
+      try {
+        const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
+        if (Array.isArray(parsed)) return parsed as ProfileOp[];
+      } catch { /* try a shorter slice */ }
+    }
+  }
+  throw new Error(text.includes('[') ? 'unparseable JSON array in LLM output' : 'no JSON array in LLM output');
 }
 
 const RULES = [

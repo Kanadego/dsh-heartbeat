@@ -12,7 +12,7 @@
 //   - custom host data flows through the '/heartbeat' RPC channel:
 //     ctx.get('connection').rpc.call('/heartbeat', endpoint, payload, signal).
 window.__ModuleLoader__.load({
-	id: "dsh-heartbeat",
+	id: "@Kanadego/dsh-heartbeat",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -134,7 +134,16 @@ window.__ModuleLoader__.load({
 				if (!data) return React.createElement("div", { style: hintStyle }, "加载中…");
 				const bound = data.sessions.filter((s) => s.deliver || s.observe);
 				const doUnbind = (id) => rpc("bindings.remove", { sessionId: id }).then(reload, (e) => setError(String(e).slice(0, 100)));
-				const doBind = (id, observe) => rpc("bindings.add", { sessionId: id, deliver: !observe, observe }).then(reload, (e) => setError(String(e).slice(0, 100)));
+				const doBind = (id, deliver, observe) => rpc("bindings.add", { sessionId: id, deliver, observe }).then(reload, (e) => setError(String(e).slice(0, 100)));
+				// 已绑定的会话照样能改开关：D13 允许投递 + 观察同时开，所以这里按字段单独
+				// 翻转，而不是把会话当成"已绑定就锁死"。两个都关 = 真正解绑。
+				const setFlags = (id, deliver, observe) => {
+					const call = (!deliver && !observe)
+						? rpc("bindings.remove", { sessionId: id })
+						: rpc("bindings.add", { sessionId: id, deliver, observe });
+					return call.then(reload, (e) => setError(String(e).slice(0, 100)));
+				};
+				const flagStyle = (on) => (on ? buttonGhost : { ...buttonGhost, opacity: 0.5 });
 				// 会话名：宿主从 projcache 取 title；无 title 时回退 id 前缀
 				const nameOf = (s) => s.title || (s.home ? "心跳正身（引擎室）" : s.id.slice(0, 19) + "…");
 				const q = query.trim().toLowerCase();
@@ -143,11 +152,15 @@ window.__ModuleLoader__.load({
 				return React.createElement(
 					"div",
 					null,
-					React.createElement("div", { style: hintStyle }, "绑定 = 表达投递 + 对话观察（D13）。心跳正身的思考轮次固定在其自身会话，不受绑定影响。"),
+					React.createElement("div", { style: hintStyle }, "绑定 = 表达投递 + 对话观察（D13），两个开关可以同时开，也可以在下面逐个切换。心跳正身的思考轮次固定在其自身会话，不受绑定影响。"),
 					bound.map((s) => React.createElement("div", { key: s.id, style: rowList },
 						React.createElement("span", { style: { flex: 1, fontSize: 12 } },
 							"🔗 ", nameOf(s), "（", s.deliver ? "投递" : "", s.deliver && s.observe ? "+" : "", s.observe ? "观察" : "", "）"),
-						React.createElement("button", { style: buttonGhost, onClick: () => doUnbind(s.id) }, "解绑"),
+						React.createElement("span", { style: { display: "flex", gap: 4 } },
+							React.createElement("button", { style: flagStyle(s.deliver), title: s.deliver ? "点击关闭投递" : "点击开启投递", onClick: () => setFlags(s.id, !s.deliver, s.observe) }, (s.deliver ? "☑ " : "☐ ") + "投递"),
+							React.createElement("button", { style: flagStyle(s.observe), title: s.observe ? "点击关闭观察" : "点击开启观察", onClick: () => setFlags(s.id, s.deliver, !s.observe) }, (s.observe ? "☑ " : "☐ ") + "观察"),
+							React.createElement("button", { style: buttonGhost, onClick: () => doUnbind(s.id) }, "解绑"),
+						),
 					)),
 					bound.length === 0 ? React.createElement("div", { style: hintStyle }, "（暂无绑定会话——表达只出现在心跳正身会话）") : null,
 					React.createElement("div", { style: rowStyle },
@@ -162,8 +175,9 @@ window.__ModuleLoader__.load({
 							s.home ? null : React.createElement(
 								"span",
 								{ style: { display: "flex", gap: 4 } },
-								React.createElement("button", { style: buttonStyle, onClick: () => doBind(s.id, false) }, "绑定投递"),
-								React.createElement("button", { style: buttonGhost, onClick: () => doBind(s.id, true) }, "绑定观察"),
+								React.createElement("button", { style: buttonStyle, onClick: () => doBind(s.id, true, false) }, "绑定投递"),
+								React.createElement("button", { style: buttonGhost, onClick: () => doBind(s.id, false, true) }, "绑定观察"),
+								React.createElement("button", { style: buttonGhost, onClick: () => doBind(s.id, true, true) }, "投递+观察"),
 							),
 						)),
 					) : null,

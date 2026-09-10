@@ -1,0 +1,2 @@
+name: 心跳模式
+description: 心跳 agent 专用：仅 web_search + 上下文折叠；无 shell、无文件、无子代理。

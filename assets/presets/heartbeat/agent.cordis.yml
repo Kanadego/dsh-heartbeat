@@ -1,0 +1,66 @@
+# The `heartbeat` agent preset: the search-only composition the heartbeat agent
+# runs on.
+#
+# WHY THIS FILE EXISTS. An agent that joins NO preset resolves its tools, prompt
+# sections, and skill catalog against the EMPTY GLOBAL LAYER — `dsh-agent-presets`
+# warns about exactly that on `agent/created`, and the invariant companion fails
+# on it. The heartbeat agent is created through the host `agents` service, so it
+# never passed a session-start picker: it came up bare, and its tool surface held
+# only the process-global registrations of whatever plugins the profile loads
+# (acp/memory/undo/vision/...), never the deployment's model-facing rows. That is
+# why `tools.restrict({ allow: ['web_search'] })` threw
+#   unknown global tool "web_search"
+# on 2026-09-10, and why the wander phase could only answer `{"items":[]}`.
+#
+# This is a copy of the shipped `standard` composition, trimmed to what a
+# heartbeat turn may legitimately reach:
+#   - `tool-web`   — the wander phase's only tool (DESIGN B7: web_search only);
+#                    `fetch: false` keeps the surface at exactly one tool name.
+#   - `compaction` — the heartbeat session lives for months without being reset,
+#                    so its fold stack stays. The group realm is copied verbatim:
+#                    `compaction-basic` reads `toolResultPruner` through
+#                    `ctx.get`, so both rows must share it.
+#
+# Deliberately ABSENT, and why: shell (bash/pwsh), filesystem, skills, goals,
+# plan mode, delegation/subagents/workflows, todo, ask-user, agent-instructions,
+# and the `persona` row. A heartbeat turn searches, or it says nothing — it does
+# not touch the disk, spawn processes, or delegate. Dropping the `persona` row is
+# load-bearing: the shipped one says "You are a coding agent" and it SHADOWS the
+# deployment persona. This agent keeps the deployment persona (the soul card)
+# plus its own heartbeat prompt instead.
+#
+# The host plane keeps everything this file must not own: the `tools`,
+# `systemPrompt`, `agents` registries, the `web` service and its search
+# provider, the sandbox and approval stack, persistence, and the model route.
+
+# ── compaction ───────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── the one model-facing tool ────────────────────────────────────────────────
+
+# The `web` service and its search provider stay in the host composition; only
+# the model-facing tool is per-session.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000

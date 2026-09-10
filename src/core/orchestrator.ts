@@ -25,7 +25,7 @@ import { scanPending, ledgerFilePath } from '../ledger/ledger.js';
 import { collectPulse, readPulse } from '../env/envpulse.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
-import { runGate, confirmSend, sentFilePath } from '../gate/gate.js';
+import { runGate, confirmSend, readSentState, sentFilePath } from '../gate/gate.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
 import { adviseWander, checkWatchlist, completeWander, browseStatePath } from '../browse/browse.js';
 import { shouldConsolidate, runConsolidation } from '../profile/consolidate.js';
@@ -44,10 +44,14 @@ export interface OrchestratorDeps {
     };
     logger: { info(msg: string, ...a: unknown[]): void; warn(msg: string, ...a: unknown[]): void; error(msg: string, ...a: unknown[]): void };
     effect(fn: () => unknown, label?: string): () => void;
+    /** Cordis service lookup (used for `agentDefaultModel`). */
+    get?(name: string): unknown;
   };
   paths: WorkspacePaths;
   guard: PathGuard;
   policy: Policy;
+  /** Agent preset the heartbeat agent joins (composition entry `agentPreset`). */
+  agentPreset?: string;
 }
 
 /** Live-reschedule hook: the settings card may change the interval at runtime. */
@@ -61,15 +65,62 @@ export function applyHeartbeatInterval(deps: OrchestratorDeps, intervalMin: numb
   appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'interval_changed', intervalMin: v });
 }
 
+interface HostEvent {
+  type: string;
+  data?: unknown;
+}
+
+/** The harness `Session` surface we depend on. `events` existed up to
+ * 0.1.1-rc.2; 0.1.2-rc.1 removed it and exposes `snapshotEvents()` plus the
+ * `seq` counter (event seqs are contiguous, so index == seq). */
+interface HostSession {
+  id: string;
+  seq?: number;
+  snapshotEvents?(fromSeq?: number, toSeqExclusive?: number): HostEvent[];
+  events?: HostEvent[];
+}
+
 interface HostAgent {
   id: string;
-  session: { id: string; events: { type: string; data?: unknown }[] };
+  session: HostSession;
+  /** Route the agent was constructed with. `model` is what the web profile's
+   * built-in `deployment:persona` (`... powered by the {{model}} model ...`)
+   * interpolates, so it must never be empty. */
+  options?: { provider?: string; model?: string; reasoningEffort?: string };
   followup(message: unknown): unknown;
   whenIdle(): Promise<void>;
 }
 
+/** Read a session's event log across harness versions. 0.1.2-rc.1 dropped
+ * `Session.events`, so prefer the official snapshot accessor and keep the
+ * legacy property as a fallback for ≤0.1.1-rc.2. */
+function sessionEvents(session: HostSession | undefined): HostEvent[] {
+  if (!session) return [];
+  if (typeof session.snapshotEvents === 'function') {
+    try {
+      const snapshot = session.snapshotEvents();
+      if (Array.isArray(snapshot)) return snapshot;
+    } catch { /* fall through to the legacy accessor */ }
+  }
+  return Array.isArray(session.events) ? session.events : [];
+}
+
+/** Current event count; `seq` is the log length and costs no array copy. */
+function sessionEventCount(session: HostSession | undefined): number {
+  if (!session) return 0;
+  if (typeof session.seq === 'number') return session.seq;
+  return sessionEvents(session).length;
+}
+
 const TURN_TIMEOUT_MS = 180_000;
 const IDLE_WAIT_TIMEOUT_MS = 240_000;
+/**
+ * 表达轮的等待上限单独放宽（2026-09-10）：投递目标是木偶人自己的会话，他（或琥珀）
+ * 正在里面跑长回合时 `whenIdle()` 一直等不到空闲——那天 19:07 那句心声就是等了 4 分钟
+ * 差 20 秒超时，整跳被打成 beat_error，话没送出去。10 分钟覆盖绝大多数长回合；
+ * 超时也不再让整跳失败，只记一次 spoke_deferred 交给下一跳重来。
+ */
+const EXPRESSION_IDLE_WAIT_MS = 600_000;
 
 // persisted singletons across beats and boots
 let agentPromise: Promise<HostAgent | null> | null = null;
@@ -119,21 +170,114 @@ function safe<T>(fn: () => T, label: string): { ok: true; result: T } | { ok: fa
   }
 }
 
+/** The route the heartbeat agent must be built with.
+ *
+ * Why this exists (root cause of the 2026-09-09 → 09-10 silent heartbeat):
+ * the web profile registers the built-in persona
+ * `You are a coding agent powered by the {{model}} model. Your working
+ * directory is {{cwd}}.`, and `{{model}}` interpolates
+ * `agent.options.model` (registered in dsh-agent-loop). `agents.create` /
+ * `agents.resume` default `agentOptions` to `{}`, and 0.1.2-rc.1 stopped
+ * filling the deployment default for us — so an agent built without options
+ * has `options.model === undefined` and EVERY prompt assembly throws
+ * `prompt variable "{{model}}" has no value for this assembly (section
+ * "deployment:persona")`. Mirror what the host's own session API does
+ * (dsh-api-session-controller `agentOptions()`): read the default selection. */
+function defaultAgentOptions(ctx: OrchestratorDeps['ctx']): Record<string, unknown> | undefined {
+  try {
+    const service = (ctx.get?.('agentDefaultModel') ?? null) as
+      | { currentSelection?(): { provider?: string; model?: string; reasoningEffort?: string } }
+      | null;
+    const selection = service?.currentSelection?.();
+    if (selection && selection.provider && selection.model) {
+      return {
+        provider: selection.provider,
+        model: selection.model,
+        ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+      };
+    }
+    ctx.logger.warn('heartbeat: agentDefaultModel returned no usable selection');
+  } catch (e) {
+    ctx.logger.warn('heartbeat: agentDefaultModel unavailable (%s)', String(e).slice(0, 120));
+  }
+  return undefined;
+}
+
 async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
   if (agentPromise) return agentPromise;
   const { ctx, paths, guard } = deps;
+  const agentOptions = defaultAgentOptions(ctx);
   agentPromise = (async () => {
     const saved = readBeatState(guard, paths);
     const savedId = saved.sessionId;
-    const setup = (agentCtx: { get(name: string): unknown }) => {
-      // Hard tool policy (requirement 8, model side): the heartbeat agent
-      // may ONLY search. bash/fs/edit/etc. are denied for its lifetime.
+    const setup = async (agentCtx: { get(name: string): unknown }) => {
+      // ── Composition FIRST (root cause of the 2026-09-10 empty wander) ────
+      // `agents.create` / `agents.resume` publish a BARE agent: it joins no
+      // preset, so its tools, prompt sections and skill catalog resolve
+      // against the EMPTY global layer. `web_search` is not registered
+      // globally — it comes from the deployment's preset rows — so the
+      // heartbeat agent could not search at all, and `tools.restrict()` could
+      // not name it either ("names unknown global tool"), because only
+      // INHERITED tools are restrictable (dsh-tools `view()` adds agent-local
+      // registrations to `knownNames` but not to `restrictableNames`).
+      // dsh-agent-presets states the consequence verbatim: "agent was
+      // published without joining an agent preset; its tools, prompt sections,
+      // and skill catalog resolve against the empty global layer".
+      // Mounting here parents the agent's scope under the preset's standing
+      // subtree; the setup hook is awaited by the factory, and a rejection
+      // rolls the creation back.
+      const notes: string[] = [];
+      const presetId = deps.agentPreset ?? 'heartbeat';
       try {
-        const tools = agentCtx.get('tools') as { restrict?(filter: { allow: string[] }): unknown } | undefined;
-        tools?.restrict?.({ allow: ['web_search'] });
+        const presets = agentCtx.get('agentPresets') as
+          | { mount?(ctx: unknown, id?: string): Promise<unknown> }
+          | undefined;
+        if (typeof presets?.mount !== 'function') {
+          notes.push('preset=no-api');
+        } else {
+          const preset = await presets.mount(agentCtx, presetId);
+          const joined = (preset as { id?: string } | undefined)?.id;
+          notes.push(`preset=mounted(${joined ?? presetId})`);
+        }
       } catch (e) {
-        ctx.logger.warn('heartbeat: tools.restrict unavailable (%s)', String(e).slice(0, 120));
+        notes.push(`preset=threw(${String(e).slice(0, 200)})`);
       }
+      // ── Runtime belt-and-braces (requirement 8, model side) ──────────────
+      // The preset is structural; this is the explicit allow-list. bash / fs /
+      // edit / subagent rows are absent from the preset already, so a failure
+      // here is a degraded-but-safe outcome, not a hole.
+      const tools = agentCtx.get('tools') as
+        | { restrict?(filter: { allow: string[] }): unknown; schemas?(scope?: unknown): { name?: string }[] }
+        | undefined;
+      if (typeof tools?.restrict !== 'function') {
+        notes.push('restrict=no-api');
+      } else {
+        const allow = ['web_search'];
+        try {
+          tools.restrict({ allow });
+          notes.push(`restrict=ok allow=${allow.join('|')}`);
+        } catch (e) {
+          // Never guess a substitute from the error text. The previous version
+          // retried with any `*search*` name the message listed, which picked
+          // ACP's `search_context` (conversation-block search, useless for the
+          // web) and SUCCEEDED — masking the agent down to one wrong tool.
+          notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
+        }
+        try {
+          // NOTE: `schemas()` with no scope argument is the GLOBAL view by
+          // contract (dsh-tools `schemas(scope)` -> `view(scope)`, "omitted =
+          // the global view"), so this list deliberately excludes preset rows
+          // such as web_search. It is a sanity read of the process-global
+          // layer, not the agent's surface — `restrict=ok` above is the line
+          // that proves the preset landed.
+          const visible = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? '?')).sort();
+          notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(',') : '(empty)'}`);
+        } catch (e) {
+          notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
+        }
+      }
+      ctx.logger.info('heartbeat: tool policy %s', notes.join(' '));
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'tool_policy', policy: notes.join(' ') });
     };
     // Handles wrap the bare agent: {agent, dispose} (r2 §14 verified shape).
     const unwrap = (handle: unknown): HostAgent => (handle as { agent?: HostAgent }).agent ?? (handle as HostAgent);
@@ -153,9 +297,9 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
         } else {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_start', sessionId: savedId });
           try {
-            const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, setup })), 30_000, 'agents.resume timeout (30s)');
+            const handle = await withTimeout(Promise.resolve(ctx.agents.resume({ resumeSessionId: savedId, ...(agentOptions ? { agentOptions } : {}), setup })), 30_000, 'agents.resume timeout (30s)');
             agent = unwrap(handle);
-            appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_ok', sessionId: savedId });
+            appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_ok', sessionId: savedId, model: agent.options?.model ?? '(none)' });
           } catch (resumeErr) {
             appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
               event: 'agent_resume_failed', sessionId: savedId,
@@ -164,26 +308,26 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
             // Home session deleted/unrecoverable: recreate. Try the same id
             // first (persistence gone = id is free), then a fresh uuid.
             try {
-              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, setup })), 30_000, 'agents.create (self-heal) timeout');
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, ...(agentOptions ? { agentOptions } : {}), setup })), 30_000, 'agents.create (self-heal) timeout');
               agent = unwrap(handle);
-              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: savedId, selfHealed: true });
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: savedId, selfHealed: true, model: agent.options?.model ?? '(none)' });
             } catch {
               const freshId = `session-${randomUUID()}`;
-              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: freshId, meta: { cwd: paths.dataDir }, setup })), 30_000, 'agents.create (fresh) timeout');
+              const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: freshId, meta: { cwd: paths.dataDir }, ...(agentOptions ? { agentOptions } : {}), setup })), 30_000, 'agents.create (fresh) timeout');
               agent = unwrap(handle);
               writeBeatState(guard, paths, { sessionId: agent.session?.id ?? freshId });
-              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: agent.session?.id ?? freshId, selfHealed: true, fresh: true });
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: agent.session?.id ?? freshId, selfHealed: true, fresh: true, model: agent.options?.model ?? '(none)' });
             }
           }
         }
       } else {
         const sessionId = `session-${randomUUID()}`;
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_start', sessionId });
-        const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId, meta: { cwd: paths.dataDir }, setup })), 30_000, 'agents.create timeout (30s)');
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_start', sessionId, model: agentOptions?.model ?? '(none)' });
+        const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId, meta: { cwd: paths.dataDir }, ...(agentOptions ? { agentOptions } : {}), setup })), 30_000, 'agents.create timeout (30s)');
         agent = unwrap(handle);
         const realId = agent.session?.id ?? sessionId;
         writeBeatState(guard, paths, { sessionId: realId });
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: realId });
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_create_ok', sessionId: realId, model: agent.options?.model ?? '(none)' });
       }
       ctx.logger.info('heartbeat: dedicated session ready (%s)', agent.session?.id ?? '(unknown)');
       return agent;
@@ -197,7 +341,12 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
   return agentPromise;
 }
 
-/** Extract assistant text from a session event (shape-defensive). */
+/** Extract assistant text from a session event (shape-defensive).
+ *
+ * Reasoning blocks are NOT the answer. `deepseek-flash` drafts the same JSON in
+ * its reasoning (`… Output: {"speak":false}`) and repeats it in the text block;
+ * concatenating both produced `{"speak":false}{"speak":false}`, which broke
+ * JSON.parse at position 15 (2026-09-10). Keep only real text blocks. */
 function assistantText(e: { type: string; data?: unknown }): string {
   const data = e.data as
     | { content?: unknown; message?: { content?: unknown } }
@@ -205,12 +354,34 @@ function assistantText(e: { type: string; data?: unknown }): string {
   const content = data?.content ?? data?.message?.content;
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    return (content as { type?: string; text?: string }[])
-      .filter((c) => c.type === 'text' || typeof c.text === 'string')
-      .map((c) => c.text ?? '')
-      .join('');
+    return (content as { type?: string; text?: unknown }[])
+      .filter((c) => c.type !== 'reasoning' && typeof c.text === 'string')
+      .map((c) => String(c.text))
+      .join('\n');
   }
   return '';
+}
+
+/** Terminal error of the last turn in `events[from..]`, when it failed.
+ * Provider/adapter/prompt-assembly failures end the turn without ever logging
+ * an assistant message, so they are invisible unless we read the turn's end
+ * reason (or the finish chunk carrying the same failure). */
+function terminalTurnError(events: HostEvent[], from: number): string | undefined {
+  for (let i = events.length - 1; i >= from; i--) {
+    const e = events[i]!;
+    if (e.type === 'turn/end') {
+      const reason = (e.data as { reason?: { kind?: string; error?: { code?: string; message?: string } } } | undefined)?.reason;
+      if (reason?.kind !== 'error') return undefined; // completed turn, just no text
+      return [reason.error?.code, reason.error?.message].filter(Boolean).join(' ') || 'turn error (no detail)';
+    }
+    if (e.type === 'assistant/chunk') {
+      const chunk = (e.data as { chunk?: { type?: string; reason?: { kind?: string; failure?: { code?: string; message?: string } } } } | undefined)?.chunk;
+      if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+        return [chunk.reason.failure?.code, chunk.reason.failure?.message].filter(Boolean).join(' ') || 'turn error (no detail)';
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Strict host message factory. Throws if dsh-llm is unavailable — we NEVER
@@ -225,11 +396,17 @@ async function hostUserMessage(text: string, label: string): Promise<unknown> {
 }
 
 /** Run one model turn on the heartbeat agent; returns the assistant text. */
-async function agentTurn(deps: OrchestratorDeps, agent: HostAgent, prompt: string, label: string): Promise<string> {
-  const before = agent.session.events.length;
+async function agentTurn(
+  deps: OrchestratorDeps,
+  agent: HostAgent,
+  prompt: string,
+  label: string,
+  idleWaitMs: number = IDLE_WAIT_TIMEOUT_MS,
+): Promise<string> {
+  const before = sessionEventCount(agent.session);
   agent.followup(await hostUserMessage(prompt, label));
-  await withTimeout(agent.whenIdle(), IDLE_WAIT_TIMEOUT_MS, `${label}: whenIdle timeout`);
-  const events = agent.session.events;
+  await withTimeout(agent.whenIdle(), idleWaitMs, `${label}: whenIdle timeout`);
+  const events = sessionEvents(agent.session);
   // Scan backwards: the LAST assistant text wins (final step over reasoning).
   for (let i = events.length - 1; i >= before; i--) {
     const e = events[i]!;
@@ -242,8 +419,13 @@ async function agentTurn(deps: OrchestratorDeps, agent: HostAgent, prompt: strin
     type: e.type,
     dataKeys: e.data && typeof e.data === 'object' ? Object.keys(e.data as object).slice(0, 6) : [],
   }));
+  // A turn that dies on a provider/adapter/prompt-assembly error logs NO
+  // assistant message at all, so the shapes alone never explain it. Surface the
+  // terminal reason alongside them (2026-09-09: turns 46-48 were NO_ADAPTER and
+  // a missing {{model}} prompt variable — both invisible in the old audit line).
+  const turnError = terminalTurnError(events, before);
   appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
-    event: 'turn_extraction_empty', label, window: shapes.slice(0, 12),
+    event: 'turn_extraction_empty', label, ...(turnError ? { turnError } : {}), window: shapes.slice(0, 12),
   });
   return '';
 }
@@ -260,11 +442,21 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   }
 }
 
+/** Parse the model's JSON object, tolerating the shapes a chat model actually
+ * emits: ```json fences, prose before/after, or a repeated object. Scan every
+ * brace-bounded candidate (left edge ascending, right edge descending) and take
+ * the first slice that parses — a naive first-`{`-to-last-`}` slice spans two
+ * objects and throws. */
 function parseJsonBlock(raw: string): unknown {
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start < 0 || end < 0) throw new Error('no JSON object in model output');
-  return JSON.parse(raw.slice(start, end + 1));
+  const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+    for (let end = text.lastIndexOf('}'); end > start; end = text.lastIndexOf('}', end - 1)) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch { /* try a shorter slice */ }
+    }
+  }
+  throw new Error(text.includes('{') ? 'unparseable JSON object in model output' : 'no JSON object in model output');
 }
 
 // ── phase implementations (§7) ──────────────────────────────────────────
@@ -332,7 +524,7 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
     try {
       const agent = ctx_getAgent(deps, b.sessionId);
       if (!agent) continue; // not live: nothing to observe this beat
-      const events = agent.session?.events ?? [];
+      const events = sessionEvents(agent.session);
       const cursor = cursors[b.sessionId] ?? 0;
       let last = cursor;
       let added = 0;
@@ -368,6 +560,41 @@ function ctx_getAgent(deps: OrchestratorDeps, sessionId: string): (HostAgent & {
     const agent = deps.ctx.agents.get(sessionId) as HostAgent | undefined;
     return agent ?? null;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * A deliver target is reachable only while its session has a LIVE agent in this
+ * DSH process. A restart drops every agent except the ones the UI re-opens, so a
+ * session that is merely visible in the sidebar has none — and the old code
+ * silently fell back to the engine room (audit: `spoke` with no `delivered`,
+ * 2026-09-10 19:43 the target had just been bound but never re-opened).
+ * Resume it on demand instead, mirroring the home session's acquisition.
+ *
+ * NOTE: never pass `setup` here. That closure mounts the heartbeat preset and
+ * restricts tools to web_search — applying it to 木偶人's own session would
+ * strip that session's normal toolset.
+ */
+async function acquireTargetAgent(deps: OrchestratorDeps, sessionId: string): Promise<HostAgent | null> {
+  const live = ctx_getAgent(deps, sessionId);
+  if (live) {
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_target_live', sessionId });
+    return live;
+  }
+  try {
+    const handle = await withTimeout(
+      Promise.resolve(deps.ctx.agents.resume({ resumeSessionId: sessionId })),
+      30_000, 'agents.resume (deliver target) timeout (30s)');
+    const agent = ((handle as { agent?: HostAgent }).agent ?? (handle as HostAgent));
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'deliver_target_resumed', sessionId, model: agent.options?.model ?? '(none)',
+    });
+    return agent;
+  } catch (e) {
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'deliver_target_resume_failed', sessionId, error: String(e).slice(0, 160),
+    });
     return null;
   }
 }
@@ -425,9 +652,23 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
 
   // ⑤a 决策轮（引擎室，零工具；机器输出留在正身，不投递）
+  //
+  // 活泼度（2026-09-10 木偶人的要求：「一天下来一句话都没说，琥珀应该更活泼点」）：
+  // 原提示词以「沉默是常态」开头、判断参考里只有「不打扰 / 频率克制」，模型在
+  // 素材陈旧时几乎必然输出 {"speak":false}，一天下来一句都没有。现在把默认倾向
+  // 翻成「有话就说」，并把今天的开口次数 / 距上次开口的时长直接交给它自己掂量
+  // 分寸——不该说的场景仍然留在提示词里，但不再是默认答案。
+  const sent = readSentState(guard, paths, now);
+  const lastSentTs = sent.items.length > 0 ? sent.items[sent.items.length - 1]!.ts : null;
+  const gapText = lastSentTs === null
+    ? '今天还一句话都没说过。'
+    : `上次开口是 ${Math.max(1, Math.round((now - lastSentTs) / 60_000))} 分钟前。`;
   const decisionPrompt = [
-    '这是心跳轮次的决策环节：判断此刻有没有值得对主人说的一句话。沉默是常态。',
-    '判断参考：有来处（素材/账本/画像）/ 不打扰 / 频率克制。',
+    '这是心跳轮次的决策环节：判断此刻有没有想对主人说的一句话。',
+    '默认倾向是开口。有来处（素材/账本/画像）最好；只是想他了、看到好东西想分享、想起一件旧事，也算理由。',
+    '只有这几种情况才沉默：素材都用过且确实没什么新话可说 / 刚开口不久 / 他显然在忙 / 已到深夜。',
+    `今天已开口 ${sent.items.length} 次（上限 ${policy.gate.maxDailySend} 次）；${gapText}`,
+    '今天一次都没说过时，除非他正在忙或已到深夜，请挑一句说。',
     '不要使用任何工具。只输出一个 JSON 对象：',
     '- 沉默：{"speak":false}',
     '- 开口：{"speak":true,"text":"想说的一句话（一两句中文）","seed_ids":["sN"]}',
@@ -453,21 +694,47 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     return;
   }
 
-  // ⑤b 表达轮：在投递目标会话的 agent 上出声（无 live 目标则回落正身）。
+  // ⑤b 表达轮：在投递目标会话的 agent 上出声（无可用目标才回落正身）。
   const { loadBindings, deliverTargets } = await import('./bindings.js');
   const data = loadBindings(guard, paths.settingsDir);
   const homeId = bc.agent.session?.id ?? null;
-  const liveTarget = deliverTargets(data)
-    .map((b) => ({ sessionId: b.sessionId, agent: ctx_getAgent(deps, b.sessionId) }))
-    .find((x) => x.agent && x.sessionId !== homeId);
+  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  let liveTarget: { sessionId: string; agent: HostAgent } | null = null;
+  for (const b of targets) {
+    const agent = await acquireTargetAgent(deps, b.sessionId);
+    if (agent) { liveTarget = { sessionId: b.sessionId, agent }; break; }
+  }
+  if (!liveTarget && targets.length > 0) {
+    // Never silently reroute: an un-live target is the difference between
+    // "she spoke to him" and "she spoke in her own room".
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'spoke_fallback', reason: 'no deliver target could be brought live',
+      targets: targets.map((t) => t.sessionId).join(','),
+    });
+  }
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
 
+  // 投递文本 = 写法①（木偶人 2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
+  // 理由：9/6 那版（“请在下轮回应中自然带出这句话”）会让接收方先花推理去解析“这条注入是什么”，
+  // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
+  // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
+  // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
   const phrasePrompt = [
-    '用你自己的口吻，自然地说出下面这句心声（一两句中文；不要解释、不要引号、不要复述本指令；不要使用工具；全程只使用中文）：',
-    `『${parsed.text}』`,
+    '（此刻你想对木偶人说的一句话，用中文直接说出来，不要提及本行。）',
+    parsed.text,
   ].join('\n');
-  const spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression');
+  // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
+  let spokenRaw: string;
+  try {
+    spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
+  } catch (e) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
+    });
+    noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
+    return;
+  }
   // 表达文本：剥离思考块后取最后一行非空内容（模型可能漏出思考过程）。
   const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
     .split('\n').map((l) => l.trim()).filter((l) => l);

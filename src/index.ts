@@ -32,12 +32,19 @@ export const Config = z.object({
   intervalMin: z.number().default(0),
   /** UI-editable: daily expression cap. 0 = use policy file / factory. */
   maxDailySend: z.number().default(0),
+  /**
+   * Agent preset the heartbeat agent joins (`<dshHome>/.agent-presets/<id>/`).
+   * Without a preset the agent is a BARE agent: tools/prompt sections resolve
+   * against the empty global layer, so it cannot even see `web_search`.
+   */
+  agentPreset: z.string().default('heartbeat'),
 });
 
 export interface HeartbeatConfig {
   dataDir?: string | null;
   intervalMin?: number;
   maxDailySend?: number;
+  agentPreset?: string;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
@@ -57,7 +64,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     policy = { ...policy, gate: { ...policy.gate, maxDailySend: config.maxDailySend } };
   }
 
-  const deps: OrchestratorDeps = { ctx, paths, guard, policy };
+  const deps: OrchestratorDeps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || 'heartbeat' };
   setRuntime({ paths, guard, policy });
 
   // M6: settings section (namespace 'heartbeat') - the web card edits this
