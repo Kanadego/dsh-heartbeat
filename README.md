@@ -1,11 +1,14 @@
 # dsh-heartbeat
 
 > 让 DeepSeek Harness Agent 拥有持续存在感与自主生活流的心跳插件。
-> 她能自己醒来、维护自己的记忆与画像、感知环境与忙闲、按分寸决定是否开口——沉默是常态。
+> 她能自己醒来、维护自己的记忆与画像、感知环境与忙闲、按分寸决定是否开口——开口要有真实来处，沉默要有具体理由。
 
-[![host](https://img.shields.io/badge/DSH-0.1.1--rc.2-blue)](https://github.com/deepseek-ai/deepseek-harness)
+[![host](https://img.shields.io/badge/DSH-0.1.2--rc.1-blue)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
+
+> **v1.0.1 基线**：需要 DSH ≥ `0.1.2-rc.1`，并且要先装**心跳预设**（见〈安装〉第 2 步）。
+> 没有预设，心跳 agent 是个"裸 agent"——工具面对空全局层求值，连 `web_search` 都看不见。
 
 ---
 
@@ -22,7 +25,8 @@
 
 核心设计（详见 [DESIGN.md](DESIGN.md)）：
 
-- **沉默是常态**：闸门前置，SILENT 轮零模型调用；"没有真实来处的话，一句都别说"
+- **分寸优先，不是沉默优先**：闸门前置，SILENT 轮零模型调用；决策轮的默认倾向是开口——
+  每天至少说一句，除非他正忙或已到深夜。那条底线没变："没有真实来处的话，一句都别说"
 - **素材池是缓存不是记忆**：TTL/消费退休/冷板凳/容量挤出四条确定性淘汰，画像单向隔离
 - **用户画像**：本地结构化档案（兴趣/项目/沟通偏好/心理基线），bi-temporal + 来源强制，
   stable/volatile 分档（稳定特质不因时间遗忘），journal 单一权威可重建
@@ -32,12 +36,23 @@
 ## 安装 / 卸载
 
 ```powershell
-# 安装（构建产物随包分发，无需本地构建）
+# 1) 装插件（构建产物随包分发，无需本地构建）
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
+
+# 2) 装心跳预设（必做，见下方说明）
+$preset = "$env:USERPROFILE\.dsh\.agent-presets\heartbeat"
+New-Item -ItemType Directory -Force -Path $preset | Out-Null
+Copy-Item <插件目录>\assets\presets\heartbeat\* $preset -Force
 
 # 卸载（插件本体干净移除；data/ 用户数据默认保留，--purge 才连删）
 dsh plugin --profile web remove dsh-heartbeat
 ```
+
+**为什么必须装预设**：心跳 agent 由宿主 `agents` 服务创建，**不经过会话启动选择器**，所以它默认不加入任何预设——
+而"没加入预设的 agent，其工具、prompt 段与技能目录一律对空全局层求值"。结果就是它看不到 `web_search`，
+闲逛相只能返回空素材。预设把这层补齐，同时把它的活法钉死：**只有 `tool-web` 一个工具 + `compaction` 折叠组**，
+没有 shell、文件、子代理、todo、skill。模板由随附的 `standard` 预设裁剪而来，随包在 `assets/presets/heartbeat/`；
+预设 id 可用插件 config 的 `agentPreset` 改。装好后审计日志里应出现 `preset=mounted(heartbeat) restrict=ok`——那就是成功了。
 
 重启 DSH 后生效。插件自动创建**专用心跳会话**并开始按节律运行。
 
@@ -48,7 +63,7 @@ dsh plugin --profile web remove dsh-heartbeat
 | 分区 | 内容 |
 |---|---|
 | 心跳状态 | 上次心跳时间 / 结果（沉默原因或开口摘要）/ 今日表达计数 / 当前是否静默时段 |
-| 会话绑定 | 列出持久化会话（含标题与 live 标记），绑定/解绑投递与观察 |
+| 会话绑定 | 列出持久化会话（含会话名与 live 标记）；**投递 / 观察是两个独立开关**——同一会话可双开，行内逐个切换（`☑投递 ☐观察`），两个都关即解绑 |
 | 素材池 | 列表、归档/恢复/删除素材（删除需二次确认） |
 | 用户画像（只读） | 画像摘要 + 导出（解密导出 Markdown 供人审） |
 | 账本 | 打开账本（host 拉起编辑器，只读快捷方式） |
@@ -70,9 +85,14 @@ node <插件目录>/dist/cli/index.js ledger list --pending  # 账本待办
 ```powershell
 node dist/cli/index.js sessions list              # 枚举会话 id
 node dist/cli/index.js bind add session-xxxx      # 绑定投递（agent开口也会说到那里）
-node dist/cli/index.js bind add session-xxxx --observe   # 绑定观察（对话变画像素材）
+node dist/cli/index.js bind add session-xxxx --observe      # 投递 + 观察（双开）
+node dist/cli/index.js bind add session-xxxx --observe-only # 仅观察（关掉投递）
+node dist/cli/index.js bind list                  # 查看当前绑定（deliver:√/× observe:√/×）
 node dist/cli/index.js bind remove session-xxxx   # 解绑
 ```
+
+投递目标没有活着的 agent（例如刚重启过、那个会话还没被打开）时，心跳会**先把它 resume 起来**再投递；
+只有确实拉不起来才回落到引擎室正身，并在审计里留一行 `spoke_fallback`——不会静默改道。
 
 ## 配置
 
@@ -96,6 +116,7 @@ node dist/cli/index.js bind remove session-xxxx   # 解绑
 | 画像能记什么（隐私白名单） | `data/settings/profile-schema.json` |
 | 追踪哪些 npm/GitHub / 兴趣种子 | `config/watchlist.json`、`config/interests.json`（用户层同名文件整体替换） |
 | 忙闲类别表（哪些进程算忙） | `config/busy-rules.json` |
+| 心跳 agent 加入的预设 id（默认 `heartbeat`） | 插件 config（profile 的 `cordis.patch.yml` heartbeat 行 → `agentPreset`） |
 
 ## 数据与隐私
 
@@ -121,6 +142,43 @@ npm test             # 91 个单元测试（判定逻辑全注入时间，无 sl
 ```
 
 工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。
+
+## 更新日志
+
+### v1.0.1 · 2026-09-10
+
+跟随 DSH `0.1.2-rc.1` 的适配版，同时修掉几个把心跳按哑的 bug。**升级前请先看〈安装〉的第 2 步（装预设）**，
+详细的宿主契约变更见 [DESIGN.md §3](DESIGN.md)。
+
+**兼容性（DSH 0.1.1-rc.2 → 0.1.2-rc.1）**
+
+| 宿主变化 | 症状 | 处理 |
+|---|---|---|
+| `Session.events` 被移除，改 `snapshotEvents()` / `seq` | 每跳在 `agent.session.events.length` 上抛 `TypeError: Cannot read properties of undefined (reading 'length')`，整跳 `beat_error`、合并 `consolidation_failed` | 新增 `sessionEvents()` / `sessionEventCount()` 兼容层：优先 `snapshotEvents()`，缺失才回退 `events` |
+| `agents.create/resume` 不再代填部署默认模型 | agent 的 `options.model` 为 undefined → 每次 prompt 组装抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次在起点就死 | 新增 `defaultAgentOptions(ctx)`：读 `agentDefaultModel.currentSelection()`，显式传 `agentOptions` |
+| 未加入预设的 agent 只能看到空全局层 | `tools.restrict({allow:['web_search']})` 抛 `unknown global tool "web_search"`；闲逛相搜不了，只能返回 `{"items":[]}` | 新增**心跳预设**：`setup` 里 `agentPresets.mount(agentCtx, id)`，随包提供 `assets/presets/heartbeat/` |
+| client 模块注册 id 必须严格等于包名 | id 不一致的包被从 client 组合里**静默剔除**：设置页心跳区块整块消失，host 侧却照常运行 | `client.js` 注册 id 与 `cordis.patch.yml` 的 insert name 统一为 `@Kanadego/dsh-heartbeat` |
+| 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 标题改读 `~/.dsh/storages/session_projcache/sessions/<id>.json`，旧的单文件聚合只作兼容回退 |
+| 前端 bundle 启动即读入内存、响应标 immutable，且无文件监听 | 改 `client.js` 后刷新页面拿不到新代码 | 前端改动必须重启 DSH（已写进文档） |
+
+**功能改进**
+
+- **开口倾向**：决策相从"沉默是常态"改为"分寸优先"——默认倾向开口，只有在"素材都用过确实没新话""距上次开口太近""他显然在忙""已到深夜"时才沉默；提示词里带上"今天已开口 N 次（上限 M）/ 上次开口是 X 分钟前"，当天一次都没说过时明确要求挑一句说。
+- **投递文本**：改为一句极短的舞台提示（`（此刻你想对木偶人说的一句话，用中文直接说出来，不要提及本行。）`），不再在正文里暴露"心跳投递/引擎室"这类机器细节——来源仍完整声明在消息的 `source` 元数据里，轨迹视图会标成 `plugin: heartbeat`。
+- **会话绑定可双开**：卡片的已绑定行新增 `☑投递 ☐观察` 两个独立开关（原来绑了投递就再也点不到"绑定观察"），未绑定列表增加一次「投递+观察」入口。
+- **投递目标自动拉活**：目标会话在本进程没有活 agent（重启后未被打开）时按需 `agents.resume`，不再默默说在自己房间里。
+- **审计更细**：新增 `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `spoke_fallback` / `spoke_deferred`；`turn_extraction_empty` 增加 `turnError` 字段（模型输出的终止错误原因）。
+
+**Bug 修复**
+
+- 模型输出里的 `reasoning` 块被当成正文拼接，导致 `{"speak":false}` 之类的 JSON 被解析成 `…{...}{...}`，抛 `SyntaxError: Unexpected non-whitespace character after JSON at position 15` → `assistantText()` 现在排除 reasoning 块，`parseJsonBlock()` 双循环枚举括号候选取第一个可解析对象（`profile/consolidate.ts` 的 `parseOps()` 同样容错化）。
+- 表达轮 `whenIdle` 超时会把整跳打成 `beat_error`（现场只差 20 秒）→ 表达轮等待放宽到 10 分钟，失败记 `spoke_deferred`，那句话留到下一跳，不再污染整跳结果。
+- 工具策略自愈逻辑曾从报错文本里用 `/search/i` 抓了个名字重试，抓到的是 ACP 的 `search_context`（搜对话块，与联网无关）**而且成功生效**，把 agent 掩蔽到只剩一个无用工具 → 已删除该回退，`restrict` 失败只如实记录。
+- 心跳 agent 的 `tool_policy` 审计行里 `visible=` 改名 `visibleGlobal=`：`tools.schemas()` 不带 scope 参数拿的是**全局视图**，它本来就不该用来判断预设是否挂上（判据是同一行的 `restrict=ok`）。
+
+### v1.0.0 · 2026-09-05
+
+首个正式版：七相主循环、素材池/画像/闸门、DPAPI 加密与焚毁、审计留痕，以及 M6 的设置页六分区卡片与 `/heartbeat` RPC 通道。
 
 ## 致谢
 
