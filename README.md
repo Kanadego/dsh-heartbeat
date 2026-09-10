@@ -194,6 +194,7 @@ npm test             # 99 个单元测试（判定逻辑全注入时间，无 sl
 
 - 模型输出里的 `reasoning` 块被当成正文拼接，导致 `{"speak":false}` 之类的 JSON 被解析成 `…{...}{...}`，抛 `SyntaxError: Unexpected non-whitespace character after JSON at position 15` → `assistantText()` 现在排除 reasoning 块，`parseJsonBlock()` 双循环枚举括号候选取第一个可解析对象（`profile/consolidate.ts` 的 `parseOps()` 同样容错化）。
 - 表达轮 `whenIdle` 超时会把整跳打成 `beat_error`（现场只差 20 秒）→ 表达轮等待放宽到 10 分钟，失败记 `spoke_deferred`，那句话留到下一跳，不再污染整跳结果。
+- **投递目标的 resume 漏了模型路由**：投递会话里会自己冒出 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，而插件侧只记一句 `spoke_failed: non-Chinese output discarded`——报错出现在用户的会话里，根因在插件：在非 live 的投递目标上 resume agent 时没带 `agentOptions`（审计 `deliver_target_resumed model="(none)"`），宿主又把这个没有模型路由的 agent 当成该会话的 live agent 复用。现在 resume 会带上部署默认模型（与宿主 `agentOptions()` 同源），且投递一结束就 `dispose` 还回去（审计 `deliver_target_released`）。
 - 工具策略自愈逻辑曾从报错文本里用 `/search/i` 抓了个名字重试，抓到的是 ACP 的 `search_context`（搜对话块，与联网无关）**而且成功生效**，把 agent 掩蔽到只剩一个无用工具 → 已删除该回退，`restrict` 失败只如实记录。
 - 心跳 agent 的 `tool_policy` 审计行里 `visible=` 改名 `visibleGlobal=`：`tools.schemas()` 不带 scope 参数拿的是**全局视图**，它本来就不该用来判断预设是否挂上（判据是同一行的 `restrict=ok`）。
 

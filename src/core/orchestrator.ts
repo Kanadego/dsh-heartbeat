@@ -575,22 +575,52 @@ function ctx_getAgent(deps: OrchestratorDeps, sessionId: string): (HostAgent & {
  * NOTE: never pass `setup` here. That closure mounts the heartbeat preset and
  * restricts tools to web_search — applying it to the user's own session would
  * strip that session's normal toolset.
+ *
+ * 2026-09-10 晚（投递会话里冒出 `prompt variable "{{model}}" has no value` 的现场）：
+ * resume 时漏了 `agentOptions` → 拉起来的 agent 没有模型路由（审计会留下
+ * `deliver_target_resumed model="(none)"`），它每一个回合都在 prompt 组装时抛错；
+ * 而宿主会把这个「还活着」的 agent 当成该会话的 agent（`api-session` 的
+ * `createOrAdopt` 直接 `return live`），于是报错出现在用户自己的会话里。
+ * 修法照抄宿主自己的 `agentOptions()`（dsh-api-session-controller:452-458）：
+ * 读 `agentDefaultModel.currentSelection()`。
+ *
+ * 用完必须 release：我们 resume 出来的 agent 只有裸工厂的装配，没有宿主的
+ * composition setup（预设挂载 + 模型选择投影），留在注册表里会被 UI 接管；
+ * 投递一结束就 dispose，让宿主在用户下次打开会话时按它自己的流程重建。
  */
-async function acquireTargetAgent(deps: OrchestratorDeps, sessionId: string): Promise<HostAgent | null> {
+async function acquireTargetAgent(
+  deps: OrchestratorDeps,
+  sessionId: string,
+): Promise<{ agent: HostAgent; release: () => void } | null> {
   const live = ctx_getAgent(deps, sessionId);
   if (live) {
     appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_target_live', sessionId });
-    return live;
+    return { agent: live, release: () => { /* 宿主的 agent，不动 */ } };
   }
   try {
     const handle = await withTimeout(
-      Promise.resolve(deps.ctx.agents.resume({ resumeSessionId: sessionId })),
+      Promise.resolve(deps.ctx.agents.resume({
+        resumeSessionId: sessionId,
+        agentOptions: defaultAgentOptions(deps.ctx),
+      })),
       30_000, 'agents.resume (deliver target) timeout (30s)');
     const agent = ((handle as { agent?: HostAgent }).agent ?? (handle as HostAgent));
     appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
       event: 'deliver_target_resumed', sessionId, model: agent.options?.model ?? '(none)',
     });
-    return agent;
+    return {
+      agent,
+      release: () => {
+        try {
+          (handle as { dispose?: () => void }).dispose?.();
+          appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_target_released', sessionId });
+        } catch (e) {
+          appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+            event: 'deliver_target_release_failed', sessionId, error: String(e).slice(0, 120),
+          });
+        }
+      },
+    };
   } catch (e) {
     appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
       event: 'deliver_target_resume_failed', sessionId, error: String(e).slice(0, 160),
@@ -699,10 +729,10 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   const data = loadBindings(guard, paths.settingsDir);
   const homeId = bc.agent.session?.id ?? null;
   const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
-  let liveTarget: { sessionId: string; agent: HostAgent } | null = null;
+  let liveTarget: { sessionId: string; agent: HostAgent; release: () => void } | null = null;
   for (const b of targets) {
-    const agent = await acquireTargetAgent(deps, b.sessionId);
-    if (agent) { liveTarget = { sessionId: b.sessionId, agent }; break; }
+    const acquired = await acquireTargetAgent(deps, b.sessionId);
+    if (acquired) { liveTarget = { sessionId: b.sessionId, ...acquired }; break; }
   }
   if (!liveTarget && targets.length > 0) {
     // Never silently reroute: an un-live target is the difference between
@@ -714,62 +744,71 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   }
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
-
-  // 投递文本 = 写法①（2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
-  // 理由：9/6 那版（“请在下轮回应中自然带出这句话”）会让接收方先花推理去解析“这条注入是什么”，
-  // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
-  // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
-  // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
-  const phrasePrompt = [
-    '（此刻你想说的一句话，用中文直接说出来，不要提及本行。）',
-    parsed.text,
-  ].join('\n');
-  // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
-  let spokenRaw: string;
+  // 投递全程包在 try 里：无论成功、沉默还是中途 return，都要把我们 resume 出来的
+  // agent 还回去（acquireTargetAgent 的注释里写了为什么不能留）。
   try {
-    spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
-  } catch (e) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-      event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
-    });
-    noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
-    return;
-  }
-  // 表达文本：剥离思考块后取最后一行非空内容（模型可能漏出思考过程）。
-  const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-    .split('\n').map((l) => l.trim()).filter((l) => l);
-  const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1]! : '').slice(0, 200);
-  // 兜底闸：陪伴者说中文；纯英文输出是泄漏的思考，永不投递。
-  if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
-    noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
-    return;
-  }
 
-  // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
-  const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
-  if (!confirm.ok) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
-    noteBeat('spoke_failed', { reason: confirm.reason });
-    return;
-  }
-  // A2 attribution：决策给出的 seed_ids 优先，输出↔候选包含匹配兜底。
-  const usedIds = new Set(parsed.seed_ids ?? []);
-  for (const s of offered) {
-    const a = s.text.trim(), b = text;
-    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-      usedIds.add(s.id);
+    // 投递文本 = 写法①（2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
+    // 理由：9/6 那版（“请在下轮回应中自然带出这句话”）会让接收方先花推理去解析“这条注入是什么”，
+    // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
+    // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
+    // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
+    const phrasePrompt = [
+      '（此刻你想说的一句话，用中文直接说出来，不要提及本行。）',
+      parsed.text,
+    ].join('\n');
+    // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
+    let spokenRaw: string;
+    try {
+      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
+      });
+      noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
+      return;
     }
+    // 表达文本：剥离思考块后取最后一行非空内容（模型可能漏出思考过程）。
+    const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+      .split('\n').map((l) => l.trim()).filter((l) => l);
+    const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1]! : '').slice(0, 200);
+    // 兜底闸：陪伴者说中文；纯英文输出是泄漏的思考，永不投递。
+    // （空文本另有原因：目标 agent 的回合自己死了——看同一时刻的
+    //   `turn_extraction_empty label=expression turnError=...` 审计行。）
+    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
+      noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
+      return;
+    }
+
+    // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
+    const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
+    if (!confirm.ok) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
+      noteBeat('spoke_failed', { reason: confirm.reason });
+      return;
+    }
+    // A2 attribution：决策给出的 seed_ids 优先，输出↔候选包含匹配兜底。
+    const usedIds = new Set(parsed.seed_ids ?? []);
+    for (const s of offered) {
+      const a = s.text.trim(), b = text;
+      if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
+        usedIds.add(s.id);
+      }
+    }
+    for (const id of usedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    }
+    sendNewMessageHint(paths);
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
+    if (voiceSessionId && voiceSessionId !== homeId) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
+    }
+    noteBeat('spoke', { text });
+
+  } finally {
+    liveTarget?.release();
   }
-  for (const id of usedIds) {
-    surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
-  }
-  sendNewMessageHint(paths);
-  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
-  if (voiceSessionId && voiceSessionId !== homeId) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
-  }
-  noteBeat('spoke', { text });
 }
 
 // ── the beat ────────────────────────────────────────────────────────────
