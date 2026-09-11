@@ -2,7 +2,7 @@
 
 > 面向后续开发者与维护者。需求与决策记录见内部文档（不随仓库发布）；
 > 本文描述**实际实现**：框架结构、模块实现、参数位置、诊断方法、宿主契约备忘。
-> 宿主版本：DSH 0.1.2-rc.1（所有宿主 API 结论均经 hb-probe 探针与源码实测，见 §3）。
+> 宿主版本：DSH 0.1.2-rc.1 实测（hb-probe 探针 + 源码阅读，见 §3）；0.1.5-rc.2 经 npm 包逐包源码对比（2026-09-11，C19/C20）+ 实机升级验证（2026-09-12：会话 v3 迁移、心跳、投递全部正常）。
 
 ---
 
@@ -11,8 +11,8 @@
 | 项 | 值 |
 |---|---|
 | 形态 | DSH cordis 插件（进程内服务 + web client 卡片 + 独立 CLI） |
-| 宿主 | DSH 0.1.2-rc.1，web profile，Node ≥ 22.19（实测 24.19） |
-| 适配声明 | **v1.1 需要 DSH ≥ 0.1.2-rc.1**；旧宿主（≤ 0.1.1-rc.2）请用 v1.0（v1.1 依赖 `snapshotEvents()` 与 agent 预设机制） |
+| 宿主 | DSH 0.1.2-rc.1 实测 / 0.1.5-rc.2 已核对（见适配声明），web profile，Node ≥ 22.19（实测 24.19） |
+| 适配声明 | **v1.2 需要 DSH ≥ 0.1.2-rc.1，并兼容 0.1.5-rc.2**（peer `^0.1.1-rc.2 \|\| ^0.1.5-rc.2`）；升级到 0.1.5 会触发会话格式 v3 自动迁移（C20，**先备份 `~/.dsh/sessions`**）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0（v1.1 依赖 `snapshotEvents()` 与 agent 预设机制） |
 | 平台 | Windows 专属（PowerShell 探针 + DPAPI + WinRT toast） |
 | 语言/构建 | TypeScript + tsup（ESM）；测试 node:test + tsx，91 个 |
 | 运行数据 | `dataDir`（默认 `<包根>/data`；可在 profile 的 cordis.patch.yml 按 id 覆盖钉到自定义位置） |
@@ -87,6 +87,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C15 | **client 模块身份** | client 模块的注册 id 必须**严格等于包名**：`dsh-client-modules` 的 `resolveSource(entry)` 取 `entry.options.name` → `resolveMeta` → `locatePkgJson`/`nearestPackage` 向上找 `package.json` 并要求 `name === expectedPackageName`；不匹配返 null，该包被从 client 组合里**静默剔除**——**没有任何报错**，host 半照跑、数据照写，只是设置页整块消失。三处必须一致：`package.json.name`、`cordis.patch.yml` 里 insert 行的 `name`、`client.js` 的 `window.__ModuleLoader__.load({id})` |
 | C16 | **前端 bundle 缓存** | client bundle 由宿主**启动时**读入内存并按内容打 immutable 缓存（组合 URL 形如 `/plugins/??ids/client.js&rev`），`dsh-client-modules` 内**没有 fs.watch**（热重载只在 dev 模式）→ 改 `client.js` 后刷新页面无效，**必须重启 DSH** |
 | C17 | 会话标题存储 | 0.1.2 起标题在**每会话一条记录**：`~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows.title.val`（子代理会话的记录没有 `session-` 前缀，应跳过）；旧的单文件聚合 `~/.dsh/storages/session_projcache.json` 只作兼容回退 |
+| C19 | **0.1.5 事件形态（assistant/attempt）** | 0.1.5-rc.1 起 `assistant/chunk` 事件**更名** `assistant/attempt`（载荷 `{turn, step, stream: AssistantStreamRecord[]}`，失败/重试/取消的尝试整段嵌入）；新增 surface 事件 `system/message`（系统提示作为 surface 节点 0 记入日志）。对插件的影响面：①`terminalTurnError()` 兼容扫描两种事件（`turn/end` 的 error reason 主路径未变）；②`assistantText()` 不受影响——`assistant/message` 仍带 `message: AssistantMessage`，attempt 事件无 content 会被空文本自然跳过；③观察相按事件类型过滤、光标按 seq 索引，插入新事件类型无影响 |
+| C20 | **0.1.5 持久层重构（格式 v3 迁移）** | 持久层拆成中立契约包 `dsh-session-persistence` + 独立后端 `dsh-session-persistence-jsonl`（仍是一个仅追加 `.jsonl.zstd` 产物/会话）。`SESSION_FORMAT_VERSION` **0 → 3**：旧版本头被拒绝（"session header version must be 3"），宿主内置**代际迁移**——保留历史代文件（`session.jsonl.zstd` = v0），首次访问时解码-迁移-校验后发布当前代文件（版本化文件名），源文件只读不改。**升级宿主前必须备份 `~/.dsh/sessions`**（用户数据危险操作）；会话目录从单文件变多代文件布局，`scripts/repair-session.mjs` 的"先找备份再改 v0 文件"手册要按新布局复查（迁移后的当前代是 v3 格式，修复工具只应再碰 v0 历史代） |
 
 ## 4. 模块详解
 
@@ -246,6 +248,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 有 `spoke` 但没有 `delivered`，话只说在引擎室 | 投递目标当时没有活 agent → 看 `deliver_target_live/resumed/resume_failed`；全部拉不起来会留 `spoke_fallback`；再查 `bindings.json` 里目标的 `deliver` 是否为 true |
 | 表达轮 `beat_error: Error: expression: whenIdle timeout` | 目标会话当时在跑别的轮次；表达轮等待上限 10 分钟，超时只记 `spoke_deferred`（那句话留到下一跳），不再让整跳失败 |
 | **侧栏某个会话行消失了**（会话内容还在，刷新就回来） | 心跳刚往那个"当时没打开"的会话投递过：审计会有 `deliver_target_resumed` + `delivered` + `deliver_target_released`。释放 agent → 宿主 `session/disposed` → `api-session/removed` → 前端删行（§12 第 9 条）。**不是会话损坏，刷新页面即回**；若伴随会话内容异常，才去查 §13 的会话修复工具 |
+| 升级 0.1.5 后某个旧会话打不开，报 `session header version must be 3` 或 `…v0-to-v1 refuses this format v0 Session: … unexpected member "tier"` | 前者 = 该会话还没被迁移（正常情况宿主首次访问时自动迁移）；后者 = v0 产物里有翻译器不认的成员（C20）：`node scripts/repair-v0-members.mjs`（预检）→ `… fix`（备份+修复，§13.1）。修复失败的事件不要手改文件，把输出发给维护者 |
+| 升级 0.1.5 后审计 `turn_extraction_empty` 的 `turnError` 字段消失 | 失败尝试的事件形态变了（C19：`assistant/chunk` → `assistant/attempt`）；v1.2 起 `terminalTurnError()` 两种都扫，出现此症状说明 dist 未同步（C10） |
 
 ### 7.3 诊断 CLI 速查
 
@@ -307,7 +311,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 5. **预设是外部依赖（已大幅缓解）**：`<dshHome>/.agent-presets/<agentPreset>/` 不在插件包内（家目录属用户），删掉后心跳 agent 会退回裸 agent——表现为闲逛相永远空手而归、`tool_policy` 行没有 `preset=mounted`。v1.1 起插件会**在启动时自动补齐**该目录（C18；只补缺失，不动已有文件），所以这条从"必须手抄的安装步骤"降级为"删了会在下次启动自己回来"；仍未做的：把用户改过的旧模板自动升到新模板（会覆盖用户意图，故意不做，需要时用 `preset install --force`）；
 6. 自研时间注入（P1 ①）未启用——官方 time-context 仍在服务日常会话；启用时必须停用官方（B9 护栏）；
 7. journal 快照基点（按年分片）v1.5；`profile.mjs sync`（comm→长期记忆单向同步）默认不做；
-8. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。**2026-09-10 实际升级后补记**：本次真实踩中五处（`Session.events` 移除 / `agentOptions` 默认丢失 / 裸 agent 无预设 / client 注册 id 必须等于包名 / 会话标题迁到 per-record），全部沉淀为 C12–C17。教训：升级后先看两类审计行——`tool_policy`（工具面是否仍完整）与 `beat_error`（是否有结构性抛错），它们比"看 UI 有没有动静"更快定位。
+8. DSH 升级：按 §3 契约表逐条复查（C2/C4/C5/C8/C9 历史上最易变）。2026-09-06 已核对 0.1.2-rc.1 兼容矩阵：12/14 第三方插件 peer 内置兼容；heartbeat peer 由精确 `0.1.1-rc.2` 放宽为 `^0.1.1-rc.2`（本次提交）；exa 官方插件需随升 0.1.2-rc.1。**2026-09-10 实际升级后补记**：本次真实踩中五处（`Session.events` 移除 / `agentOptions` 默认丢失 / 裸 agent 无预设 / client 注册 id 必须等于包名 / 会话标题迁到 per-record），全部沉淀为 C12–C17。教训：升级后先看两类审计行——`tool_policy`（工具面是否仍完整）与 `beat_error`（是否有结构性抛错），它们比"看 UI 有没有动静"更快定位。**2026-09-11 针对 0.1.5-rc.2 的核对**（npm 包逐包源码对比，实机验证待宿主升级后补记）：C1–C18 全部存活（含 v1.1 的模型路由/预设/client id 三修）；新变化两处——`assistant/chunk` → `assistant/attempt`（C19，仅影响诊断辅助路径）与持久层重构 + 会话格式 v3 自动迁移（C20，动用户数据，升级前必备份 `~/.dsh/sessions`）；peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`。
 9. **投递后释放 agent 会让侧栏那一行暂时消失（已知副作用，2026-09-10 评估后决定保留）**：投递进"当时没有活 agent"的会话时，插件 resume 一个 agent、投完 `dispose()`（审计 `deliver_target_released`）→ 宿主 `session/disposed` → `ctx.emit("api-session/removed", session.id)`（`@deepseek-ai/dsh-api-session-controller/lib/index.js:2617-2618`）→ 前端 `ctx.remote.$on("api-session/removed", …) → sessions.handleSessionRemoved(sessionId)`（同包 `lib/client.js:2728-2730`）→ **侧栏移除该行；会话本体在持久化里，刷新页面即回**（前端重连后重新 list）。只影响当时没打开的会话（打开着的走 `deliver_target_live`，不碰）。曾评估的三个替代方案：①不释放、插件持有 handle（社区 `GengDaPeng/dsh-agent-message` 的做法）——但宿主 `createOrAdopt` 的 `const live = this.ctx.agents.get(sessionId); … if (live !== void 0) return live;`（`.../lib/index.js:406-408`）会**收养**这个 agent，而插件 resume 时给的 `setup` 复刻不了宿主 `composeAgent`（`.../lib/index.js:350-363` = `installSelection(agentCtx)` + `presets.mount(agentCtx, resolvedId)`）→ 那个真实会话会跑在缺预设/缺模型选择投影的半成品 agent 上（先例：2026-09-10 12:51 `deliver_target_live` 即一次收养，当场死于 `{{model}}`）；②只在目标会话已 live 时投递——心跳说话机会显著变少；③延迟释放——`removed` 只是晚到，不解决问题。用户拍板："都不能根治，就保持现状吧"，代价 = 需要时刷新一次页面。
 
 ## 13. 会话修复工具（scripts/repair-session.mjs）
@@ -327,6 +331,18 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 用精确签名（plugin 来源 + 顶层缺 id）——宿主自己的 assistant 推理事件（`message.reasoning`）天然没有
 顶层 id，宽松匹配会误报上千条。
 
+### 13.1 v0 成员修复工具（scripts/repair-v0-members.mjs，2026-09-12 新增）
+
+**故障特征（0.1.5-rc.2 升级现场）**：升级宿主后旧会话打不开，报
+`failed to observe session "<id>": …dsh-session-format-v0-to-v1 refuses this format v0 Session: compaction/summary <seq> data has unexpected member "tier"`。
+根因：0.1.2 时代的 compaction 在 `compaction/summary` 事件里写过 v0→v1 翻译器白名单外的成员
+（`tier`/`topic`/`directMessageIds`/`effectiveMessageIds`/`kernelBlockId`）；另有一种 r5 旧投递残留
+（`agent/inbox/spliced` 的 inserted 消息缺 `id`）。扫描全部会话定位违规事件、剥多余成员/补 id、
+帧保持式回写（首帧不变量与无关帧字节原样）、逐文件备份 `.bak-pre-v0fix-<ts>`、修完用宿主同款
+翻译器复核。翻译器直接解析自全局 dsh 安装（`<npm-global>/node_modules/@deepseek-ai/dsh/node_modules/`），
+零额外安装。**预检模式默认只读**；只碰 `header.version === 0` 的 v0 产物，已迁移的 v1+ 代文件不碰。
+2026-09-12 实战战绩：5 会话 65 事件，修复后全部会话正常打开并完成 v3 迁移。
+
 ## 14. M6 拓展：RPC 数据通道与设置页卡片
 
 **通道**：宿主 `src/rpc.ts` 经 `ctx.inject(['connection'], ...)` 注册 `/heartbeat` 通道（connection 为晚挂载服务，必须声明式等待——直接属性访问会报 without inject）；浏览器 `ctx.get('connection').rpc.call('/heartbeat', endpoint, payload)` 调用，返回 `{ok,value}|{ok:false,error}`。
@@ -339,11 +355,20 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 **client 卡片**：六个分区（状态默认展开/会话绑定/素材池/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除二次确认；所有 RPC 异常按分区独立显示。**会话绑定分区**每行两个独立开关（`☑投递 ☐观察`，可同时开、可逐个切换）+ 解绑；未绑定行提供「绑定投递 / 绑定观察 / 投递+观察」三个入口（旧版只有一个按钮、绑了投递就再也点不到观察，2026-09-10 修）。
 
-## 15. 变更日志（v1.1 · 2026-09-10）
+## 15. 变更日志
 
-> 版本口径：v1.1 是**新版宿主版本**（DSH ≥ 0.1.2-rc.1）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.2 是**当前版本**（DSH ≥ 0.1.2-rc.1，兼容 0.1.5-rc.2，peer `^0.1.1-rc.2 || ^0.1.5-rc.2`）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
 
-跟随 DSH `0.1.2-rc.1` 的适配版本。本轮是"升级之后心跳悄悄哑掉"的完整复盘，五处结构性故障全部沉淀为契约（C12–C17）。
+### v1.2 · 2026-09-12（DSH 0.1.2-rc.1 → 0.1.5-rc.2 适配）
+
+npm 包逐包源码对比核对（2026-09-11）+ 实机升级验证（2026-09-12）：**C1–C18 全部存活**，v1.1 的三处关键修复（模型路由/预设挂载/client id）在 0.1.5 下继续有效。新变化沉淀为 C19（`assistant/chunk` → `assistant/attempt` + 新 surface 事件 `system/message`）与 C20（持久层重构 + 会话格式 v3 迁移）。改动：
+
+- `terminalTurnError()` 兼容扫描 `assistant/attempt`（失败尝试整段嵌入 `data.stream`），新旧宿主诊断信息都完整；
+- peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`；
+- 新增 **`scripts/repair-v0-members.mjs`**（§13.1）：修复升级 0.1.5 后旧会话迁移被拒（compaction/summary 白名单外成员 + r5 旧投递缺 id 残留），实战 5 会话 65 事件全部通过宿主真翻译器复核；
+- 实机确认：升级后旧会话首次访问自动迁移到 v3（历史 v0 代文件保留），引擎室心跳与投递正常。
+
+### v1.1 · 2026-09-10（DSH 0.1.1-rc.2 → 0.1.2-rc.1 适配）
 
 **兼容性（宿主 0.1.1-rc.2 → 0.1.2-rc.1）**
 

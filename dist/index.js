@@ -1417,6 +1417,10 @@ function assistantText(e) {
   return "";
 }
 function terminalTurnError(events, from2) {
+  const describeFailure = (reason) => {
+    if (reason?.kind !== "error") return void 0;
+    return [reason.failure?.code, reason.failure?.message].filter(Boolean).join(" ") || "turn error (no detail)";
+  };
   for (let i = events.length - 1; i >= from2; i--) {
     const e = events[i];
     if (e.type === "turn/end") {
@@ -1426,8 +1430,16 @@ function terminalTurnError(events, from2) {
     }
     if (e.type === "assistant/chunk") {
       const chunk = e.data?.chunk;
-      if (chunk?.type === "finish" && chunk.reason?.kind === "error") {
-        return [chunk.reason.failure?.code, chunk.reason.failure?.message].filter(Boolean).join(" ") || "turn error (no detail)";
+      const described = describeFailure(chunk?.reason);
+      if (chunk?.type === "finish" && described) return described;
+    }
+    if (e.type === "assistant/attempt") {
+      const stream = e.data?.stream;
+      if (!Array.isArray(stream)) continue;
+      for (let j = stream.length - 1; j >= 0; j--) {
+        const record = stream[j];
+        const described = describeFailure(record?.chunk?.reason);
+        if (record?.type === "chunk" && record.chunk?.type === "finish" && described) return described;
       }
     }
   }
