@@ -365,8 +365,15 @@ function assistantText(e: { type: string; data?: unknown }): string {
 /** Terminal error of the last turn in `events[from..]`, when it failed.
  * Provider/adapter/prompt-assembly failures end the turn without ever logging
  * an assistant message, so they are invisible unless we read the turn's end
- * reason (or the finish chunk carrying the same failure). */
+ * reason (or the failure carried by the turn's stream). The stream that embeds
+ * a failure changed shape across harness versions: 0.1.1–0.1.2 logged finish
+ * chunks as `assistant/chunk` events; 0.1.5-rc.1+ logs whole failed attempts
+ * as `assistant/attempt` with the stream in `data.stream` — both are scanned. */
 function terminalTurnError(events: HostEvent[], from: number): string | undefined {
+  const describeFailure = (reason: { kind?: string; failure?: { code?: string; message?: string } } | undefined): string | undefined => {
+    if (reason?.kind !== 'error') return undefined;
+    return [reason.failure?.code, reason.failure?.message].filter(Boolean).join(' ') || 'turn error (no detail)';
+  };
   for (let i = events.length - 1; i >= from; i--) {
     const e = events[i]!;
     if (e.type === 'turn/end') {
@@ -376,8 +383,17 @@ function terminalTurnError(events: HostEvent[], from: number): string | undefine
     }
     if (e.type === 'assistant/chunk') {
       const chunk = (e.data as { chunk?: { type?: string; reason?: { kind?: string; failure?: { code?: string; message?: string } } } } | undefined)?.chunk;
-      if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
-        return [chunk.reason.failure?.code, chunk.reason.failure?.message].filter(Boolean).join(' ') || 'turn error (no detail)';
+      const described = describeFailure(chunk?.reason);
+      if (chunk?.type === 'finish' && described) return described;
+    }
+    if (e.type === 'assistant/attempt') {
+      const stream = (e.data as { stream?: unknown } | undefined)?.stream;
+      if (!Array.isArray(stream)) continue;
+      // Newer generations of this loop embed a finish/error chunk in the stream.
+      for (let j = stream.length - 1; j >= 0; j--) {
+        const record = stream[j] as { type?: string; chunk?: { type?: string; reason?: { kind?: string; failure?: { code?: string; message?: string } } } } | undefined;
+        const described = describeFailure(record?.chunk?.reason);
+        if (record?.type === 'chunk' && record.chunk?.type === 'finish' && described) return described;
       }
     }
   }

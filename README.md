@@ -3,19 +3,22 @@
 > 让 DeepSeek Harness Agent 拥有持续存在感与自主生活流的心跳插件。
 > 她能自己醒来、维护自己的记忆与画像、感知环境与忙闲、按分寸决定是否开口——开口要有真实来处，沉默要有具体理由。
 
-[![host](https://img.shields.io/badge/DSH-0.1.2--rc.1-blue)](https://github.com/deepseek-ai/deepseek-harness)
+[![host](https://img.shields.io/badge/DSH-0.1.2--rc.1%20%7C%200.1.5--rc.2-blue)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
 
-> **v1.1 = 给新版宿主的版本**：需要 **DSH ≥ `0.1.2-rc.1`**。
-> 还在旧版 DSH（`≤ 0.1.1-rc.2`）上跑的话，请用 [**v1.0**](https://github.com/Kanadego/dsh-heartbeat/releases/tag/v1.0.0)——v1.1 依赖新宿主的 `snapshotEvents()` 与 agent 预设机制，装到旧宿主上跑不起来。
+> **v1.2 = 当前版本**：需要 **DSH ≥ `0.1.2-rc.1`**，并兼容 `0.1.5-rc.2`。
+> 还在旧版 DSH（`≤ 0.1.1-rc.2`）上跑的话，请用 [**v1.0**](https://github.com/Kanadego/dsh-heartbeat/releases/tag/v1.0.0)——v1.1 起依赖新宿主的 `snapshotEvents()` 与 agent 预设机制，装到旧宿主上跑不起来。
+>
+> ⚠️ 升级宿主到 0.1.5 会触发**会话格式 v3 自动迁移**（所有旧会话首次访问时被转换）——动用户数据，**升级前先备份 `~/.dsh/sessions`**。
 
 | 插件版本 | 适配的 DSH |
 |---|---|
-| **v1.1**（当前） | ≥ `0.1.2-rc.1` |
+| **v1.2**（当前） | ≥ `0.1.2-rc.1`（含 `0.1.5-rc.2`） |
+| v1.1 | ≥ `0.1.2-rc.1`（`0.1.5` 下诊断行会缺细节，功能不受影响） |
 | v1.0 | ≤ `0.1.1-rc.2` |
 
-> 两个版本都需要**心跳预设**：v1.1 会在插件首次启动时自动装好（见〈安装〉）；v1.0 要手动复制一次。
+> v1.1+ 都需要**心跳预设**：插件首次启动时自动装好（见〈安装〉）；v1.0 要手动复制一次。
 > 没有它，心跳 agent 是个"裸 agent"——工具面对空全局层求值，连 `web_search` 都看不见。
 
 ---
@@ -165,6 +168,15 @@ npm test             # 99 个单元测试（判定逻辑全注入时间，无 sl
 工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。
 
 ## 更新日志
+
+### v1.2 · 2026-09-11
+
+适配 DSH `0.1.5-rc.2`（peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`，对 0.1.2-rc.1 完全向后兼容——留在旧宿主上不用换版本）。v1.1 的全部修复在 0.1.5 下经逐包源码核对继续有效，本次改动很小：
+
+- **会话格式 v3 迁移提示**：0.1.5 重构持久层并把 `SESSION_FORMAT_VERSION` 从 0 升到 3，升级宿主后所有旧会话在首次访问时被宿主自动迁移（v0 历史代文件保留、生成 v3 当前代文件）。**升级宿主前请备份 `~/.dsh/sessions`**；会话目录变为多代文件布局，修复工具只应再碰 v0 历史代（DESIGN §3 C20）。
+- **诊断兼容**：0.1.5 把 `assistant/chunk` 事件更名为 `assistant/attempt`（失败尝试整段嵌入流记录）。`terminalTurnError()` 现在两种事件形态都扫，`turn_extraction_empty` 的 `turnError` 字段在新旧宿主上都完整（C19）。`turn/end` 的 error reason 主路径未变，心跳功能在 v1.1 下也不受此变更影响。
+- **新增修复工具 `scripts/repair-v0-members.mjs`**：部分 0.1.2 时代的旧会话在升级 0.1.5 时迁移被拒（`…v0-to-v1 refuses this format v0 Session: … unexpected member "tier"`）。该工具用宿主同款翻译器逐事件预检、剥离白名单外成员、帧保持式回写、自动备份与复核（DESIGN §13.1）。
+- 官方默认模型随部署基线从 `deepseek-v4-flash` 换为 `deepseek-flash`（部署侧行为，模型路由仍由 `agentDefaultModel` 提供心跳 agent）。
 
 ### v1.1 · 2026-09-10
 
