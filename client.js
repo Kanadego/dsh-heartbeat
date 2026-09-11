@@ -9,8 +9,8 @@
 //   - ctx.settingsScope.bind({namespace}) yields a scope with getSnapshot /
 //     subscribe / set(field, value) — writes go through the host settings
 //     service (loopback-only, process-local persistence);
-//   - custom host data flows through the '/heartbeat' RPC channel:
-//     ctx.get('connection').rpc.call('/heartbeat', endpoint, payload, signal).
+//   - custom host data flows through an exact Fetch route under /api:
+//     ctx.get('connection').rpc.call('/api', 'heartbeat', { endpoint, ...payload }).
 window.__ModuleLoader__.load({
 	id: "@Kanadego/dsh-heartbeat",
 	factory: (require) => {
@@ -46,7 +46,9 @@ window.__ModuleLoader__.load({
 				if (!conn || !conn.rpc || typeof conn.rpc.call !== "function") {
 					throw new Error("RPC 通道不可用（请确认 DSH 正在运行）");
 				}
-				const result = await conn.rpc.call("/heartbeat", endpoint, payload ?? {}, undefined);
+				// C21：0.1.5 起自定义 rpc.handle 通道不可用，宿主侧改为 /api 下的精确
+				// Fetch 路由；端点名走 payload.endpoint 字段（信封与 /api 同构）。
+				const result = await conn.rpc.call("/api", "heartbeat", { endpoint, ...(payload ?? {}) }, undefined);
 				if (!result || result.ok !== true) {
 				 throw new Error((result && result.error && result.error.message) || "RPC 调用失败");
 				}

@@ -64,9 +64,9 @@ import {
   isPlainObject,
   mapValues,
   pick
-} from "./chunk-AISZRA4C.js";
+} from "./chunk-6ICVSSAU.js";
 
-// node_modules/.pnpm/@deepseek-ai+schemastery@3.18.2/node_modules/@deepseek-ai/schemastery/lib/index.mjs
+// node_modules/@deepseek-ai/schemastery/lib/index.mjs
 var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
 var kValidationError = /* @__PURE__ */ Symbol.for("ValidationError");
 globalThis.__schemastery_index__ ??= 0;
@@ -1864,9 +1864,9 @@ import { spawn } from "child_process";
 import fs7 from "fs";
 import os from "os";
 import path7 from "path";
-var RPC_CHANNEL = "/heartbeat";
+var RPC_ROUTE_PATH = "/api/heartbeat";
 var ok = (value) => ({ ok: true, value });
-var err = (code, message) => ({ ok: false, error: { code, message } });
+var err = (code, message) => ({ ok: false, error: { code, message, details: {} } });
 function homeSessionId(paths, guard) {
   try {
     const raw = loadEncryptedText(guard, path7.join(paths.dataDir, "gate.json"));
@@ -2047,8 +2047,35 @@ function installHeartbeatRpc(ctx, deps) {
         return err("internal", String(e).slice(0, 200));
       }
     };
-    remoteCtx.connection.rpc.handle(RPC_CHANNEL, handler, { authority: "trusted-host" });
-    ctx.logger.info("heartbeat: rpc channel ready (%s)", RPC_CHANNEL);
+    remoteCtx.effect(
+      () => remoteCtx.connection.fetch.register({
+        path: RPC_ROUTE_PATH,
+        methods: ["POST"],
+        requestBody: "buffered",
+        fetch: async (request) => {
+          let envelope;
+          try {
+            envelope = await request.json();
+          } catch {
+            return new Response("body is not JSON", { status: 400 });
+          }
+          const rpcId = envelope?.rpcId;
+          if (envelope?.type !== "client-request" || typeof rpcId !== "string" || typeof envelope.payload !== "object" || envelope.payload === null) {
+            return new Response("invalid envelope", { status: 400 });
+          }
+          const p = envelope.payload;
+          const endpoint = typeof p.endpoint === "string" ? p.endpoint : "(missing endpoint)";
+          const result = await handler(endpoint, p);
+          return Response.json({ type: "server-response", rpcId, result });
+        }
+      }),
+      "heartbeat: rpc route"
+    );
+    ctx.logger.info("heartbeat: rpc route ready (%s)", RPC_ROUTE_PATH);
+    try {
+      appendAuditLine(deps.guard.assert(deps.paths.logsDir + "/heartbeat.jsonl"), { event: "rpc_registered", route: RPC_ROUTE_PATH });
+    } catch {
+    }
   });
 }
 
@@ -2125,7 +2152,7 @@ function apply(ctx, config = {}) {
   };
   void (async () => {
     try {
-      const { settingsNamespace, installSettingsSection } = await import("./lib-FJP7J4T6.js");
+      const { settingsNamespace, installSettingsSection } = await import("./lib-5A6677NY.js");
       installSettingsSection(
         ctx,
         settingsNamespace("heartbeat"),

@@ -89,6 +89,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C17 | 会话标题存储 | 0.1.2 起标题在**每会话一条记录**：`~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows.title.val`（子代理会话的记录没有 `session-` 前缀，应跳过）；旧的单文件聚合 `~/.dsh/storages/session_projcache.json` 只作兼容回退 |
 | C19 | **0.1.5 事件形态（assistant/attempt）** | 0.1.5-rc.1 起 `assistant/chunk` 事件**更名** `assistant/attempt`（载荷 `{turn, step, stream: AssistantStreamRecord[]}`，失败/重试/取消的尝试整段嵌入）；新增 surface 事件 `system/message`（系统提示作为 surface 节点 0 记入日志）。对插件的影响面：①`terminalTurnError()` 兼容扫描两种事件（`turn/end` 的 error reason 主路径未变）；②`assistantText()` 不受影响——`assistant/message` 仍带 `message: AssistantMessage`，attempt 事件无 content 会被空文本自然跳过；③观察相按事件类型过滤、光标按 seq 索引，插入新事件类型无影响 |
 | C20 | **0.1.5 持久层重构（格式 v3 迁移）** | 持久层拆成中立契约包 `dsh-session-persistence` + 独立后端 `dsh-session-persistence-jsonl`（仍是一个仅追加 `.jsonl.zstd` 产物/会话）。`SESSION_FORMAT_VERSION` **0 → 3**：旧版本头被拒绝（"session header version must be 3"），宿主内置**代际迁移**——保留历史代文件（`session.jsonl.zstd` = v0），首次访问时解码-迁移-校验后发布当前代文件（版本化文件名），源文件只读不改。**升级宿主前必须备份 `~/.dsh/sessions`**（用户数据危险操作）；会话目录从单文件变多代文件布局，`scripts/repair-session.mjs` 的"先找备份再改 v0 文件"手册要按新布局复查（迁移后的当前代是 v3 格式，修复工具只应再碰 v0 历史代） |
+| C21 | **0.1.5 cordis 严格服务解析（自定义 RPC 通道退役 → /api 精确路由）** | 0.1.5 的 cordis 解析器沿 fiber 链找服务，访问许可由 fiber 的模块级 `inject` 声明决定；而 cordis `Service` 把 `this.ctx` **固定在提供方自己的上下文**（client-connection 的模块 inject 只有 `['credentials']`）。于是 `connection.rpc.handle(channel, …)` 内部的 `owner.webServer.register(route)` 是在**别人的 fiber** 上读 `webServer` → 必抛 `cannot get property "webServer" without inject`——**调用方无论怎么 inject 都救不了**（现场取证 2026-09-12：合并 inject `['connection','webServer']` + effect 包裹仍是此错，`scoped` 本身读 webServer 正常）。症状：路由不存在 → 浏览器 POST `<channel>/<endpoint>` 落到 `dsh-host-frontend-static` 的 **fallback 座位** → **HTTP 405**（卡片全部分区"加载失败"，host 静默）。**0.1.5 正解**：`connection.fetch.register()` 在 `/api` 下注册精确 Fetch 路由——只写 connection 内部路由表、不碰任何其他服务，0.1.2/0.1.5 的 `/api` 共享处理器都先查精确路由，两代通用；浏览器认证由 `/api` 前缀的 `requestRejection` 统一把关。信封与 `/api` 同构（`client-request`/`server-response`），端点名走 `payload.endpoint`；客户端 `rpc.call('/api', 'heartbeat', {endpoint, …})`。**鉴别**：405 = 路由没注册；404 = 端点不匹配；401/403 = /api 认证拦截 |
 
 ## 4. 模块详解
 
@@ -250,6 +251,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | **侧栏某个会话行消失了**（会话内容还在，刷新就回来） | 心跳刚往那个"当时没打开"的会话投递过：审计会有 `deliver_target_resumed` + `delivered` + `deliver_target_released`。释放 agent → 宿主 `session/disposed` → `api-session/removed` → 前端删行（§12 第 9 条）。**不是会话损坏，刷新页面即回**；若伴随会话内容异常，才去查 §13 的会话修复工具 |
 | 升级 0.1.5 后某个旧会话打不开，报 `session header version must be 3` 或 `…v0-to-v1 refuses this format v0 Session: … unexpected member "tier"` | 前者 = 该会话还没被迁移（正常情况宿主首次访问时自动迁移）；后者 = v0 产物里有翻译器不认的成员（C20）：`node scripts/repair-v0-members.mjs`（预检）→ `… fix`（备份+修复，§13.1）。修复失败的事件不要手改文件，把输出发给维护者 |
 | 升级 0.1.5 后审计 `turn_extraction_empty` 的 `turnError` 字段消失 | 失败尝试的事件形态变了（C19：`assistant/chunk` → `assistant/attempt`）；v1.2 起 `terminalTurnError()` 两种都扫，出现此症状说明 dist 未同步（C10） |
+| 升级 0.1.5 后设置卡片所有 RPC 分区报 `加载失败: … HTTP 405`（心跳本身照常跑） | RPC 通道没注册成功（C21）：0.1.5 严格解析下自定义通道 `rpc.handle` 内部读不到 webServer，**自定义通道方案整体退役**，v1.2 起改走 `/api` 精确路由。审计出现 `rpc_registered route=/api/heartbeat` 才算注册成功；没有即确认 dist 已同步（C10）并重启 |
 
 ### 7.3 诊断 CLI 速查
 
@@ -366,7 +368,8 @@ npm 包逐包源码对比核对（2026-09-11）+ 实机升级验证（2026-09-12
 - `terminalTurnError()` 兼容扫描 `assistant/attempt`（失败尝试整段嵌入 `data.stream`），新旧宿主诊断信息都完整；
 - peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`；
 - 新增 **`scripts/repair-v0-members.mjs`**（§13.1）：修复升级 0.1.5 后旧会话迁移被拒（compaction/summary 白名单外成员 + r5 旧投递缺 id 残留），实战 5 会话 65 事件全部通过宿主真翻译器复核；
-- 实机确认：升级后旧会话首次访问自动迁移到 v3（历史 v0 代文件保留），引擎室心跳与投递正常。
+- 实机确认：升级后旧会话首次访问自动迁移到 v3（历史 v0 代文件保留），引擎室心跳与投递正常；
+- **实机补记（2026-09-12）**：升级后卡片 RPC 全 405——0.1.5 cordis 严格解析下**自定义 `rpc.handle` 通道整体不可用**（Service 把 this.ctx 钉在提供方上下文，内部 `owner.webServer.register` 必然无许可，调用方无法自救，见 C21）。RPC 迁移为 `/api` 精确 Fetch 路由（客户端调用方式随改），新增 `rpc_registered` 审计行。教训补在 §12.8：源码对比之外，升级后还要**打开一次设置卡片**——RPC 链路的故障只在 UI 侧可见。
 
 ### v1.1 · 2026-09-10（DSH 0.1.1-rc.2 → 0.1.2-rc.1 适配）
 
