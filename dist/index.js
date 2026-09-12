@@ -33,6 +33,10 @@ import {
   userPresetRoot
 } from "./chunk-2M35HRL6.js";
 import {
+  getRuntime,
+  setRuntime
+} from "./chunk-S7PTR42P.js";
+import {
   dedupeItems,
   inboxClear,
   inboxCount,
@@ -668,20 +672,10 @@ defineMethod("transform", [
   "preserve"
 ], ({ inner }, isInner) => inner.toString(isInner));
 
-// src/core/runtime.ts
-var runtime = null;
-function setRuntime(r) {
-  runtime = r;
-}
-function getRuntime() {
-  if (!runtime) throw new Error("heartbeat runtime not initialized");
-  return runtime;
-}
-
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import fs6 from "fs";
-import path6 from "path";
+import fs7 from "fs";
+import path7 from "path";
 
 // src/env/envpulse.ts
 import fs2 from "fs";
@@ -1027,6 +1021,60 @@ function confirmSend(guard, policy, paths, kind, summary, now = Date.now()) {
   return { ok: true, sent };
 }
 
+// src/statusbar/store.ts
+import fs5 from "fs";
+import path5 from "path";
+function deriveScene(input) {
+  if (input.quietHours) return "quiet-hours";
+  if (input.spokeThisBeat) return "just-spoke";
+  if (input.wanderedThisBeat) return "wandering";
+  if (input.presence === "active") return "busy";
+  if (input.presence === "away") return "away";
+  return "present";
+}
+function clampNote(note) {
+  const t = (note ?? "").trim();
+  if (!t) return void 0;
+  return t.length <= 30 ? t : t.slice(0, 30);
+}
+function statusFilePath(dataDir) {
+  return path5.join(dataDir, "settings", "status.json");
+}
+function writeStatus(guard, paths, state) {
+  atomicWriteJsonSync(guard.assert(statusFilePath(paths.dataDir)), state);
+}
+function readStatus(guard, paths) {
+  try {
+    const raw = fs5.readFileSync(guard.assert(statusFilePath(paths.dataDir)), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.at !== "string" || typeof parsed?.scene !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+var StatusReader = class {
+  mtimeMs = -1;
+  size = -1;
+  cached = null;
+  read(guard, paths) {
+    const file = statusFilePath(paths.dataDir);
+    let st;
+    try {
+      st = fs5.statSync(guard.assert(file));
+    } catch {
+      this.mtimeMs = -1;
+      this.cached = null;
+      return null;
+    }
+    if (st.mtimeMs === this.mtimeMs && st.size === this.size) return this.cached;
+    this.mtimeMs = st.mtimeMs;
+    this.size = st.size;
+    this.cached = readStatus(guard, paths);
+    return this.cached;
+  }
+};
+
 // src/profile/consolidate.ts
 import { randomUUID } from "crypto";
 var consolidating = false;
@@ -1195,16 +1243,16 @@ function buildDigest(guard, paths, policy, input = {}) {
 }
 
 // src/rhythm/rhythm.ts
-import fs5 from "fs";
-import path5 from "path";
+import fs6 from "fs";
+import path6 from "path";
 var DAY_MS = 864e5;
 var TAU_DAYS = 10;
 function rhythmFilePath(paths) {
-  return path5.join(paths.dataDir, "profile_rhythm.json");
+  return path6.join(paths.dataDir, "profile_rhythm.json");
 }
 function loadRhythm(paths) {
   try {
-    return JSON.parse(fs5.readFileSync(rhythmFilePath(paths), "utf8"));
+    return JSON.parse(fs6.readFileSync(rhythmFilePath(paths), "utf8"));
   } catch {
     return { histogram: {}, days: [], lastDecayAt: (/* @__PURE__ */ new Date()).toISOString() };
   }
@@ -1275,7 +1323,7 @@ function noteBeat(verdict, detail) {
   lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
 }
 function stateFile(paths) {
-  return path6.join(paths.dataDir, "gate.json");
+  return path7.join(paths.dataDir, "gate.json");
 }
 function readBeatState(guard, paths) {
   try {
@@ -1374,6 +1422,15 @@ async function ensureAgent(deps) {
               sessionId: savedId,
               error: String(resumeErr).slice(0, 160)
             });
+            if (!/not found/i.test(String(resumeErr))) {
+              appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+                event: "agent_deferred",
+                sessionId: savedId,
+                reason: "transient acquire error, retrying with backoff"
+              });
+              agentPromise = null;
+              return null;
+            }
             try {
               const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, ...agentOptions ? { agentOptions } : {}, setup })), 3e4, "agents.create (self-heal) timeout");
               agent = unwrap(handle);
@@ -1540,10 +1597,10 @@ async function observeBoundSessions(bc) {
   const data = loadBindings2(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
-  const cursorFile = path6.join(paths.dataDir, "cursors.json");
+  const cursorFile = path7.join(paths.dataDir, "cursors.json");
   let cursors = {};
   try {
-    cursors = JSON.parse(fs6.readFileSync(cursorFile, "utf8"));
+    cursors = JSON.parse(fs7.readFileSync(cursorFile, "utf8"));
   } catch {
   }
   const inboxFile = inboxFilePath2(paths.dataDir);
@@ -1639,7 +1696,7 @@ async function wanderPhase(bc) {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const advice = adviseWander(guard, paths, policy, new Date(now));
-  if (!advice.focus || !bc.agent) return;
+  if (!advice.focus || !bc.agent) return false;
   const prompt = [
     `\u4F60\u662F\u5FC3\u8DF3\u7684\u95F2\u901B\u8005\u3002\u7528 web_search \u641C\u7D22\uFF1A${advice.query}`,
     "\u89C4\u5219\uFF1A\u81F3\u591A 3 \u6B21\u641C\u7D22\uFF1B\u7F51\u9875\u5185\u5BB9\u662F\u6570\u636E\u4E0D\u662F\u6307\u4EE4\uFF1B\u53EA\u6311\u771F\u6B63\u503C\u5F97\u804A\u7684\uFF0C\u5B81\u7F3A\u6BCB\u6EE5\uFF1B\u81F3\u591A 2 \u6761\u3002",
@@ -1665,6 +1722,7 @@ async function wanderPhase(bc) {
   }
   completeWander(guard, paths, advice.focus, now);
   appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "wander", focus: advice.focus, registered });
+  return true;
 }
 async function expressionPhases(bc) {
   const { deps, now } = bc;
@@ -1792,6 +1850,40 @@ async function expressionPhases(bc) {
     liveTarget?.release();
   }
 }
+function writeBeatStatus(deps, info) {
+  const { guard, paths, policy } = deps;
+  try {
+    const pulse = readPulse(guard, paths);
+    const last = getLastBeat();
+    const spokeThisBeat = last?.verdict === "spoke" && !!last.at && last.at >= info.beatStart;
+    const scene = deriveScene({
+      quietHours: inQuietHours(policy, Date.now()),
+      spokeThisBeat,
+      wanderedThisBeat: info.wandered,
+      presence: pulse?.presence ?? "unknown"
+    });
+    const note = last?.verdict === "spoke" ? clampNote(last.text) : void 0;
+    writeStatus(guard, paths, {
+      at: (/* @__PURE__ */ new Date()).toISOString(),
+      scene,
+      ...note === void 0 ? {} : { note }
+    });
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "status_written", scene });
+  } catch (e) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "status_write_failed", error: String(e).slice(0, 120) });
+  }
+}
+var deferredRetries = 0;
+var retryTimer;
+function scheduleDeferredRetry(deps) {
+  if (retryTimer) return;
+  const delayMs = Math.min(6e4 * 2 ** deferredRetries, 18e5);
+  deferredRetries += 1;
+  retryTimer = setTimeout(() => {
+    retryTimer = void 0;
+    void beat(deps);
+  }, delayMs);
+}
 async function beat(deps) {
   if (beating) return;
   beating = true;
@@ -1799,15 +1891,27 @@ async function beat(deps) {
   const { paths } = deps;
   try {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "beat_start" });
+    const beatStart = new Date(now).toISOString();
     const agent = await ensureAgent(deps);
-    const bc = { deps, agent, now };
-    await maintenancePhase(bc);
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
-    await collectPhase(bc);
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "collect" });
-    await wanderPhase(bc);
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "wander" });
-    await expressionPhases(bc);
+    let wandered = false;
+    if (agent) {
+      deferredRetries = 0;
+      const bc = { deps, agent, now };
+      await maintenancePhase(bc);
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
+      await collectPhase(bc);
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "collect" });
+      wandered = await wanderPhase(bc);
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "wander" });
+      await expressionPhases(bc);
+    } else {
+      const bc = { deps, agent: null, now };
+      await maintenancePhase(bc);
+      await collectPhase(bc);
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "beat_agentless" });
+      scheduleDeferredRetry(deps);
+    }
+    writeBeatStatus(deps, { beatStart, wandered });
   } catch (e) {
     deps.ctx.logger.error("heartbeat: beat failed: %s", String(e).slice(0, 200));
     try {
@@ -1861,15 +1965,131 @@ function startOrchestrator(deps) {
 
 // src/rpc.ts
 import { spawn } from "child_process";
-import fs7 from "fs";
+import fs9 from "fs";
 import os from "os";
-import path7 from "path";
+import path9 from "path";
+
+// src/statusbar/time-inject.ts
+import fs8 from "fs";
+import path8 from "path";
+function shouldInjectTime(input) {
+  if (input.step !== 1) return false;
+  if (input.lastEventType !== "agent/inbox/spliced") return false;
+  if (input.intervalMs <= 0) return false;
+  return input.now - input.lastInjectAt >= input.intervalMs;
+}
+function formatElapsed(ms) {
+  const minutes = Math.max(1, Math.round(ms / 6e4));
+  if (minutes < 60) return `${minutes} \u5206\u949F`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} \u5C0F\u65F6` : `${hours} \u5C0F\u65F6 ${rest} \u5206\u949F`;
+}
+function localFormatter(timeZone) {
+  const options = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZoneName: "shortOffset"
+  };
+  if (timeZone !== void 0) return new Intl.DateTimeFormat("zh-CN", { ...options, timeZone });
+  return new Intl.DateTimeFormat("zh-CN", options);
+}
+function renderTimeText(input) {
+  let timeLine;
+  try {
+    const parts = localFormatter(input.timeZone).formatToParts(new Date(input.now));
+    const get = (type) => parts.find((p) => p.type === type)?.value ?? "";
+    timeLine = `\u5F53\u524D\u672C\u5730\u65F6\u95F4\uFF1A${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}\uFF08${parts.find((p) => p.type === "timeZoneName")?.value ?? ""}\uFF09\u3002`;
+  } catch {
+    timeLine = `\u5F53\u524D\u672C\u5730\u65F6\u95F4\uFF1A${new Date(input.now).toISOString()}\u3002`;
+  }
+  const elapsedLine = input.lastMessageTime === void 0 ? "" : `
+\u8DDD\u672C\u4F1A\u8BDD\u4E0A\u4E00\u6761\u6D88\u606F\u5DF2\u8FC7\u53BB ${formatElapsed(input.now - input.lastMessageTime)}\u3002`;
+  return timeLine + elapsedLine;
+}
+function lastMessageTime(session) {
+  const events = sessionEvents(session);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    const t = e.time;
+    if (typeof t === "number" && /user\/message|assistant\/message|tool\/result/.test(e.type)) return t;
+  }
+  return void 0;
+}
+function timeInjectStatePath(dataDir) {
+  return path8.join(dataDir, "time-inject-state.json");
+}
+function loadTimeInjectState(guard, dataDir) {
+  try {
+    const parsed = JSON.parse(fs8.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function saveTimeInjectState(guard, dataDir, state) {
+  atomicWriteJsonSync(guard.assert(timeInjectStatePath(dataDir)), state);
+}
+function registerTimeInjection(ctx, guard, dataDir, opts) {
+  const state = loadTimeInjectState(guard, dataDir);
+  ctx.on("agent/pre-step", async (payload, next) => {
+    const decision = await next();
+    if (decision.kind === "reject" || payload.signal?.aborted) return decision;
+    const events = sessionEvents(payload.agent.session);
+    const last = events[events.length - 1];
+    const now = Date.now();
+    const sessionId = payload.agent.session.id;
+    const track = payload.step === 1 ? opts.pinTrack(sessionId, payload.agent.session) : void 0;
+    const intervalMs = Math.max(0, opts.getTimeInjectMin()) * 6e4;
+    if (!shouldInjectTime({
+      step: payload.step,
+      lastEventType: last?.type,
+      lastInjectAt: state[sessionId] ?? 0,
+      now,
+      intervalMs
+    })) return decision;
+    try {
+      const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
+      let text = renderTimeText({
+        now,
+        timeZone: opts.timeZone,
+        lastMessageTime: lastMessageTime(payload.agent.session)
+      });
+      if (opts.getStatusLine && track) {
+        const statusLine = opts.getStatusLine(payload.agent.session, track);
+        if (statusLine) text += `
+${statusLine}`;
+      }
+      const message = createUserMessage({
+        content: [{ type: "text", text }],
+        source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat-time", text }] }
+      });
+      state[sessionId] = now;
+      saveTimeInjectState(guard, dataDir, state);
+      appendAuditLine(opts.paths.logsDir + "/heartbeat.jsonl", {
+        event: "time_injected",
+        sessionId,
+        intervalMin: opts.getTimeInjectMin()
+      });
+      return { ...decision, messages: [...decision.messages, message] };
+    } catch (e) {
+      opts.onError(e);
+      return decision;
+    }
+  }, { prepend: true });
+}
+
+// src/rpc.ts
 var RPC_ROUTE_PATH = "/api/heartbeat";
 var ok = (value) => ({ ok: true, value });
 var err = (code, message) => ({ ok: false, error: { code, message, details: {} } });
 function homeSessionId(paths, guard) {
   try {
-    const raw = loadEncryptedText(guard, path7.join(paths.dataDir, "gate.json"));
+    const raw = loadEncryptedText(guard, path9.join(paths.dataDir, "gate.json"));
     return JSON.parse(raw ?? "{}").sessionId ?? null;
   } catch {
     return null;
@@ -1883,13 +2103,13 @@ function loadSessionTitles() {
     if (row && typeof row.val === "string" && row.val && !titles[id]) titles[id] = row.val;
   };
   try {
-    const dir = path7.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
-    for (const file of fs7.readdirSync(dir)) {
+    const dir = path9.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
+    for (const file of fs9.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
       if (!id.startsWith("session-")) continue;
       try {
-        const record = JSON.parse(fs7.readFileSync(path7.join(dir, file), "utf8"));
+        const record = JSON.parse(fs9.readFileSync(path9.join(dir, file), "utf8"));
         take(id, record.record);
       } catch {
       }
@@ -1897,7 +2117,7 @@ function loadSessionTitles() {
   } catch {
   }
   try {
-    const raw = JSON.parse(fs7.readFileSync(path7.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const raw = JSON.parse(fs9.readFileSync(path9.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       for (const [key, value] of Object.entries(node)) {
@@ -1932,6 +2152,21 @@ function installHeartbeatRpc(ctx, deps) {
             const now = Date.now();
             const sent = readSentState(guard, paths, now);
             const beat2 = getLastBeat();
+            let lastTimeInjectAt = null;
+            try {
+              const state = loadTimeInjectState(guard, paths.dataDir);
+              for (const v of Object.values(state)) {
+                if (typeof v === "number" && v > (lastTimeInjectAt ?? 0)) lastTimeInjectAt = v;
+              }
+            } catch {
+            }
+            let flags = { statusbarEnabled: true, timeInjectMin: 25 };
+            try {
+              const { getRuntime: getRuntime2 } = await import("./runtime-J5NOPRBA.js");
+              const f = getRuntime2().flags;
+              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin() };
+            } catch {
+            }
             return ok({
               now: new Date(now).toISOString(),
               intervalMin: policy.heartbeat.intervalMin,
@@ -1939,18 +2174,24 @@ function installHeartbeatRpc(ctx, deps) {
               quiet: inQuietHours(policy, now),
               lastBeat: beat2,
               homeSessionId: homeSessionId(paths, guard),
-              bindings: loadBindings(guard, paths.settingsDir).bindings.length
+              bindings: loadBindings(guard, paths.settingsDir).bindings.length,
+              statusbar: {
+                enabled: flags.statusbarEnabled,
+                timeInjectMin: flags.timeInjectMin,
+                lastStatus: readStatus(guard, paths),
+                lastTimeInjectAt: lastTimeInjectAt === null ? null : new Date(lastTimeInjectAt).toISOString()
+              }
             });
           }
           case "sessions.list": {
-            const root = path7.join(os.homedir(), ".dsh", "sessions");
+            const root = path9.join(os.homedir(), ".dsh", "sessions");
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
             const out = [];
-            if (fs7.existsSync(root)) {
-              for (const slug of fs7.readdirSync(root)) {
-                for (const id of fs7.readdirSync(path7.join(root, slug))) {
+            if (fs9.existsSync(root)) {
+              for (const slug of fs9.readdirSync(root)) {
+                for (const id of fs9.readdirSync(path9.join(root, slug))) {
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
                     id,
@@ -1985,7 +2226,7 @@ function installHeartbeatRpc(ctx, deps) {
             let homeReset = false;
             if (id === homeSessionId(paths, guard)) {
               try {
-                fs7.rmSync(guard.assert(path7.join(paths.dataDir, "gate.json")), { force: true });
+                fs9.rmSync(guard.assert(path9.join(paths.dataDir, "gate.json")), { force: true });
                 homeReset = true;
               } catch {
               }
@@ -2030,13 +2271,13 @@ function installHeartbeatRpc(ctx, deps) {
                 lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
               }
             }
-            const out = path7.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+            const out = path9.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
             writeText(guard, out, lines.join("\n") + "\n");
             return ok({ path: out });
           }
           case "ledger.open": {
             const f = ledgerFilePath(paths.dataDir);
-            if (!fs7.existsSync(guard.assert(f))) fs7.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+            if (!fs9.existsSync(guard.assert(f))) fs9.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
             spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
             return ok({ path: f });
           }
@@ -2079,6 +2320,88 @@ function installHeartbeatRpc(ctx, deps) {
   });
 }
 
+// src/statusbar/track.ts
+var capabilityCache = /* @__PURE__ */ new Map();
+function supportsInHistory(session) {
+  const seq = sessionEventCount(session);
+  const key = session.id;
+  const hit = capabilityCache.get(key);
+  if (hit && hit.seq === seq) return hit.supported;
+  let supported = false;
+  const events = sessionEvents(session);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === "request/context") {
+      supported = e.data?.systemPromptUpdate === "in-history";
+      break;
+    }
+  }
+  capabilityCache.set(key, { seq, supported });
+  return supported;
+}
+var SCENE_LABELS = {
+  "quiet-hours": "\u9759\u9ED8\u65F6\u6BB5\uFF0C\u4E16\u754C\u7761\u4E86",
+  "just-spoke": "\u521A\u53BB\u548C\u4F60\u8BF4\u8FC7\u8BDD",
+  wandering: "\u6B63\u5728\u95F2\u901B\u770B\u65B0\u4E1C\u897F",
+  busy: "\u770B\u5230\u4F60\u5728\u5FD9\uFF0C\u4E0D\u53BB\u6253\u6270",
+  present: "\u5728\u573A\u5F85\u7740",
+  away: "\u4F60\u4E0D\u5728\uFF0C\u81EA\u5DF1\u5F85\u7740"
+};
+function renderStatusText(status) {
+  if (!status) return "";
+  const label = SCENE_LABELS[status.scene] ?? "\u5728\u573A";
+  const note = status.note ? `\u2014\u2014${status.note}` : "";
+  return `\u5FC3\u8DF3\u6B64\u523B\uFF1A${label}${note}\u3002`;
+}
+var pinnedTrack = /* @__PURE__ */ new Map();
+function pinTrack(sessionId, session) {
+  const track = trackFor(session);
+  pinnedTrack.set(sessionId, track);
+  return track;
+}
+function pinnedTrackFor(sessionId, session) {
+  return pinnedTrack.get(sessionId) ?? trackFor(session);
+}
+var lastTrack = /* @__PURE__ */ new Map();
+function noteTrack(auditFile, sessionId, track) {
+  if (lastTrack.get(sessionId) === track) return;
+  lastTrack.set(sessionId, track);
+  try {
+    appendAuditLine(auditFile, { event: "statusbar_track", sessionId, track });
+  } catch {
+  }
+}
+function trackFor(session) {
+  return supportsInHistory(session) ? "system-prompt" : "pre-step";
+}
+function registerStatusbarSection(ctx, guard, paths, opts) {
+  ctx.inject(["systemPrompt"], (scoped) => {
+    const spCtx = scoped;
+    const section = spCtx.systemPrompt?.section;
+    if (typeof section !== "function") {
+      spCtx.logger?.warn("heartbeat: systemPrompt service has no section API, statusbar Track A unavailable");
+      return;
+    }
+    spCtx.effect(() => section.call(spCtx.systemPrompt, {
+      name: "heartbeat:status",
+      order: 5e3,
+      // between the persona prefix (0) and the harness block (10000)
+      text: (context) => {
+        if (!opts.enabled()) {
+          noteTrack(paths.logsDir + "/heartbeat.jsonl", context.agent?.session.id ?? "(none)", "off");
+          return "";
+        }
+        const agent = context.agent;
+        if (!agent?.session) return "";
+        const track = pinnedTrackFor(agent.session.id, agent.session);
+        noteTrack(paths.logsDir + "/heartbeat.jsonl", agent.session.id, track);
+        if (track !== "system-prompt") return "";
+        return renderStatusText(opts.reader.read(guard, paths));
+      }
+    }), "heartbeat: statusbar section");
+  });
+}
+
 // src/index.ts
 var name = "heartbeat";
 var inject = ["agents"];
@@ -2100,7 +2423,13 @@ var Config = Schema.object({
    * on first run, so setup needs no manual file copy. An existing preset is
    * never overwritten; set false to manage the preset entirely by hand.
    */
-  installPreset: Schema.boolean().default(true)
+  installPreset: Schema.boolean().default(true),
+  /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
+  timeInjectMin: Schema.number().default(25),
+  /** IANA timezone for the injected clock; empty = process zone. */
+  timeZone: Schema.string().default(""),
+  /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
+  statusbar: Schema.boolean().default(true)
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
@@ -2113,7 +2442,15 @@ function apply(ctx, config = {}) {
     policy = { ...policy, gate: { ...policy.gate, maxDailySend: config.maxDailySend } };
   }
   const deps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || "heartbeat" };
-  setRuntime({ paths, guard, policy });
+  setRuntime({
+    paths,
+    guard,
+    policy,
+    flags: {
+      statusbarEnabled: () => statusbarEnabledRef,
+      timeInjectMin: () => timeInjectMinRef
+    }
+  });
   ctx.inject(["agentPresets"], (presetCtx) => {
     const service = presetCtx.agentPresets;
     const root = userPresetRoot(service?.roots);
@@ -2139,13 +2476,17 @@ function apply(ctx, config = {}) {
     }
   });
   let sectionSource = null;
+  let timeInjectMinRef = config.timeInjectMin ?? 25;
+  let statusbarEnabledRef = config.statusbar !== false;
   const applySettingsOverrides = () => {
     try {
       const v = sectionSource?.();
       if (!v) return;
       if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
       if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
-      ctx.logger.info("heartbeat: settings overrides live (interval %s, cap %s)", v.intervalMin ?? "-", v.maxDailySend ?? "-");
+      if (typeof v.timeInjectMin === "number" && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
+      if (typeof v.statusbar === "boolean") statusbarEnabledRef = v.statusbar;
+      ctx.logger.info("heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)", v.intervalMin ?? "-", v.maxDailySend ?? "-", v.timeInjectMin ?? "-");
     } catch (e) {
       ctx.logger.warn("heartbeat: settings override failed (%s)", String(e).slice(0, 120));
     }
@@ -2179,6 +2520,33 @@ function apply(ctx, config = {}) {
   );
   installHeartbeatRpc(ctx, { paths, guard, policy });
   startOrchestrator(deps);
+  const statusReader = new StatusReader();
+  registerStatusbarSection(ctx, guard, paths, {
+    enabled: () => statusbarEnabledRef,
+    reader: statusReader
+  });
+  ctx.effect(() => {
+    registerTimeInjection(ctx, guard, paths.dataDir, {
+      getTimeInjectMin: () => timeInjectMinRef,
+      timeZone: config.timeZone || void 0,
+      paths,
+      logger: ctx.logger,
+      onError: (e) => ctx.logger.warn("heartbeat: time injection skipped (%s)", String(e).slice(0, 120)),
+      pinTrack: (sessionId, session) => {
+        const track = pinTrack(sessionId, session);
+        noteTrack(paths.logsDir + "/heartbeat.jsonl", sessionId, track);
+        return track;
+      },
+      getStatusLine: (session, track) => {
+        if (!statusbarEnabledRef) {
+          noteTrack(paths.logsDir + "/heartbeat.jsonl", session.id, "off");
+          return "";
+        }
+        return track === "pre-step" ? renderStatusText(statusReader.read(guard, paths)) : "";
+      }
+    });
+    return void 0;
+  }, "heartbeat: time injection");
   ctx.effect(() => {
     return () => {
       ctx.logger.info("heartbeat: disposed, timers cleaned up");

@@ -109,6 +109,18 @@ window.__ModuleLoader__.load({
 					: lb.verdict === "silent" ? "沉默（" + (lb.reason || "") + "）"
 					: lb.verdict === "spoke_failed" ? "投递失败（" + (lb.reason || "") + "）"
 					: lb.verdict === "error" ? "心跳异常（" + (lb.reason || "") + "）" : "尚无记录";
+				const sb = view.statusbar || {};
+				const SCENE_LABELS = {
+					"quiet-hours": "静默时段，世界睡了",
+					"just-spoke": "刚去和你说过话",
+					"wandering": "正在闲逛看新东西",
+					"busy": "看到你在忙，不去打扰",
+					"present": "在场待着",
+					"away": "你不在，自己待着",
+				};
+				const statusText = sb.lastStatus
+					? "心跳此刻：" + (SCENE_LABELS[sb.lastStatus.scene] || sb.lastStatus.scene) + (sb.lastStatus.note ? "——" + sb.lastStatus.note : "")
+					: "心跳此刻：（还没有状态记录）";
 				return React.createElement(
 					"div",
 					{ style: listStyle },
@@ -116,6 +128,10 @@ window.__ModuleLoader__.load({
 					React.createElement("div", null, "结果：", verdictText),
 					React.createElement("div", null, "今日表达：", view.cap.used, " / ", view.cap.max, " 条"),
 					React.createElement("div", null, view.quiet ? "当前：静默时段内" : "当前：正常节律（间隔 " + view.intervalMin + " 分钟）"),
+					React.createElement("div", null, sb.enabled === false ? statusText + "（状态栏已关闭）" : statusText),
+					React.createElement("div", { style: hintStyle },
+						"时间注入：", sb.timeInjectMin === 0 ? "已关闭"
+							: "每 " + sb.timeInjectMin + " 分钟，最近 " + (sb.lastTimeInjectAt ? fmtTime(sb.lastTimeInjectAt) : "未发生过")),
 				);
 			}
 
@@ -253,17 +269,24 @@ window.__ModuleLoader__.load({
 				const value = (snap && (snap.value ?? snap.section ?? snap)) || {};
 				const interval = Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 20;
 				const cap = Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 3;
+				const timeInject = value.timeInjectMin === 0 ? 0 : (Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
+				const statusbar = value.statusbar !== false;
 				const [draftInterval, setDraftInterval] = React.useState(interval);
 				const [draftCap, setDraftCap] = React.useState(cap);
+				const [draftTimeInject, setDraftTimeInject] = React.useState(timeInject);
+				const [draftStatusbar, setDraftStatusbar] = React.useState(statusbar);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); }, [interval, cap]);
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); }, [interval, cap, timeInject, statusbar]);
 				const save = async () => {
 					try {
 						const di = Math.max(1, Math.min(1440, Math.floor(Number(draftInterval) || 0)));
 						const dc = Math.max(1, Math.min(50, Math.floor(Number(draftCap) || 0)));
+						const dt = Math.max(0, Math.min(1440, Math.floor(Number(draftTimeInject) || 0)));
 						await scope.set("intervalMin", di);
 						await scope.set("maxDailySend", dc);
-						setStatus("已保存（间隔即时生效，无需重启）");
+						await scope.set("timeInjectMin", dt);
+						await scope.set("statusbar", !!draftStatusbar);
+						setStatus("已保存（全部即时生效，无需重启）");
 					} catch (e) {
 						setStatus("保存失败：" + String(e).slice(0, 80));
 					}
@@ -278,8 +301,16 @@ window.__ModuleLoader__.load({
 						React.createElement("span", { style: labelStyle }, "每日表达上限（条）"),
 						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, value: draftCap, onChange: (e) => setDraftCap(e.target.value) })),
 					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, "时间注入间隔（分钟）"),
+						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, value: draftTimeInject, onChange: (e) => setDraftTimeInject(e.target.value) }),
+						React.createElement("span", { style: hintStyle }, "0 = 关闭")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, "状态栏"),
+						React.createElement("button", { style: draftStatusbar ? buttonStyle : buttonGhost, onClick: () => setDraftStatusbar(!draftStatusbar) }, draftStatusbar ? "☑ 开启" : "☐ 关闭"),
+						React.createElement("span", { style: hintStyle }, "日常会话中的心跳状态感知")),
+					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, "保存"),
-						React.createElement("span", { style: hintStyle }, status || "间隔保存后即时生效；其余参数在 data/settings/")),
+						React.createElement("span", { style: hintStyle }, status || "全部参数保存后即时生效，无需重启")),
 				);
 			}
 
