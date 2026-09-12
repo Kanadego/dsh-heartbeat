@@ -16,6 +16,10 @@ import { deepMerge } from './config/schema.js';
 import { setRuntime, getRuntime } from './core/runtime.js';
 import { startOrchestrator, applyHeartbeatInterval, type OrchestratorDeps } from './core/orchestrator.js';
 import { installHeartbeatRpc } from './rpc.js';
+import { registerTimeInjection } from './statusbar/time-inject.js';
+import { registerStatusbarSection, noteTrack, pinTrack } from './statusbar/track.js';
+import { StatusReader } from './statusbar/store.js';
+import { renderStatusText } from './statusbar/track.js';
 import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
 
 export const name = 'heartbeat';
@@ -45,6 +49,12 @@ export const Config = z.object({
    * never overwritten; set false to manage the preset entirely by hand.
    */
   installPreset: z.boolean().default(true),
+  /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
+  timeInjectMin: z.number().default(25),
+  /** IANA timezone for the injected clock; empty = process zone. */
+  timeZone: z.string().default(''),
+  /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
+  statusbar: z.boolean().default(true),
 });
 
 export interface HeartbeatConfig {
@@ -53,12 +63,17 @@ export interface HeartbeatConfig {
   maxDailySend?: number;
   agentPreset?: string;
   installPreset?: boolean;
+  timeInjectMin?: number;
+  timeZone?: string;
+  statusbar?: boolean;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
   get(name: string): unknown;
   /** Cordis lazy service declaration: callback runs once the named services mount. */
   inject(services: string[], callback: (scoped: unknown) => void): void;
+  /** Cordis event subscription (pre-step waterfall etc.); returns a disposer. */
+  on(event: string, listener: (payload: never, next: () => Promise<unknown>) => Promise<unknown>, opts?: { prepend?: boolean }): unknown;
 }, config: HeartbeatConfig = {}): void {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
   const guard = createPathGuard(paths.dataDir);
@@ -73,7 +88,15 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   }
 
   const deps: OrchestratorDeps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || 'heartbeat' };
-  setRuntime({ paths, guard, policy });
+  setRuntime({
+    paths,
+    guard,
+    policy,
+    flags: {
+      statusbarEnabled: () => statusbarEnabledRef,
+      timeInjectMin: () => timeInjectMinRef,
+    },
+  });
 
   // ── Bundled preset self-install (C13) ───────────────────────────────────
   // The preset is what lets the heartbeat agent see `web_search` at all, and
@@ -112,13 +135,17 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // M6: settings section (namespace 'heartbeat') - the web card edits this
   // namespace; resolved values apply live (interval reschedules the timer).
   let sectionSource: (() => HeartbeatConfig) | null = null;
+  let timeInjectMinRef = config.timeInjectMin ?? 25;
+  let statusbarEnabledRef = config.statusbar !== false;
   const applySettingsOverrides = (): void => {
     try {
       const v = sectionSource?.();
       if (!v) return;
       if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
       if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
-      ctx.logger.info('heartbeat: settings overrides live (interval %s, cap %s)', v.intervalMin ?? '-', v.maxDailySend ?? '-');
+      if (typeof v.timeInjectMin === 'number' && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
+      if (typeof v.statusbar === 'boolean') statusbarEnabledRef = v.statusbar;
+      ctx.logger.info('heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)', v.intervalMin ?? '-', v.maxDailySend ?? '-', v.timeInjectMin ?? '-');
     } catch (e) {
       ctx.logger.warn('heartbeat: settings override failed (%s)', String(e).slice(0, 120));
     }
@@ -155,6 +182,42 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
   startOrchestrator(deps);
+
+  // ── M7b: self-built time injection (D20, §17.6) ────────────────────────
+  // Gate: step===1 AND user-initiated AND ≥ timeInjectMin since the last
+  // injection for that session. Official dsh-time-context is disabled via the
+  // user patch (B9 superseded by D20 — single owner). The interval is
+  // live-settable: `timeInjectMinRef` is re-read on every gate check.
+  // ── M7c: statusbar two tracks (D19, §17.4–17.5) ─────────────────────────
+  // Track A (in-history models) rides a dynamic system-prompt section; Track B
+  // rides the same pre-step message as the time injection (§17.5 combined).
+  const statusReader = new StatusReader();
+  registerStatusbarSection(ctx, guard, paths, {
+    enabled: () => statusbarEnabledRef,
+    reader: statusReader,
+  });
+  ctx.effect(() => {
+    registerTimeInjection(ctx, guard, paths.dataDir, {
+      getTimeInjectMin: () => timeInjectMinRef,
+      timeZone: config.timeZone || undefined,
+      paths,
+      logger: ctx.logger,
+      onError: (e) => ctx.logger.warn('heartbeat: time injection skipped (%s)', String(e).slice(0, 120)),
+      pinTrack: (sessionId, session) => {
+        const track = pinTrack(sessionId, session);
+        noteTrack(paths.logsDir + '/heartbeat.jsonl', sessionId, track);
+        return track;
+      },
+      getStatusLine: (session, track) => {
+        if (!statusbarEnabledRef) {
+          noteTrack(paths.logsDir + '/heartbeat.jsonl', session.id, 'off');
+          return '';
+        }
+        return track === 'pre-step' ? renderStatusText(statusReader.read(guard, paths)) : '';
+      },
+    });
+    return undefined;
+  }, 'heartbeat: time injection');
 
   // Host effect contract: fn runs immediately, returns the disposer.
   ctx.effect(() => {

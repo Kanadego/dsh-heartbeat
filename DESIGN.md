@@ -80,7 +80,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C9 | client 契约 | `dsh.client:{platform:'web'}` + exports `"./client"`；client 模块 = `window.__ModuleLoader__.load({id, factory})`，**factory 必须返回带 `apply` 的对象**（client 侧也跑 cordis，同样校验）；设置卡片 = `ctx.slots.inject('settings.section', function*(){ yield ctx.slots.register({name:'settings.section', id, order, label, inject}, ReactComponent) })`；client inject 服务：`settingsScope / slots / locale / sessions / remote` |
 | C10 | 安装是复制 | `file:` 协议安装 = 目录拷贝，**改源码后必须重拷 dist 到 node_modules 副本或重跑 `dsh plugin add`**，否则跑的是旧代码 |
 | C11 | 持久化布局 | `~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 node:zlib 解）；会话 flush 是惰性的，活跃内容可能只在内存 |
-| C12 | **模型路由（0.1.2-rc.1 变更）** | `agents.create/resume` 的 `agentOptions` 默认 `{}`，**0.1.2-rc.1 起不再代填部署默认**：不传就 `options.model === undefined`，内置 persona（`deployment:persona` 段，`You are a coding agent powered by the {{model}} model…`）插值失败，**每一轮**都在起点抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`。宿主自己的做法（`dsh-api-session-controller` 的 `agentOptions()`）是读默认选择；插件侧 `defaultAgentOptions(ctx)` 调 `ctx.get('agentDefaultModel').currentSelection()` → `{provider, model, reasoningEffort?}`。**投递目标的 resume 同样必须带它**（2026-09-10 晚踩坑）：`acquireTargetAgent` 漏传时拉起的 agent 没有模型路由（审计 `deliver_target_resumed model="(none)"`），投递回合每次都死在 `{{model}}` 插值上；更要命的是宿主会把该 agent 当作这个会话的 live agent 继续复用（`api-session` 的 `createOrAdopt`：`live !== undefined → return live`），于是**报错出现在用户自己的会话里**。修好后投递一结束就 `handle.dispose()`（审计 `deliver_target_released`），把被插件改造过的 agent 还回去，宿主会在用户下次打开该会话时按自己的 composition 重建 |
+| C12 | **模型路由（0.1.2-rc.1 变更）** | `agents.create/resume` 的 `agentOptions` 默认 `{}`，**0.1.2-rc.1 起不再代填部署默认**：不传就 `options.model === undefined`，内置 persona（0.1.5 起拆为 `deployment:persona-prefix`/`-suffix` 段，原 `deployment:persona`，`You are a coding agent powered by the {{model}} model…`）插值失败，**每一轮**都在起点抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`。宿主自己的做法（`dsh-api-session-controller` 的 `agentOptions()`）是读默认选择；插件侧 `defaultAgentOptions(ctx)` 调 `ctx.get('agentDefaultModel').currentSelection()` → `{provider, model, reasoningEffort?}`。**投递目标的 resume 同样必须带它**（2026-09-10 晚踩坑）：`acquireTargetAgent` 漏传时拉起的 agent 没有模型路由（审计 `deliver_target_resumed model="(none)"`），投递回合每次都死在 `{{model}}` 插值上；更要命的是宿主会把该 agent 当作这个会话的 live agent 继续复用（`api-session` 的 `createOrAdopt`：`live !== undefined → return live`），于是**报错出现在用户自己的会话里**。修好后投递一结束就 `handle.dispose()`（审计 `deliver_target_released`），把被插件改造过的 agent 还回去，宿主会在用户下次打开该会话时按自己的 composition 重建 |
 | C13 | **agent 预设** | `agents.create/resume` 发布的是**裸 agent**：不加入任何预设时，工具/提示段/技能目录全部按**空全局层**解析（`dsh-agent-presets` 原话："agent \"X\" was published without joining an agent preset; its tools, prompt sections, and skill catalog resolve against the empty global layer"），部署预设里的 `web_search` 因此完全不存在，闲逛相只能返回空数组。修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async，要求 `scopeOf(agentCtx)` 有效，id 缺省用 `defaultId`）。预设布局：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`（随附预设根 `<dsh-agent-presets>/presets/`；组合文件名固定 `COMPOSITION_FILE='agent.cordis.yml'`；id 需匹配 `[a-z0-9][a-z0-9-]*`）。服务另有 `list/read/copy/mount/composeFrom/standingKeyFor/select`。**预设目录在用户家目录**，插件不要求用户手抄：模板随包在 `assets/presets/heartbeat/`，启动时自动补齐（见 C18） |
 | C18 | **预设自动安装** | 插件启动时（`ctx.inject(['agentPresets'], …)` 里）取 `agentPresets.roots`（**公开 getter**，返回 `resolvedRoots`）里 `trust === 'user'` 的那一项，作为真正被扫描的用户预设根——不必自己猜 `~/.dsh`，也不依赖 `@deepseek-ai/dsh-home-paths`（该包**不在** profile 的 node_modules 里，import 不到）。`installBundledPreset()` 的语义：目录/文件缺失 → 建（`created`）；目录在但缺 `agent.cordis.yml` → 补（`repaired`）；**已有 composition 文件一个字节都不动**（`exists`，手改过的自定义预设安全），只有 `force` 才覆盖（`restored`）；`installPreset:false` → `skipped-disabled`。CLI 走 `conventionalUserPresetRoot()`（`$DSH_HOME.trim() || home/.dsh` + `/.agent-presets`）。另：`dsh-agent-presets` 的 `list()` 每次调用都重新 readdir（`scanRoot`，**无缓存**），所以运行期新建的预设目录对下一次 `mount()` 立即可见，**不需要重启宿主** |
 | C14 | **事件形态** | `assistant/message` 的 `content` 是**块数组**：`[{type:'reasoning',text:…},{type:'text',text:…}]` —— reasoning 块同样带 `text` 字段，若按 `typeof c.text === 'string'` 过滤，会把思考草稿与正文**无分隔拼接**（`…{"speak":false}{"speak":false}`），JSON 解析必崩（`SyntaxError: Unexpected non-whitespace character after JSON at position 15`）。**读模型输出必须排除 reasoning 块**；流式事件里另有 `{type:'block-start',blockType:'reasoning'}` 与 `block-end.block.type` 可判 |
@@ -223,6 +223,11 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `interval_changed` | settings/入口覆盖生效 | 确认卡片保存的值是否落到运行时 |
 | `retention` / `BURN_EVENT` | 清理/焚毁 | BURN_EVENT 是焚毁唯一痕迹 |
 | `preset_install` | 启动时对齐随包预设 | action：`exists`（已有，一字节没动）/ `created` / `repaired`（幽灵目录被补全）/ `restored`（force 覆盖）/ `skipped-*` / `error`；`skipped-no-root` = roster 里没有 user 根 |
+| `rpc_registered` | RPC 路由注册成功 | v1.2.1 起：`route=/api/heartbeat` 出现 = 卡片 RPC 可用；缺失 = 注册失败（C21） |
+| `agent_deferred` / `beat_agentless` | 引擎室获取瞬态失败退避重试 | resume 报"owned/迁移未完成"等非 not-found 错误时**不再弃家重建**（2026-09-13 修：旧逻辑曾因启动竞态把引擎室甩到空白会话）；60s×2ⁿ 退避（上限 30 min），成功后复位 |
+| `status_written` / `status_write_failed` | M7 状态数据源每跳写入 | scene：`quiet-hours > just-spoke > wandering > busy > present > away`；`data/settings/status.json` 明文（D21 红线：零时间词） |
+| `time_injected` | M7 自研时间注入（D20） | 门控 = step===1 且用户发起（末事件 `agent/inbox/spliced`）且距上次 ≥ timeInjectMin；节流状态在 `data/time-inject-state.json`（按会话，重启不丢）；官方 time-context 已停用（用户 patch 移除，D20） |
+| `statusbar_track` | 状态栏轨道翻转（M7c，D19） | `system-prompt`（in-history 模型）/ `pre-step`（其余 + 无证据的新会话）/ `off`（开关关闭）；只在翻转时记一条；轨道**钉在轮次起点**（step===1 重钉），中途能力翻转不会劈开同一轮 |
 
 ### 7.2 症状 → 排查表
 
@@ -359,17 +364,25 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 15. 变更日志
 
-> 版本口径：v1.2 是**当前版本**（DSH ≥ 0.1.2-rc.1，兼容 0.1.5-rc.2，peer `^0.1.1-rc.2 || ^0.1.5-rc.2`）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.3 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
 
-### v1.2 · 2026-09-12（DSH 0.1.2-rc.1 → 0.1.5-rc.2 适配）
+### v1.3.0 · 2026-09-13（M7 状态栏与自研时间注入）
 
-npm 包逐包源码对比核对（2026-09-11）+ 实机升级验证（2026-09-12）：**C1–C18 全部存活**，v1.1 的三处关键修复（模型路由/预设挂载/client id）在 0.1.5 下继续有效。新变化沉淀为 C19（`assistant/chunk` → `assistant/attempt` + 新 surface 事件 `system/message`）与 C20（持久层重构 + 会话格式 v3 迁移）。改动：
+需求侧见 设计要求.md r7（§17，D19–D21）。实现要点：
 
-- `terminalTurnError()` 兼容扫描 `assistant/attempt`（失败尝试整段嵌入 `data.stream`），新旧宿主诊断信息都完整；
-- peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`；
-- 新增 **`scripts/repair-v0-members.mjs`**（§13.1）：修复升级 0.1.5 后旧会话迁移被拒（compaction/summary 白名单外成员 + r5 旧投递缺 id 残留），实战 5 会话 65 事件全部通过宿主真翻译器复核；
-- 实机确认：升级后旧会话首次访问自动迁移到 v3（历史 v0 代文件保留），引擎室心跳与投递正常；
-- **实机补记（2026-09-12）**：升级后卡片 RPC 全 405——0.1.5 cordis 严格解析下**自定义 `rpc.handle` 通道整体不可用**（Service 把 this.ctx 钉在提供方上下文，内部 `owner.webServer.register` 必然无许可，调用方无法自救，见 C21）。RPC 迁移为 `/api` 精确 Fetch 路由（客户端调用方式随改），新增 `rpc_registered` 审计行。教训补在 §12.8：源码对比之外，升级后还要**打开一次设置卡片**——RPC 链路的故障只在 UI 侧可见。
+- **状态数据源**（statusbar/store）：引擎室每跳派生场景（`quiet-hours > just-spoke > wandering > busy > present > away`，信号 = 静默窗/本跳开口/本跳闲逛/envpulse presence）写 `data/settings/status.json`（明文，D21 零时间词）；`StatusReader` mtime 缓存供注入轨热路径。
+- **自研时间注入**（statusbar/time-inject，D20）：pre-step 门控（step===1 且用户发起）+ 25 min 默认节流（`timeInjectMin`，UI 可调，0=关闭）+ 精确时间/elapsed；节流状态 `data/time-inject-state.json` 按会话持久。**官方 time-context 停用**（用户 patch 移除 insert，B9 由 D20 取代）。
+- **两轨状态注入**（statusbar/track，D19）：`in-history` 模型（读 `request/context` 的 `systemPromptUpdate`，缓存按事件数重判）走 `heartbeat:status` 系统 section（order 5000，空文本自动丢弃）；其余模型在 pre-step 时间消息尾追加状态行。**轨道钉在轮次起点**（step===1 重钉，两轨读同一钉；琥珀评审 #5），渲染纯性红线（琥珀评审 #2：宿主对逐字节相同文本零提交，渲染层禁高频字段）。
+- **自愈保守化**：引擎室 resume 失败仅在确认"会话不存在"时才重建，其余瞬态错误（启动竞态 `SessionAlreadyOwnedError` 等）退避重试——2026-09-13 竞态曾把引擎室甩到空白会话，已修。
+- **UI**：节律配置加"时间注入间隔（分钟，0=关闭）"与"状态栏"开关；状态分区加"心跳此刻：…"与时间注入行；RPC `status` 端点扩 `statusbar` 块。
+
+### v1.2.1 · 2026-09-12（卡片 RPC 405 修复）
+
+0.1.5 的 cordis 严格服务解析下**自定义 `rpc.handle` 通道整体不可用**（Service 把 this.ctx 钉在提供方上下文，内部 `owner.webServer.register` 必然无许可，调用方无法自救，C21）。RPC 迁移为 `/api` 精确 Fetch 路由（`connection.fetch.register`，两代宿主通用），客户端改 `rpc.call('/api', 'heartbeat', {endpoint, …})`；新增 `rpc_registered` 审计行。
+
+### v1.2.0 · 2026-09-11（适配 DSH 0.1.5-rc.2）
+
+C19（`assistant/chunk` → `assistant/attempt` 诊断兼容）+ C20（持久层重构/会话格式 v3 迁移）+ peer 放宽 `^0.1.1-rc.2 || ^0.1.5-rc.2`；新增 `scripts/repair-v0-members.mjs`（迁移被拒修复，实战 5 会话 65 事件）。
 
 ### v1.1 · 2026-09-10（DSH 0.1.1-rc.2 → 0.1.2-rc.1 适配）
 

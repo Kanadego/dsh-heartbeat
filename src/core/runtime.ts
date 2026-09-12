@@ -8,6 +8,11 @@ export interface HeartbeatRuntime {
   paths: WorkspacePaths;
   guard: PathGuard;
   policy: Policy;
+  /** Live UI flags (M7): re-read by the RPC status endpoint for the card. */
+  flags: {
+    statusbarEnabled(): boolean;
+    timeInjectMin(): number;
+  };
 }
 
 let runtime: HeartbeatRuntime | null = null;

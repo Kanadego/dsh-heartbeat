@@ -35,6 +35,8 @@ import { buildDigest } from './profile/digest.js';
 import { ledgerFilePath } from './ledger/ledger.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
 import { loadEncryptedText, writeText } from './vault/vault.js';
+import { readStatus } from './statusbar/store.js';
+import { loadTimeInjectState } from './statusbar/time-inject.js';
 import type { Policy } from './config/schema.js';
 
 /** Exact Fetch route under /api (C21: custom rpc.handle channels are unusable
@@ -161,6 +163,20 @@ export function installHeartbeatRpc(
             const now = Date.now();
             const sent = readSentState(guard, paths, now);
             const beat = getLastBeat();
+            // M7 statusbar block (§17.8): store + throttle-state + live flags.
+            let lastTimeInjectAt: number | null = null;
+            try {
+              const state = loadTimeInjectState(guard, paths.dataDir);
+              for (const v of Object.values(state)) {
+                if (typeof v === 'number' && v > (lastTimeInjectAt ?? 0)) lastTimeInjectAt = v;
+              }
+            } catch { /* missing state file = never injected */ }
+            let flags = { statusbarEnabled: true, timeInjectMin: 25 };
+            try {
+              const { getRuntime } = await import('./core/runtime.js');
+              const f = getRuntime().flags;
+              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin() };
+            } catch { /* pre-init: report defaults */ }
             return ok({
               now: new Date(now).toISOString(),
               intervalMin: policy.heartbeat.intervalMin,
@@ -169,6 +185,12 @@ export function installHeartbeatRpc(
               lastBeat: beat,
               homeSessionId: homeSessionId(paths, guard),
               bindings: loadBindings(guard, paths.settingsDir).bindings.length,
+              statusbar: {
+                enabled: flags.statusbarEnabled,
+                timeInjectMin: flags.timeInjectMin,
+                lastStatus: readStatus(guard, paths),
+                lastTimeInjectAt: lastTimeInjectAt === null ? null : new Date(lastTimeInjectAt).toISOString(),
+              },
             });
           }
 
