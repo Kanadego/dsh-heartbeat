@@ -20,25 +20,42 @@ import type { WorkspacePaths } from '../core/paths.js';
 import { StatusReader } from './store.js';
 import type { StatusState } from './store.js';
 
-/** Latest-route capability probe (§17.7). Cached per session against the log
- * length; a model/route switch appends a fresh `request/context` and re-arms. */
-const capabilityCache = new Map<string, { seq: number; supported: boolean }>();
+// ── capability probe (琥珀 review 2026-09-13 #1: incremental tail scan) ───
+// Cache keyed by "how far we've scanned", NOT by log length: the length grows
+// every step, so a length key would miss (and rescan the whole log backwards)
+// on every assembly. We remember the scan watermark and, on new events, read
+// only the tail (snapshotEvents(fromSeq) range) for NEW request/context rows.
+interface CapabilityCache {
+  /** Event count at the time of the last scan. */
+  scannedUpTo: number;
+  supported: boolean;
+}
+const capabilityCache = new Map<string, CapabilityCache>();
 
 export function supportsInHistory(session: HostSession): boolean {
-  const seq = sessionEventCount(session);
   const key = session.id;
+  const len = sessionEventCount(session);
   const hit = capabilityCache.get(key);
-  if (hit && hit.seq === seq) return hit.supported;
+  if (hit && hit.scannedUpTo === len) return hit.supported;
+  // Log shrank (session reset under the same id) → rescan from zero.
+  const from = hit && len >= hit.scannedUpTo ? hit.scannedUpTo : 0;
   let supported = false;
-  const events = sessionEvents(session);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i]!;
+  if (from !== 0 && hit) supported = hit.supported;
+  const readTail = (fromSeq: number): { type: string; data?: unknown }[] => {
+    if (typeof session.snapshotEvents === 'function') {
+      try {
+        const slice = session.snapshotEvents(fromSeq);
+        if (Array.isArray(slice)) return slice;
+      } catch { /* fall through to the legacy full read */ }
+    }
+    return sessionEvents(session).slice(fromSeq);
+  };
+  for (const e of readTail(from)) {
     if (e.type === 'request/context') {
       supported = (e.data as { systemPromptUpdate?: string } | undefined)?.systemPromptUpdate === 'in-history';
-      break;
     }
   }
-  capabilityCache.set(key, { seq, supported });
+  capabilityCache.set(key, { scannedUpTo: len, supported });
   return supported;
 }
 
@@ -64,11 +81,20 @@ const SCENE_LABELS: Record<StatusState['scene'], string> = {
  * emits no updates when the rendered prompt is byte-identical), so purity here
  * is what keeps the in-history append cadence at "per scene change", not "per
  * step". Any field varying faster than the scene belongs in the time
- * injection, never here. */
-export function renderStatusText(status: StatusState | null): string {
+ * injection, never here.
+ *
+ * NOTE POLICY (琥珀 review 2026-09-13 #3): `withNote: false` for the Track A
+ * section — the scene label is a constant-table mapping (maximally stable),
+ * while the note is engine-room free text that can differ every beat and
+ * would defeat the host's byte-dedupe. The note is for the UI and the Track B
+ * pre-step line (where each message is small and already event-shaped). */
+export function renderStatusText(
+  status: StatusState | null,
+  opts?: { withNote?: boolean },
+): string {
   if (!status) return '';
   const label = SCENE_LABELS[status.scene] ?? '在场';
-  const note = status.note ? `——${status.note}` : '';
+  const note = opts?.withNote === false ? '' : status.note ? `——${status.note}` : '';
   return `心跳此刻：${label}${note}。`;
 }
 
@@ -163,7 +189,7 @@ export function registerStatusbarSection(
         const track = pinnedTrackFor(agent.session.id, agent.session);
         noteTrack(paths.logsDir + '/heartbeat.jsonl', agent.session.id, track);
         if (track !== 'system-prompt') return '';
-        return renderStatusText(opts.reader.read(guard, paths));
+        return renderStatusText(opts.reader.read(guard, paths), { withNote: false });
       },
     }), 'heartbeat: statusbar section');
   });
