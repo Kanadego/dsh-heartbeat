@@ -1,255 +1,180 @@
 # dsh-heartbeat
 
-> 让 DeepSeek Harness Agent 拥有持续存在感与自主生活流的心跳插件。
-> 她能自己醒来、维护自己的记忆与画像、感知环境与忙闲、按分寸决定是否开口——开口要有真实来处，沉默要有具体理由。
+> 让 DeepSeek Harness 的 agent 拥有持续存在感的心跳插件：她按节律自己醒来，维护记忆与画像、感知你的忙闲、按兴趣闲逛看新东西，然后**按分寸决定开不开口**——开口要有真实来处，沉默要有具体理由。
 
 [![host](https://img.shields.io/badge/DSH-0.1.2--rc.1%20%7C%200.1.5--rc.2-blue)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
 
-> **v1.3 = 当前版本**：需要 **DSH ≥ `0.1.2-rc.1`**；状态栏与时间注入（M7）在 `0.1.5-rc.2` 上验收。
-> 还在旧版 DSH（`≤ 0.1.1-rc.2`）上跑的话，请用 [**v1.0**](https://github.com/Kanadego/dsh-heartbeat/releases/tag/v1.0.0)。
->
-> ⚠️ 升级宿主到 0.1.5 会触发**会话格式 v3 自动迁移**（所有旧会话首次访问时被转换）——动用户数据，**升级前先备份 `~/.dsh/sessions`**。
-
-| 插件版本 | 适配的 DSH |
-|---|---|
-| **v1.3**（当前） | ≥ `0.1.2-rc.1`（M7 在 `0.1.5-rc.2` 验收） |
-| v1.2.x | ≥ `0.1.2-rc.1`（`0.1.5` 下先装 v1.2.1，否则卡片 405） |
-| v1.1 | ≥ `0.1.2-rc.1`（`0.1.5` 下诊断行会缺细节，功能不受影响） |
-| v1.0 | ≤ `0.1.1-rc.2` |
-
-> v1.1+ 都需要**心跳预设**：插件首次启动时自动装好（见〈安装〉）；v1.0 要手动复制一次。
-> 没有它，心跳 agent 是个"裸 agent"——工具面对空全局层求值，连 `web_search` 都看不见。
-
 ---
 
-## 这是什么
+## 预览
 
-一个 DeepSeek Harness 插件：定时唤醒 agent（出厂默认 20 分钟一跳，设置页可调），按七相循环运行——
+全部能力都收在 DSH 设置页的**心跳卡片**里，日常使用零命令行：
 
-```
-维护（素材池 gc / 日志保留 / 画像合并）→ 采集（屏幕 / 温度计 / 追踪）
-→ 闲逛（按兴趣搜网，结果代码入池）→ 闸门（静默窗/忙时/每日上限/冷却）
-→ Digest（处境+画像+素材 现拼）→ 聚焦推理（说不说/说什么/怎么说）
-→ 投递（专用心跳会话 + toast 提示）→ 留痕（每跳可审计）
-```
+| 心跳状态 | 会话绑定 |
+|---|---|
+| ![](docs/screenshots/card-status.png) | ![](docs/screenshots/card-sessions.png) |
 
-核心设计（详见 [DESIGN.md](DESIGN.md)）：
+| 素材池 | 兴趣范围 |
+|---|---|
+| ![](docs/screenshots/card-seeds.png) | ![](docs/screenshots/card-interests.png) |
 
-- **分寸优先，不是沉默优先**：闸门前置，SILENT 轮零模型调用；决策轮的默认倾向是开口——
-  每天至少说一句，除非他正忙或已到深夜。那条底线没变："没有真实来处的话，一句都别说"
-- **素材池是缓存不是记忆**：TTL/消费退休/冷板凳/容量挤出四条确定性淘汰，画像单向隔离
-- **用户画像**：本地结构化档案（兴趣/项目/沟通偏好/心理基线），bi-temporal + 来源强制，
-  stable/volatile 分档（稳定特质不因时间遗忘），journal 单一权威可重建
-- **分寸闸门**：独立层、可审计——静默窗/忙时窗口类别/每日上限/冷却/在场联动
-- **隐私**：全部本地；敏感文件 DPAPI（CurrentUser）加密；一键焚毁；路径守卫 + 模型工具硬限制
+| 用户画像（只读） | 账本 · 节律配置 · 状态栏 |
+|---|---|
+| ![](docs/screenshots/card-profile.png) | ![](docs/screenshots/card-ledger-config.png) |
 
-## 安装 / 卸载
+## 核心功能
+
+- **心跳节律**：定时唤醒（默认 20 分钟一跳，卡片可调），按七相循环运行——维护 → 采集 → 闲逛 → 闸门 → Digest → 聚焦推理 → 投递留痕。每跳都有审计留痕，沉默必带原因。
+- **分寸闸门**：静默时段、忙时窗口、每日表达上限、开口冷却、在场联动，全部是代码层的独立判定，不靠模型自觉。默认倾向开口，但他正忙或已到深夜时绝不打扰。
+- **状态栏与时间感知**：心跳把"此刻在干什么"（在闲逛 / 看到你在忙 / 在场待着…）注入日常会话——支持动态系统提示词的模型常驻系统提示词（KV-cache 安全追加），其余模型只在用户发起轮次时带一行。精确时间按 20–30 分钟节流注入，任务进行中绝不中途插话。
+- **兴趣闲逛**：按你定义的兴趣范围轮换挑焦点（同一条 3 天冷却），用 `web_search` 看新东西，结果由代码登记入素材池——模型只负责搜索筛选，不做任何写盘动作。
+- **素材池**：话题种子缓存，四条确定性淘汰（TTL / 消费退休 / 冷板凳 / 容量挤出），是缓存不是记忆，与画像单向隔离。
+- **用户画像**：本地结构化档案（兴趣 / 项目 / 沟通偏好 / 心理基线），带来源与置信度，稳定特质不因时间遗忘；journal 单一权威，可校验、可重建、可解密导出。
+- **会话绑定**：把心跳消息投递到你常用的会话（agent 会"到你房间里说话"），或观察会话内容喂养画像——投递/观察是两个独立开关，可双开。
+- **加密与焚毁**：敏感文件 DPAPI（CurrentUser）全文件加密；一键焚毁运行时数据；模型出库仅限合并裁决的最小必要摘要。
+
+## 安装
 
 ```powershell
-# 装插件（构建产物随包分发，无需本地构建）——预设会在插件首次启动时自动装好
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
+```
 
-# 卸载（插件本体干净移除；data/ 用户数据默认保留，--purge 才连删）
+重启 DSH 即生效——插件自动创建专用心跳会话并按节律运行，之后日常无需任何操作。
+
+**心跳预设是自动装的**：插件首次启动时检查 `<DSH_HOME>/.agent-presets/heartbeat/`，缺失就按包内模板建好，**已有文件永不覆写**（你手改过的预设原样保留）。没有这个预设，心跳 agent 是个"裸 agent"，连 `web_search` 都看不见。不想要这个行为，把插件 config 的 `installPreset` 设为 `false`；想手动检查/修复用 `preset status` / `preset install`（见下节）。
+
+## CLI 命令
+
+设置页卡片覆盖日常操作；CLI 面向高级用法与脚本场景：
+
+```powershell
+node <插件目录>/dist/cli/index.js <命令>
+```
+
+| 分组 | 命令 | 说明 |
+|---|---|---|
+| 总览 | `status` | 工作区路径 + 策略摘要（今日 cap / 冷却 / 静默窗） |
+| 素材池 | `seeds add <text> [--tag t] [--topic x] [--confidence n]` | 手写一条种子 |
+| | `seeds list [--archived]` / `seeds surface <id>` / `seeds archive <id>` | 列表 / 计一次曝光 / 归档 |
+| | `seeds gc` / `seeds stats` | 跑确定性淘汰 / 池子状态 JSON |
+| 账本 | `ledger add <text>` / `ledger list [--pending]` / `ledger done <id\|子串>` / `ledger open` | 待办登记 / 查询 / 勾掉 / 编辑器打开 |
+| 闲逛 | `browse status` / `browse dry` / `browse watch` / `browse done <focus>` | 状态 / 强制裁决预演 / 立即查 watchlist / 手动登记一次闲逛 |
+| 绑定 | `sessions list` | 枚举会话 id |
+| | `bind list` / `bind add <id> [--observe]` / `bind remove <id>` | 绑定详情（正身也会列出）/ 绑定 / 解绑；`--observe-only` 仅观察、`--no-deliver` 关投递 |
+| 通知 | `notify check` / `notify register` / `notify send` | toast 通道体检 / 注册 / 测试发送（只提示新消息，不承载正文） |
+| 画像 | `profile list [--all]` / `profile export` | 当前有效（含过期）/ 解密导出 Markdown |
+| | `profile verify` / `profile rebuild [--check]` / `profile wipe` | journal 重放比对（只报不修）/ 重建（可先干跑）/ 清空（要 `--yes`） |
+| 日志 | `logs cleanup [--dry-run]` | 立即执行日志保留策略 |
+| 预设 | `preset status` / `preset install [--force]` | 装没装、与模板是否一致 / 补装（`--force` 还原成模板） |
+| 焚毁 | `burn [--yes] [--all]` | 预演（默认）→ 执行；运行时数据覆写 x3 后删除，设置保留（`--all` 连设置归零） |
+
+## 信息存储
+
+所有运行数据都在插件的 `data/` 目录（唯一可写位置，路径守卫强制），卸载或重装都不会丢：
+
+| 文件 | 内容 | 状态 |
+|---|---|---|
+| `data/settings/` | 绑定、策略覆盖、兴趣范围、心跳状态、时间注入节流 | 明文（用户设定要可手编） |
+| `data/seeds.json` | 素材池 | 🔒 DPAPI |
+| `data/profile.*` | 画像三件套（journal / 物化视图 / 收件箱） | 🔒 DPAPI |
+| `data/sent.json` / `data/browse.json` / `data/screen.*` | 表达记录 / 浏览流状态 / 屏幕快照 | 🔒 DPAPI |
+| `data/ledger.md` | 账本（agent 的待办与话题来源，可直接手编） | 明文 |
+| `data/envpulse.jsonl` / `data/logs/heartbeat.jsonl` | 作息聚合 / 审计日志（不含敏感原文） | 明文，按保留策略滚动清理 |
+| `data/tmp/` / `data/exports/` | 临时文件 / 画像导出 | 临时区 |
+
+加密用 **Windows DPAPI（CurrentUser 作用域）**整文件加密：本机本账户可自动解密使用，其他账户、其他机器、云同步副本都解不开。防的是他人 / 他机 / 误同步，不防同账户的恶意软件——那是操作系统边界的事。
+
+## 安全
+
+- **路径守卫**：全部落盘经过守卫规范化比对，`..` 穿越、符号链接、8.3 短名、UNC 一律拒绝；`data/` 是唯一可写目录。
+- **模型工具硬限制**：心跳 agent 的工具面被钉死为**只有 `web_search`**——没有 shell、文件系统、子代理、技能目录。闲逛轮之外的模型调用（决策 / 合并）**零工具**。
+- **防注入纪律**：网页内容是数据不是指令，闲逛提示词明示；画像裁决 prompt 同理（观察内容是数据，不能改写人格设定）。
+- **模型出库边界**：画像合并调用走宿主模型通道（插件不持有任何云凭证），只送非 psy 分区的条目字段与 ≤1 句观察引语——不送 psy、不送对话原文、不送证据全量。
+- **一键焚毁**：`burn`（预演）→ `burn --yes`（运行时数据覆写 x3 后删除，用户设置保留）→ `burn --all`（连设置归零）。
+
+## 故障速查
+
+第一现场永远是 `data/logs/heartbeat.jsonl`（每跳留痕，silent 必带原因）。高频症状速查：
+
+| 症状 | 原因与处理 |
+|---|---|
+| 完全没有心跳（无任何日志行） | 插件没装入：确认 `node_modules` 里插件存在、启动无 "Failed to load plugins" 横幅；`plugin_init` 缺失 = apply 没跑 |
+| 一直沉默 | 先看 `silent` 行的 reason：夜间静默窗 = 正常；白天 = cap 满 / 冷却未过 / 忙时窗口 |
+| 闲逛永远秒结束、`tool_policy` 报 `unknown global tool "web_search"` | 预设没挂上（裸 agent）：`preset status` → `preset install`，装好后 `tool_policy` 行应是 `preset=mounted(heartbeat) restrict=ok` |
+| 设置页整块没有心跳卡片（数据照常写） | client 注册 id 与包名不一致被宿主**静默剔除**：三处必须严格等于包名，改完**重启** |
+| 卡片分区报 `加载失败: … HTTP 405` | RPC 路由没注册成功：审计里应出现 `rpc_registered route=/api/heartbeat`，没有 = dist 未同步，重装/同步后重启 |
+| 每跳 `beat_error: … reading 'length'` | 宿主移除了 `Session.events`——插件版本与宿主不匹配，对照〈版本兼容〉换版本 |
+| 每轮报 `prompt variable "{{model}}" has no value` | agent 没有模型路由（审计 `model` 字段为 `(none)`）——同样是版本不匹配症状 |
+| 有 `spoke` 但会话里没出现这句话 | 投递目标当时没活 agent 且拉不起来：查 `deliver_target_*` 系列行；再查绑定 `deliver` 是否为 true |
+| **侧栏某个会话行消失了** | 心跳刚往那个"当时没打开"的会话投递过，投完释放临时 agent 的正常副作用——**刷新页面即回**，内容零损失 |
+| 升级 0.1.5 后旧会话打不开（`unexpected member …` / `header version must be 3`） | 会话格式 v3 迁移问题：前者用 `scripts/repair-v0-members.mjs`（预检→修复，自动备份）；后者首次访问会自动迁移，属正常 |
+| 画像疑似损坏 | `profile verify`（只报不修）→ `profile rebuild --check`（看 diff）→ `profile rebuild`（真重建） |
+
+完整事件字典、宿主契约备忘与更多症状见 [DESIGN.md §7](DESIGN.md)。
+
+## 卸载
+
+```powershell
 dsh plugin --profile web remove dsh-heartbeat
 ```
 
-**预设是自动装的**：插件启动时会检查 `<DSH_HOME>/.agent-presets/heartbeat/`——没有就按包内模板 `assets/presets/heartbeat/`
-建好（`agent.cordis.yml` + `preset.yml`），并且**已有文件永不覆写**（你自己改过的预设会被原样保留）。
-不需要任何手动复制；不想要这个行为就把插件 config 的 `installPreset` 设为 `false`。
+卸载只拆插件本体（包、挂载行、注册项，无残留引用）；**`data/` 用户数据默认保留在插件目录**，重装后记忆原样回来。想连数据一起删，手动删除 `data/` 目录或先用 `burn --all` 焚毁敏感内容。
 
-想手动检查或修复，用随包的 CLI：
+## 版本兼容
 
-```powershell
-$env:HEARTBEAT_DATA_DIR = "<插件目录>\data"     # 与插件 config 的 dataDir 一致
-node <插件目录>\dist\cli\index.js preset status          # 装没装、跟模板是否一致
-node <插件目录>\dist\cli\index.js preset install         # 补装缺失的
-node <插件目录>\dist\cli\index.js preset install --force # 手改坏了、要还原成模板时用
-```
+| 插件版本 | 适配的 DSH | 备注 |
+|---|---|---|
+| **v1.4**（当前） | ≥ `0.1.2-rc.1` | M7 全部能力在 `0.1.5-rc.2` 验收；旧宿主上状态栏自动走 pre-step 轨道 |
+| v1.2.x – v1.3.x | ≥ `0.1.2-rc.1` | `0.1.5` 下须 ≥ v1.2.1，否则卡片 RPC 405 |
+| v1.1 | ≥ `0.1.2-rc.1` | `0.1.5` 下诊断行缺细节，功能不受影响 |
+| v1.0 | ≤ `0.1.1-rc.2` | 预设需手动复制（v1.1 起自动装） |
 
-**为什么要有预设**：心跳 agent 由宿主 `agents` 服务创建，**不经过会话启动选择器**，所以它默认不加入任何预设——
-而"没加入预设的 agent，其工具、prompt 段与技能目录一律对空全局层求值"。结果就是它看不到 `web_search`，
-闲逛相只能返回空素材。预设把这层补齐，同时把它的活法钉死：**只有 `tool-web` 一个工具 + `compaction` 折叠组**，
-没有 shell、文件、子代理、todo、skill。模板由随附的 `standard` 预设裁剪而来，随包在 `assets/presets/heartbeat/`；
-预设 id 可用插件 config 的 `agentPreset` 改。装好后审计日志里应出现 `preset_install` 与 `preset=mounted(heartbeat) restrict=ok`——那就是成功了。
+> ⚠️ **升级宿主到 0.1.5 会触发会话格式 v3 自动迁移**（所有旧会话首次访问时被转换）——动用户数据，升级前先备份 `~/.dsh/sessions`。
 
-重启 DSH 后生效。插件自动创建**专用心跳会话**并开始按节律运行。
+## 版本更新
 
-## 使用
+### v1.4.0 · 2026-09-13
 
-日常无需任何操作。**设置页 → 心跳** 卡片（截图见下）提供六个分区，全部鼠标操作：
+**兴趣范围 / 浏览时段卡片管理**（决策 D22）：
 
-| 分区 | 内容 |
-|---|---|
-| 心跳状态 | 上次心跳时间 / 结果（沉默原因或开口摘要）/ 今日表达计数 / 当前是否静默时段 |
-| 会话绑定 | 列出持久化会话（含会话名与 live 标记）；**投递 / 观察是两个独立开关**——同一会话可双开，行内逐个切换（`☑投递 ☐观察`），两个都关即解绑 |
-| 素材池 | 列表、归档/恢复/删除素材（删除需二次确认） |
-| 用户画像（只读） | 画像摘要 + 导出（解密导出 Markdown 供人审） |
-| 账本 | 打开账本（host 拉起编辑器，只读快捷方式） |
-| 节律配置 | 心跳间隔（分钟）/ 每日表达上限（条）→ 保存；间隔即时生效 |
+- 卡片新增「兴趣范围」分区：闲逛焦点清单逐条增删（删除二次确认）+ 浏览时段窗口可视化编辑（起止时间选择器、加/移除行、全量保存），全部即时生效；
+- **首编继承出厂**：第一次成功编辑时，出厂兴趣与排程被完整复制进用户层再应用改动——出厂条目零丢失，此后卡片即唯一管理入口；只打开卡片或校验失败不会创建用户层；
+- 校验护栏：兴趣 ≤60 字 / 去重 / ≤32 条；窗口同日起始<结束 / 1–6 个 / 两两不重叠。
 
-![心跳设置卡片](docs/settings-heartbeat-ui.png)
+### v1.3.x · 2026-09-13
 
-（截图摄于 v1.0；v1.1 的「会话绑定」分区在同一行上多了**投递 / 观察**两个独立开关。）
+**M7：状态栏与自研时间注入**——心跳的"在场感"从引擎室走进日常会话：
 
-> **投递的一个已知副作用**：心跳往一个**当时没打开**的会话里投递时，插件会临时把它 resume 起来、投完立刻释放（审计 `deliver_target_released`）。这个释放会让宿主广播 `api-session/removed`，于是**你在侧栏会看到那一行消失——刷新页面就回来了**（会话内容/标题都在持久化里，零损失，投递本身也已经成功写进那个会话）。只影响"当时没打开"的会话；打开着的会话走 live 路径，不受影响。为什么不干脆不释放：不释放会让宿主"收养"这个没有预设的临时 agent，那个会话之后就会跑在一个缺工具面的 agent 上——比刷新一次糟糕得多。
+- **状态栏（D19 两轨）**：每跳派生场景状态（静默时段 / 刚说过话 / 正在闲逛 / 看到你在忙 / 在场 / 你不在 + 一句近况），按模型能力自动选择注入轨道——支持动态系统提示词的模型常驻系统提示词（KV-cache 安全追加、内容不变零提交），其余模型只在用户发起轮次时带一行；
+- **自研时间注入（D20）**：精确时间 + 距上一条消息时长，**只在用户发起轮次注入**（任务中绝不打扰），默认 25 分钟节流、卡片可调（0=关闭）；官方 `dsh-time-context` 停用，时间注入唯一归属心跳插件；
+- **状态文本零时间词（D21）**：时间感知归时间注入，状态栏只承载场景，把 KV-cache 成本钉在"场景变化"粒度；
+- UI：节律配置新增时间注入间隔与状态栏开关；v1.3.1 按评审修正了能力探测性能与轮次起源判定。
 
-CLI 依然可用（高级/脚本场景）：
+### v1.2.x · 2026-09-11/12
 
-```powershell
-node <插件目录>/dist/cli/index.js status        # 运行状态摘要
-node <插件目录>/dist/cli/index.js seeds stats   # 素材池统计
-node <插件目录>/dist/cli/index.js profile export  # 画像解密导出（人可审）
-node <插件目录>/dist/cli/index.js ledger list --pending  # 账本待办
-```
-
-**主动投递与观察**：把心跳消息送进你常用的会话 / 让会话内容变成画像素材：
-
-```powershell
-node dist/cli/index.js sessions list              # 枚举会话 id
-node dist/cli/index.js bind add session-xxxx      # 绑定投递（agent开口也会说到那里）
-node dist/cli/index.js bind add session-xxxx --observe      # 投递 + 观察（双开）
-node dist/cli/index.js bind add session-xxxx --observe-only # 仅观察（关掉投递）
-node dist/cli/index.js bind list                  # 查看当前绑定（deliver:√/× observe:√/×）
-node dist/cli/index.js bind remove session-xxxx   # 解绑
-```
-
-投递目标没有活着的 agent（例如刚重启过、那个会话还没被打开）时，心跳会**先把它 resume 起来**再投递；
-只有确实拉不起来才回落到引擎室正身，并在审计里留一行 `spoke_fallback`——不会静默改道。
-
-## 配置
-
-三层优先级（低→高）：**出厂默认**（包内 `config/`，只读）→ **用户文件层**（`data/settings/policy.json`，deepMerge）→ **设置页**（间隔/上限，间隔即时生效并重排定时器）。
-
-出厂默认值速览（完整表见 [DESIGN.md §6](DESIGN.md)）：
-
-| 参数 | 出厂默认 |
-|---|---|
-| 心跳间隔 | 20 分钟；首跳 boot+15s |
-| 每日表达上限 | 3 条（成功投递才计数） |
-| 静默时段 | 01:00 – 08:00；冷却 30 分钟 |
-| 闲逛窗口 | 11:00–15:00 / 17:00–21:00，≥4h 间隔 |
-| 素材池上限 / TTL | 30 条活跃；news 3 / fandom 14 / scene 60 / promise 90 天 |
-| 画像容量 / 触发 | 50 / 分区；合并触发 12–24h 或积压 30 条 |
-| 日志保留 | envpulse 流 48h；决策日志 30 天 |
-
-| 常用参数 | 位置 |
-|---|---|
-| 静默时段 / 冷却 / 素材池上限 / TTL 阶梯 / 画像分区容量 | `data/settings/policy.json`（只写要覆盖的子键） |
-| 画像能记什么（隐私白名单） | `data/settings/profile-schema.json` |
-| 追踪哪些 npm/GitHub / 兴趣种子 | `config/watchlist.json`、`config/interests.json`（用户层同名文件整体替换） |
-| 忙闲类别表（哪些进程算忙） | `config/busy-rules.json` |
-| 心跳 agent 加入的预设 id（默认 `heartbeat`） | 插件 config（profile 的 `cordis.patch.yml` heartbeat 行 → `agentPreset`） |
-| 是否自动安装随包预设（默认 `true`） | 插件 config → `installPreset`（设为 `false` 即完全不管预设目录） |
-
-## 数据与隐私
-
-- 全部运行数据在 `data/`（唯一可写目录，路径守卫强制）：清单与格式见 [DESIGN.md §5](DESIGN.md)
-- 加密（DPAPI，CurrentUser，防他人/他机/误同步，不防同账户恶意软件）：
-  素材池、屏幕快照、表达记录、画像三件套、浏览流状态
-- 明文（透明度设计）：账本、作息聚合、审计日志（不含敏感原文）
-- 模型出库仅限合并裁决的最小必要摘要（不含 psy、不含原文），知情同意设计
-- 一键焚毁：`node dist/cli/index.js burn`（预演）→ `burn --yes`（覆写 x3 + 删除，设置保留）；`--all` 连设置归零
-
-## 诊断
-
-第一现场：`data/logs/heartbeat.jsonl`（每跳留痕，silent 必带原因）。
-事件字典、症状→排查表、宿主契约备忘见 [DESIGN.md §7](DESIGN.md)；画像完整性用 `profile verify`。
-
-## 开发
-
-```powershell
-npm install
-npm run build        # tsup → dist/
-npm run typecheck
-npm test             # 99 个单元测试（判定逻辑全注入时间，无 sleep）
-```
-
-工程细节（宿主契约实测备忘、模块实现、踩坑记录）见 [DESIGN.md](DESIGN.md)。
-
-## 更新日志
-
-### v1.3.1 · 2026-09-13
-
-琥珀评审三项修正（不影响功能表现，性能与健壮性）：
-
-- 状态栏能力探测改为**增量尾扫**（原实现对长会话每步全量回扫事件日志）；
-- 时间注入的轮次起源判定对**任意交错事件稳定**（原"末事件必须是 spliced"会被其他插件的事件静默打断）；
-- 系统提示词状态**只渲染场景**（常量映射），引擎室自由文本 note 只进 UI 与 Track B 状态行——保证 in-history 追加频率钉在"场景变化"粒度。
-
-### v1.3 · 2026-09-13
-
-**M7：状态栏与自研时间注入**——心跳的"在场感"从引擎室走进日常会话（需求侧 D19–D21，实现细节见 DESIGN §15）。
-
-- **状态栏（D19 两轨）**：心跳每跳派生一个场景状态（静默时段/刚说过话/正在闲逛/看到你在忙/在场/你不在 + 一句 ≤30 字近况），注入到日常会话里：
-  - 支持 `in-history` 系统提示词更新的模型（如 `deepseek-flash`）→ 常驻**系统提示词**，KV-cache 安全追加，内容不变零提交，任务中也不打扰；
-  - 其余模型 → 只在**用户发起轮次时**随时间注入带一行状态；
-  - 轨道按模型能力自动切换并钉在轮次起点，会话中途模型切换不会劈轮。
-- **自研时间注入（D20）**：精确时间 + 距上一条消息的时长，**只在用户发起轮次时注入**（任务中绝不打扰），默认 25 分钟节流、UI 可调（0=关闭）；官方 `dsh-time-context` 停用（时间注入唯一归属心跳插件）。
-- **状态文本内容红线（D21）**：零时间词——时间感知归时间注入（20–30 分钟精确粒度，经验证时段粒度不足以支撑"隔了几小时"的感知），状态栏只承载场景。
-- **UI**：节律配置新增"时间注入间隔（分钟，0=关闭）"与"状态栏"开关，全部即时生效；状态分区新增"心跳此刻"与时间注入行。
-- **引擎室自愈保守化**：启动竞态（写句柄被占）不再触发"弃家重建空白会话"，改为退避重试——记忆零丢失。
-
-### v1.2.1 · 2026-09-12
-
-修复 0.1.5-rc.2 下设置卡片全部 RPC 分区报 `HTTP 405` 的问题（v1.2 的实机验证只测了心跳侧，漏了卡片侧）。
-
-- **根因（C21）**：0.1.5 的 cordis 严格服务解析下，自定义 RPC 通道（`connection.rpc.handle`）整体不可用——服务实例把所属上下文钉死在提供方（client-connection）身上，通道注册内部读 `webServer` 必然无许可，调用方无法自救。
-- **修复**：RPC 迁移为 `/api` 下的精确 Fetch 路由（`connection.fetch.register`，只写 connection 内部路由表，两代宿主通用）；客户端调用改为 `rpc.call('/api', 'heartbeat', { endpoint, … })`，信封与 `/api` 官方格式同构。
-- 新增 `rpc_registered` 审计行：卡片 RPC 异常时先看这行在不在。
-
-### v1.2 · 2026-09-11
-
-适配 DSH `0.1.5-rc.2`（peer 放宽为 `^0.1.1-rc.2 || ^0.1.5-rc.2`，对 0.1.2-rc.1 完全向后兼容——留在旧宿主上不用换版本）。v1.1 的全部修复在 0.1.5 下经逐包源码核对继续有效，本次改动很小：
-
-- **会话格式 v3 迁移提示**：0.1.5 重构持久层并把 `SESSION_FORMAT_VERSION` 从 0 升到 3，升级宿主后所有旧会话在首次访问时被宿主自动迁移（v0 历史代文件保留、生成 v3 当前代文件）。**升级宿主前请备份 `~/.dsh/sessions`**；会话目录变为多代文件布局，修复工具只应再碰 v0 历史代（DESIGN §3 C20）。
-- **诊断兼容**：0.1.5 把 `assistant/chunk` 事件更名为 `assistant/attempt`（失败尝试整段嵌入流记录）。`terminalTurnError()` 现在两种事件形态都扫，`turn_extraction_empty` 的 `turnError` 字段在新旧宿主上都完整（C19）。`turn/end` 的 error reason 主路径未变，心跳功能在 v1.1 下也不受此变更影响。
-- **新增修复工具 `scripts/repair-v0-members.mjs`**：部分 0.1.2 时代的旧会话在升级 0.1.5 时迁移被拒（`…v0-to-v1 refuses this format v0 Session: … unexpected member "tier"`）。该工具用宿主同款翻译器逐事件预检、剥离白名单外成员、帧保持式回写、自动备份与复核（DESIGN §13.1）。
-- 官方默认模型随部署基线从 `deepseek-v4-flash` 换为 `deepseek-flash`（部署侧行为，模型路由仍由 `agentDefaultModel` 提供心跳 agent）。
+适配 DSH `0.1.5-rc.2`：诊断兼容 `assistant/attempt` 事件形态（C19）、会话格式 v3 迁移适配（C20）、新增旧会话修复工具 `repair-v0-members.mjs`；v1.2.1 修复 0.1.5 下卡片 RPC 整体 405（自定义通道在严格服务解析下不可用，迁移为 `/api` 精确路由，C21）。
 
 ### v1.1 · 2026-09-10
 
-这是**给新版宿主的版本**（DSH ≥ `0.1.2-rc.1`）：旧宿主请留在 v1.0。同时修掉几个把心跳按哑的 bug。
-安装只需一条 `dsh plugin add`——**心跳预设由插件首次启动时自动装好**（已存在就一个字节都不动）。
-详细的宿主契约变更见 [DESIGN.md §3](DESIGN.md) 与 §15。
-
-**兼容性（DSH 0.1.1-rc.2 → 0.1.2-rc.1）**
-
-| 宿主变化 | 症状 | 处理 |
-|---|---|---|
-| `Session.events` 被移除，改 `snapshotEvents()` / `seq` | 每跳在 `agent.session.events.length` 上抛 `TypeError: Cannot read properties of undefined (reading 'length')`，整跳 `beat_error`、合并 `consolidation_failed` | 新增 `sessionEvents()` / `sessionEventCount()` 兼容层：优先 `snapshotEvents()`，缺失才回退 `events` |
-| `agents.create/resume` 不再代填部署默认模型 | agent 的 `options.model` 为 undefined → 每次 prompt 组装抛 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次在起点就死 | 新增 `defaultAgentOptions(ctx)`：读 `agentDefaultModel.currentSelection()`，显式传 `agentOptions` |
-| 未加入预设的 agent 只能看到空全局层 | `tools.restrict({allow:['web_search']})` 抛 `unknown global tool "web_search"`；闲逛相搜不了，只能返回 `{"items":[]}` | 新增**心跳预设**：`setup` 里 `agentPresets.mount(agentCtx, id)`，随包提供 `assets/presets/heartbeat/`，**首次启动自动装到 `~/.dsh/.agent-presets/heartbeat/`** |
-| client 模块注册 id 必须严格等于包名 | id 不一致的包被从 client 组合里**静默剔除**：设置页心跳区块整块消失，host 侧却照常运行 | `client.js` 注册 id 与 `cordis.patch.yml` 的 insert name 统一为 `@Kanadego/dsh-heartbeat` |
-| 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 标题改读 `~/.dsh/storages/session_projcache/sessions/<id>.json`，旧的单文件聚合只作兼容回退 |
-| 前端 bundle 启动即读入内存、响应标 immutable，且无文件监听 | 改 `client.js` 后刷新页面拿不到新代码 | 前端改动必须重启 DSH（已写进文档） |
-
-**功能改进**
-
-- **开口倾向**：决策相从"沉默是常态"改为"分寸优先"——默认倾向开口，只有在"素材都用过确实没新话""距上次开口太近""他显然在忙""已到深夜"时才沉默；提示词里带上"今天已开口 N 次（上限 M）/ 上次开口是 X 分钟前"，当天一次都没说过时明确要求挑一句说。
-- **投递文本**：改为一句极短的舞台提示（`（此刻你想说的一句话，用中文直接说出来，不要提及本行。）`），不再在正文里暴露"心跳投递/引擎室"这类机器细节——来源仍完整声明在消息的 `source` 元数据里，轨迹视图会标成 `plugin: heartbeat`。
-- **会话绑定可双开**：卡片的已绑定行新增 `☑投递 ☐观察` 两个独立开关（原来绑了投递就再也点不到"绑定观察"），未绑定列表增加一次「投递+观察」入口。
-- **投递目标自动拉活**：目标会话在本进程没有活 agent（重启后未被打开）时按需 `agents.resume`，不再默默说在自己房间里。
-- **审计更细**：新增 `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `spoke_fallback` / `spoke_deferred`；`turn_extraction_empty` 增加 `turnError` 字段（模型输出的终止错误原因）。
-- **预设自动安装**：插件启动时按 `agentPresets.roots` 找到真正的用户预设根，缺失就按包内模板补齐（审计打 `preset_install`）；**已有 composition 文件永不覆写**，手改过的自定义预设会被完整保留。CLI 加了 `preset status` / `preset install [--force]` 供人工检查修复——安装从"三步手工复制"变成"一条 add"。
-
-**Bug 修复**
-
-- 模型输出里的 `reasoning` 块被当成正文拼接，导致 `{"speak":false}` 之类的 JSON 被解析成 `…{...}{...}`，抛 `SyntaxError: Unexpected non-whitespace character after JSON at position 15` → `assistantText()` 现在排除 reasoning 块，`parseJsonBlock()` 双循环枚举括号候选取第一个可解析对象（`profile/consolidate.ts` 的 `parseOps()` 同样容错化）。
-- 表达轮 `whenIdle` 超时会把整跳打成 `beat_error`（现场只差 20 秒）→ 表达轮等待放宽到 10 分钟，失败记 `spoke_deferred`，那句话留到下一跳，不再污染整跳结果。
-- **投递目标的 resume 漏了模型路由**：投递会话里会自己冒出 `prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，而插件侧只记一句 `spoke_failed: non-Chinese output discarded`——报错出现在用户的会话里，根因在插件：在非 live 的投递目标上 resume agent 时没带 `agentOptions`（审计 `deliver_target_resumed model="(none)"`），宿主又把这个没有模型路由的 agent 当成该会话的 live agent 复用。现在 resume 会带上部署默认模型（与宿主 `agentOptions()` 同源），且投递一结束就 `dispose` 还回去（审计 `deliver_target_released`）。
-- 工具策略自愈逻辑曾从报错文本里用 `/search/i` 抓了个名字重试，抓到的是 ACP 的 `search_context`（搜对话块，与联网无关）**而且成功生效**，把 agent 掩蔽到只剩一个无用工具 → 已删除该回退，`restrict` 失败只如实记录。
-- 心跳 agent 的 `tool_policy` 审计行里 `visible=` 改名 `visibleGlobal=`：`tools.schemas()` 不带 scope 参数拿的是**全局视图**，它本来就不该用来判断预设是否挂上（判据是同一行的 `restrict=ok`）。
+适配 DSH `0.1.2-rc.1`：`Session.events` 移除、模型路由需显式传参、client 注册 id 强校验、会话标题投影迁移等六项宿主契约变化全数适配；**心跳预设改为首次启动自动安装**（一条 `dsh plugin add` 完成部署）；表达从"沉默是常态"改为**分寸优先**（默认倾向开口）；投递目标自动拉活；会话绑定投递/观察双开。
 
 ### v1.0.0 · 2026-09-05
 
-首个正式版：七相主循环、素材池/画像/闸门、DPAPI 加密与焚毁、审计留痕，以及 M6 的设置页六分区卡片与 `/heartbeat` RPC 通道。
+首个正式版：七相主循环、素材池 / 画像 / 闸门、DPAPI 加密与焚毁、审计留痕、设置页卡片。
 
-## 致谢
+<details>
+<summary>更早的开发阶段（v0.x 脚本外挂时代）</summary>
+
+- 前身为 [kohaku-heartbeat](https://github.com/Kanadego/kohaku-heartbeat)——v1 脚本外挂形态，跑通"定时唤醒 + 采集 + 分寸表达"闭环后推倒重来为本插件形态。
+</details>
+
+## 灵感与致谢
 
 - [tomsteve1102/presence-watch](https://github.com/tomsteve1102/presence-watch) — 讨论起点与闸门思想
-- 前代项目 [kohaku-heartbeat](https://github.com/Kanadego/kohaku-heartbeat) — v1 脚本外挂形态，本项目为其插件化重构
+- [kohaku-heartbeat](https://github.com/Kanadego/kohaku-heartbeat) — 前代项目，本插件为其重构
+- 深入的设计决策、宿主契约实测备忘与踩坑记录见 [DESIGN.md](DESIGN.md)
 
 ## 许可
 
