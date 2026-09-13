@@ -237,6 +237,75 @@ window.__ModuleLoader__.load({
 				);
 			}
 
+			// ── 兴趣范围 + 浏览时段（v1.4.0）──────────────────────────────
+			// 首编继承出厂：第一次增删/存时段时，插件自动把出厂 interests.json
+			// 完整复制进 data/settings/interests.json，之后卡片就是唯一入口。
+			function InterestsSection() {
+				const [data, setData] = React.useState(null);
+				const [error, setError] = React.useState(null);
+				const [status, setStatus] = React.useState("");
+				const [confirmText, setConfirmText] = React.useState(null);
+				const [draft, setDraft] = React.useState("");
+				const [draftWindows, setDraftWindows] = React.useState(null);
+				const reload = React.useCallback(() => {
+					rpc("interests.list").then((doc) => {
+						setData(doc);
+						setDraftWindows((prev) => prev || (doc._schedule?.windows || []).map((w) => ({ id: w.id || (w.start + "-" + w.end), start: w.start, end: w.end })));
+					}, (e) => setError(String(e).slice(0, 100)));
+				}, []);
+				React.useEffect(() => { reload(); }, [reload]);
+				if (error) return React.createElement("div", { style: hintStyle }, "加载失败：" + error);
+				if (!data) return React.createElement("div", { style: hintStyle }, "加载中…");
+				const interests = data.interests || [];
+				const doAdd = () => {
+					const text = draft.trim();
+					if (!text) return;
+					rpc("interests.add", { text }).then(
+						() => { setDraft(""); setStatus("已添加"); reload(); },
+						(e) => setStatus("添加失败：" + String(e).slice(0, 80)),
+					);
+				};
+				const doRemove = (text) => rpc("interests.remove", { text }).then(
+					() => { setConfirmText(null); setStatus("已删除"); reload(); },
+					(e) => { setConfirmText(null); setStatus("删除失败：" + String(e).slice(0, 80)); },
+				);
+				const saveWindows = () => {
+					rpc("interests.setWindows", { windows: draftWindows }).then(
+						() => { setStatus("浏览时段已保存"); reload(); },
+						(e) => setStatus("保存失败：" + String(e).slice(0, 80)),
+					);
+				};
+				const editWindow = (idx, field, value) => setDraftWindows((ws) => ws.map((w, i) => (i === idx ? { ...w, [field]: value } : w)));
+				return React.createElement(
+					"div",
+					null,
+					React.createElement("div", { style: hintStyle }, "闲逛搜索按这份清单轮换挑焦点（同一条 3 天内不重复）。增删后即时生效，无需重启。"),
+					interests.map((t) => React.createElement("div", { key: t, style: rowList },
+						React.createElement("span", { style: { flex: 1, fontSize: 12 } }, t),
+						confirmText === t
+							? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: () => doRemove(t) }, "确认删除")
+							: React.createElement("button", { style: buttonGhost, onClick: () => setConfirmText(t) }, "删除"),
+					)),
+					interests.length === 0 ? React.createElement("div", { style: hintStyle }, "（清单是空的——闲逛将没有焦点可挑）") : null,
+					React.createElement("div", { style: rowStyle },
+						React.createElement("input", { style: { ...inputStyle, width: 240 }, placeholder: "新兴趣，如：天文摄影", value: draft, onChange: (e) => setDraft(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") doAdd(); } }),
+						React.createElement("button", { style: buttonStyle, onClick: doAdd }, "添加"),
+					),
+					React.createElement("div", { style: { ...hintStyle, marginTop: 10 } }, "浏览时段（闲逛只在这些窗口内发生；起始须早于结束，多个时段不能重叠）："),
+					(draftWindows || []).map((w, idx) => React.createElement("div", { key: idx, style: rowList },
+						React.createElement("input", { style: inputStyle, type: "time", value: w.start, onChange: (e) => editWindow(idx, "start", e.target.value) }),
+						React.createElement("span", { style: hintStyle }, "到"),
+						React.createElement("input", { style: inputStyle, type: "time", value: w.end, onChange: (e) => editWindow(idx, "end", e.target.value) }),
+						(draftWindows.length > 1) ? React.createElement("button", { style: buttonGhost, onClick: () => setDraftWindows((ws) => ws.filter((_, i) => i !== idx)) }, "移除") : null,
+					)),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("button", { style: buttonGhost, onClick: () => setDraftWindows((ws) => [...(ws || []), { id: "", start: "11:00", end: "13:00" }]) }, "加一个时段"),
+						React.createElement("button", { style: buttonStyle, onClick: saveWindows }, "保存时段"),
+					),
+					status ? React.createElement("div", { style: hintStyle }, status) : null,
+				);
+			}
+
 			// ── 画像入口 ──────────────────────────────────────────────────
 			function ProfileSection() {
 				const [data, setData] = React.useState(null);
@@ -327,6 +396,7 @@ window.__ModuleLoader__.load({
 					React.createElement(Section, { title: "心跳状态", open: true }, React.createElement(StatusCard, null)),
 					React.createElement(Section, { title: "会话绑定" }, React.createElement(SessionsSection, null)),
 					React.createElement(Section, { title: "素材池" }, React.createElement(SeedsSection, null)),
+					React.createElement(Section, { title: "兴趣范围" }, React.createElement(InterestsSection, null)),
 					React.createElement(Section, { title: "用户画像（只读）" }, React.createElement(ProfileSection, null)),
 					React.createElement(Section, { title: "账本" }, React.createElement(
 						"div",
