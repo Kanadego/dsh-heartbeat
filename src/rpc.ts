@@ -34,6 +34,7 @@ import { loadProfile, profileFilePath } from './profile/store.js';
 import { buildDigest } from './profile/digest.js';
 import { ledgerFilePath } from './ledger/ledger.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
+import { addInterest, readEffective, removeInterest, setWanderWindows } from './browse/interests-edit.js';
 import { loadEncryptedText, writeText } from './vault/vault.js';
 import { readStatus } from './statusbar/store.js';
 import { loadTimeInjectState } from './statusbar/time-inject.js';
@@ -64,6 +65,21 @@ function homeSessionId(paths: WorkspacePaths, guard: PathGuard): string | null {
   } catch {
     return null;
   }
+}
+
+/** 兴趣/时段卡片编辑的审计留痕（成功才记；失败原因走 RPC err 回给卡片）。 */
+function auditInterests(
+  paths: WorkspacePaths,
+  action: 'add' | 'remove' | 'set-windows',
+  result: { ok: boolean; reason?: string },
+  detail: unknown,
+): void {
+  if (!result.ok) return;
+  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+    event: 'interests_updated',
+    action,
+    detail: typeof detail === 'string' ? detail.slice(0, 80) : null,
+  });
 }
 
 /** Session titles from the host's projection cache. Titles are host data — the
@@ -270,6 +286,28 @@ export function installHeartbeatRpc(
 
           case 'seeds.delete': {
             return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? '')) });
+          }
+
+          // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
+          case 'interests.list':
+            return ok(readEffective(paths));
+
+          case 'interests.add': {
+            const r = addInterest(guard, paths, String(p.text ?? ''));
+            auditInterests(paths, 'add', r, p.text);
+            return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'add failed');
+          }
+
+          case 'interests.remove': {
+            const r = removeInterest(guard, paths, String(p.text ?? ''));
+            auditInterests(paths, 'remove', r, p.text);
+            return r.ok ? ok(r.doc) : err('not-found', r.reason ?? 'remove failed');
+          }
+
+          case 'interests.setWindows': {
+            const r = setWanderWindows(guard, paths, p.windows);
+            auditInterests(paths, 'set-windows', r, JSON.stringify(p.windows ?? null));
+            return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'setWindows failed');
           }
 
           case 'profile.digest': {

@@ -1965,13 +1965,112 @@ function startOrchestrator(deps) {
 
 // src/rpc.ts
 import { spawn } from "child_process";
-import fs9 from "fs";
+import fs10 from "fs";
 import os from "os";
-import path9 from "path";
+import path10 from "path";
 
-// src/statusbar/time-inject.ts
+// src/browse/interests-edit.ts
 import fs8 from "fs";
 import path8 from "path";
+var MAX_INTERESTS = 32;
+var MAX_INTEREST_LEN = 60;
+var MAX_WINDOWS = 6;
+var HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+function userInterestsPath(paths) {
+  return path8.join(paths.settingsDir, "interests.json");
+}
+function factoryInterestsPath(paths) {
+  return path8.join(paths.configDir, "interests.json");
+}
+function readDoc(file) {
+  try {
+    const raw = JSON.parse(fs8.readFileSync(file, "utf8"));
+    if (!Array.isArray(raw.interests)) return null;
+    return { ...raw, interests: raw.interests.map(String) };
+  } catch {
+    return null;
+  }
+}
+function readEffective(paths) {
+  return readDoc(userInterestsPath(paths)) ?? readDoc(factoryInterestsPath(paths)) ?? { interests: [] };
+}
+function ensureUserLayer(guard, paths) {
+  const existing = readDoc(userInterestsPath(paths));
+  if (existing) return existing;
+  const doc = readDoc(factoryInterestsPath(paths)) ?? { interests: [] };
+  saveDoc(guard, userInterestsPath(paths), doc);
+  return doc;
+}
+function saveDoc(guard, file, doc) {
+  fs8.mkdirSync(path8.dirname(file), { recursive: true });
+  fs8.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
+}
+function normalizeInterest(text) {
+  return text.trim().replace(/\s+/g, " ");
+}
+function addInterest(guard, paths, rawText) {
+  const text = normalizeInterest(rawText);
+  if (!text) return { ok: false, reason: "empty", doc: readEffective(paths) };
+  if (text.length > MAX_INTEREST_LEN) {
+    return { ok: false, reason: `too-long (max ${MAX_INTEREST_LEN})`, doc: readEffective(paths) };
+  }
+  const current = readEffective(paths);
+  if (current.interests.some((t) => normalizeInterest(t).toLowerCase() === text.toLowerCase())) {
+    return { ok: false, reason: "duplicate", doc: current };
+  }
+  if (current.interests.length >= MAX_INTERESTS) {
+    return { ok: false, reason: `cap (${MAX_INTERESTS})`, doc: current };
+  }
+  const doc = ensureUserLayer(guard, paths);
+  doc.interests.push(text);
+  saveDoc(guard, userInterestsPath(paths), doc);
+  return { ok: true, doc };
+}
+function removeInterest(guard, paths, rawText) {
+  const current = readEffective(paths);
+  const text = normalizeInterest(rawText);
+  if (!current.interests.some((t) => normalizeInterest(t) === text)) {
+    return { ok: false, reason: "not-found", doc: current };
+  }
+  const doc = ensureUserLayer(guard, paths);
+  doc.interests = doc.interests.filter((t) => normalizeInterest(t) !== text);
+  saveDoc(guard, userInterestsPath(paths), doc);
+  return { ok: true, doc };
+}
+function parseWindow(w) {
+  if (typeof w !== "object" || w === null) return { ok: false, reason: "not-an-object" };
+  const { id, start, end } = w;
+  if (typeof start !== "string" || !HHMM.test(start)) return { ok: false, reason: `bad start ${JSON.stringify(start)}` };
+  if (typeof end !== "string" || !HHMM.test(end)) return { ok: false, reason: `bad end ${JSON.stringify(end)}` };
+  if (start >= end) return { ok: false, reason: `start ${start} must be before end ${end}` };
+  return { ok: true, window: { id: typeof id === "string" && id ? id : `${start}-${end}`, start, end } };
+}
+function setWanderWindows(guard, paths, rawWindows) {
+  const fail = (reason) => ({ ok: false, reason, doc: readEffective(paths) });
+  if (!Array.isArray(rawWindows)) return fail("windows-must-be-array");
+  if (rawWindows.length === 0) return fail("at-least-one-window");
+  if (rawWindows.length > MAX_WINDOWS) return fail(`cap (${MAX_WINDOWS})`);
+  const windows = [];
+  for (const raw of rawWindows) {
+    const parsed = parseWindow(raw);
+    if (!parsed.ok) return fail(parsed.reason);
+    windows.push(parsed.window);
+  }
+  const sorted = [...windows].sort((a, b) => a.start.localeCompare(b.start));
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (sorted[i].start < sorted[i - 1].end) {
+      return fail(`windows overlap: ${sorted[i - 1].id} / ${sorted[i].id}`);
+    }
+  }
+  const doc = ensureUserLayer(guard, paths);
+  doc._schedule = { ...doc._schedule, windows };
+  saveDoc(guard, userInterestsPath(paths), doc);
+  return { ok: true, doc };
+}
+
+// src/statusbar/time-inject.ts
+import fs9 from "fs";
+import path9 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
   if (!input.originIsInboxSplice) return false;
@@ -2033,11 +2132,11 @@ function lastMessageTime(session) {
   return void 0;
 }
 function timeInjectStatePath(dataDir) {
-  return path8.join(dataDir, "time-inject-state.json");
+  return path9.join(dataDir, "time-inject-state.json");
 }
 function loadTimeInjectState(guard, dataDir) {
   try {
-    const parsed = JSON.parse(fs8.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
+    const parsed = JSON.parse(fs9.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -2099,11 +2198,19 @@ var ok = (value) => ({ ok: true, value });
 var err = (code, message) => ({ ok: false, error: { code, message, details: {} } });
 function homeSessionId(paths, guard) {
   try {
-    const raw = loadEncryptedText(guard, path9.join(paths.dataDir, "gate.json"));
+    const raw = loadEncryptedText(guard, path10.join(paths.dataDir, "gate.json"));
     return JSON.parse(raw ?? "{}").sessionId ?? null;
   } catch {
     return null;
   }
+}
+function auditInterests(paths, action, result, detail) {
+  if (!result.ok) return;
+  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+    event: "interests_updated",
+    action,
+    detail: typeof detail === "string" ? detail.slice(0, 80) : null
+  });
 }
 function loadSessionTitles() {
   const titles = {};
@@ -2113,13 +2220,13 @@ function loadSessionTitles() {
     if (row && typeof row.val === "string" && row.val && !titles[id]) titles[id] = row.val;
   };
   try {
-    const dir = path9.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
-    for (const file of fs9.readdirSync(dir)) {
+    const dir = path10.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
+    for (const file of fs10.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
       if (!id.startsWith("session-")) continue;
       try {
-        const record = JSON.parse(fs9.readFileSync(path9.join(dir, file), "utf8"));
+        const record = JSON.parse(fs10.readFileSync(path10.join(dir, file), "utf8"));
         take(id, record.record);
       } catch {
       }
@@ -2127,7 +2234,7 @@ function loadSessionTitles() {
   } catch {
   }
   try {
-    const raw = JSON.parse(fs9.readFileSync(path9.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const raw = JSON.parse(fs10.readFileSync(path10.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       for (const [key, value] of Object.entries(node)) {
@@ -2194,14 +2301,14 @@ function installHeartbeatRpc(ctx, deps) {
             });
           }
           case "sessions.list": {
-            const root = path9.join(os.homedir(), ".dsh", "sessions");
+            const root = path10.join(os.homedir(), ".dsh", "sessions");
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
             const out = [];
-            if (fs9.existsSync(root)) {
-              for (const slug of fs9.readdirSync(root)) {
-                for (const id of fs9.readdirSync(path9.join(root, slug))) {
+            if (fs10.existsSync(root)) {
+              for (const slug of fs10.readdirSync(root)) {
+                for (const id of fs10.readdirSync(path10.join(root, slug))) {
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
                     id,
@@ -2236,7 +2343,7 @@ function installHeartbeatRpc(ctx, deps) {
             let homeReset = false;
             if (id === homeSessionId(paths, guard)) {
               try {
-                fs9.rmSync(guard.assert(path9.join(paths.dataDir, "gate.json")), { force: true });
+                fs10.rmSync(guard.assert(path10.join(paths.dataDir, "gate.json")), { force: true });
                 homeReset = true;
               } catch {
               }
@@ -2262,6 +2369,24 @@ function installHeartbeatRpc(ctx, deps) {
           case "seeds.delete": {
             return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? "")) });
           }
+          // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
+          case "interests.list":
+            return ok(readEffective(paths));
+          case "interests.add": {
+            const r = addInterest(guard, paths, String(p.text ?? ""));
+            auditInterests(paths, "add", r, p.text);
+            return r.ok ? ok(r.doc) : err("bad-request", r.reason ?? "add failed");
+          }
+          case "interests.remove": {
+            const r = removeInterest(guard, paths, String(p.text ?? ""));
+            auditInterests(paths, "remove", r, p.text);
+            return r.ok ? ok(r.doc) : err("not-found", r.reason ?? "remove failed");
+          }
+          case "interests.setWindows": {
+            const r = setWanderWindows(guard, paths, p.windows);
+            auditInterests(paths, "set-windows", r, JSON.stringify(p.windows ?? null));
+            return r.ok ? ok(r.doc) : err("bad-request", r.reason ?? "setWindows failed");
+          }
           case "profile.digest": {
             const d = buildDigest(guard, paths, policy, {});
             return ok({
@@ -2281,13 +2406,13 @@ function installHeartbeatRpc(ctx, deps) {
                 lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
               }
             }
-            const out = path9.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+            const out = path10.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
             writeText(guard, out, lines.join("\n") + "\n");
             return ok({ path: out });
           }
           case "ledger.open": {
             const f = ledgerFilePath(paths.dataDir);
-            if (!fs9.existsSync(guard.assert(f))) fs9.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+            if (!fs10.existsSync(guard.assert(f))) fs10.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
             spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
             return ok({ path: f });
           }

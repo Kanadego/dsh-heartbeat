@@ -90,6 +90,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C19 | **0.1.5 事件形态（assistant/attempt）** | 0.1.5-rc.1 起 `assistant/chunk` 事件**更名** `assistant/attempt`（载荷 `{turn, step, stream: AssistantStreamRecord[]}`，失败/重试/取消的尝试整段嵌入）；新增 surface 事件 `system/message`（系统提示作为 surface 节点 0 记入日志）。对插件的影响面：①`terminalTurnError()` 兼容扫描两种事件（`turn/end` 的 error reason 主路径未变）；②`assistantText()` 不受影响——`assistant/message` 仍带 `message: AssistantMessage`，attempt 事件无 content 会被空文本自然跳过；③观察相按事件类型过滤、光标按 seq 索引，插入新事件类型无影响 |
 | C20 | **0.1.5 持久层重构（格式 v3 迁移）** | 持久层拆成中立契约包 `dsh-session-persistence` + 独立后端 `dsh-session-persistence-jsonl`（仍是一个仅追加 `.jsonl.zstd` 产物/会话）。`SESSION_FORMAT_VERSION` **0 → 3**：旧版本头被拒绝（"session header version must be 3"），宿主内置**代际迁移**——保留历史代文件（`session.jsonl.zstd` = v0），首次访问时解码-迁移-校验后发布当前代文件（版本化文件名），源文件只读不改。**升级宿主前必须备份 `~/.dsh/sessions`**（用户数据危险操作）；会话目录从单文件变多代文件布局，`scripts/repair-session.mjs` 的"先找备份再改 v0 文件"手册要按新布局复查（迁移后的当前代是 v3 格式，修复工具只应再碰 v0 历史代） |
 | C21 | **0.1.5 cordis 严格服务解析（自定义 RPC 通道退役 → /api 精确路由）** | 0.1.5 的 cordis 解析器沿 fiber 链找服务，访问许可由 fiber 的模块级 `inject` 声明决定；而 cordis `Service` 把 `this.ctx` **固定在提供方自己的上下文**（client-connection 的模块 inject 只有 `['credentials']`）。于是 `connection.rpc.handle(channel, …)` 内部的 `owner.webServer.register(route)` 是在**别人的 fiber** 上读 `webServer` → 必抛 `cannot get property "webServer" without inject`——**调用方无论怎么 inject 都救不了**（现场取证 2026-09-12：合并 inject `['connection','webServer']` + effect 包裹仍是此错，`scoped` 本身读 webServer 正常）。症状：路由不存在 → 浏览器 POST `<channel>/<endpoint>` 落到 `dsh-host-frontend-static` 的 **fallback 座位** → **HTTP 405**（卡片全部分区"加载失败"，host 静默）。**0.1.5 正解**：`connection.fetch.register()` 在 `/api` 下注册精确 Fetch 路由——只写 connection 内部路由表、不碰任何其他服务，0.1.2/0.1.5 的 `/api` 共享处理器都先查精确路由，两代通用；浏览器认证由 `/api` 前缀的 `requestRejection` 统一把关。信封与 `/api` 同构（`client-request`/`server-response`），端点名走 `payload.endpoint`；客户端 `rpc.call('/api', 'heartbeat', {endpoint, …})`。**鉴别**：405 = 路由没注册；404 = 端点不匹配；401/403 = /api 认证拦截 |
+| C22 | **兴趣/时段卡片编辑（interests-edit，v1.4.0）** | 权威文件仍是 `interests.json`（browse.ts `loadInterests`：用户层**整体取代**出厂层）。卡片编辑走 `interests.list/add/remove/setWindows` 四端点；**首次成功变更时把出厂文件逐字节复制进用户层**（D22 首编继承），此后用户层即唯一权威——出厂文件更新不再自动跟上。读取（`interests.list`）与**失败的校验**都是只读，绝不顺手创建用户层（否则看一眼卡片就接管了出厂配置）。窗口校验：HH:MM、同日起始<结束、1–6 个、两两不重叠（裁判取第一个命中窗口，重叠会静默改变优先级）；兴趣条目：trim+折叠空白、≤60 字、大小写不敏感去重、≤32 条。`_comment` 等未知顶层键在保存时保留 |
 
 ## 4. 模块详解
 
@@ -228,6 +229,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `status_written` / `status_write_failed` | M7 状态数据源每跳写入 | scene：`quiet-hours > just-spoke > wandering > busy > present > away`；`data/settings/status.json` 明文（D21 红线：零时间词） |
 | `time_injected` | M7 自研时间注入（D20） | 门控 = step===1 且用户发起（末事件 `agent/inbox/spliced`）且距上次 ≥ timeInjectMin；节流状态在 `data/time-inject-state.json`（按会话，重启不丢）；官方 time-context 已停用（用户 patch 移除，D20） |
 | `statusbar_track` | 状态栏轨道翻转（M7c，D19） | `system-prompt`（in-history 模型）/ `pre-step`（其余 + 无证据的新会话）/ `off`（开关关闭）；只在翻转时记一条；轨道**钉在轮次起点**（step===1 重钉），中途能力翻转不会劈开同一轮 |
+| `interests_updated` | 兴趣/浏览时段卡片编辑（v1.4.0，C22） | `action=add/remove/set-windows`，`detail` 为条目文本或窗口 JSON（截 80 字）；只在成功时记一条，失败原因走 RPC err 回卡片 |
 
 ### 7.2 症状 → 排查表
 
@@ -360,11 +362,21 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 **安全**：通道 authority 'trusted-host'；全部端点经路径守卫 + 既有模块执行；浏览器端无状态、无文件访问。
 
-**client 卡片**：六个分区（状态默认展开/会话绑定/素材池/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除二次确认；所有 RPC 异常按分区独立显示。**会话绑定分区**每行两个独立开关（`☑投递 ☐观察`，可同时开、可逐个切换）+ 解绑；未绑定行提供「绑定投递 / 绑定观察 / 投递+观察」三个入口（旧版只有一个按钮、绑了投递就再也点不到观察，2026-09-10 修）。
+**client 卡片**：七个分区（状态默认展开/会话绑定/素材池/**兴趣范围**/画像只读/账本/节律配置），`<details>` 折叠；状态 30s 轮询；素材池删除与兴趣删除二次确认；所有 RPC 异常按分区独立显示。**会话绑定分区**每行两个独立开关（`☑投递 ☐观察`，可同时开、可逐个切换）+ 解绑；未绑定行提供「绑定投递 / 绑定观察 / 投递+观察」三个入口（旧版只有一个按钮、绑了投递就再也点不到观察，2026-09-10 修）。**兴趣范围分区**（v1.4.0）：兴趣列表逐条删除（二次确认）+ 输入框回车添加 + 浏览时段（`<input type=time>` 起止、加/移除行、保存全量写回，C22）。
 
 ## 15. 变更日志
 
-> 版本口径：v1.3 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.4 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+
+### v1.4.0 · 2026-09-13（兴趣范围 / 浏览时段卡片管理）
+
+需求侧见 设计要求.md r8（D22、§9 第 10 条）。闲逛搜索的焦点清单（原 `config/interests.json` 手编 14 条）与浏览时段窗口搬到 UI 卡片：
+
+- **权威文件不变，编辑入口上移**：`browse.ts loadInterests` 语义不动（用户层整体取代出厂层）；新增 `src/browse/interests-edit.ts` 独占编辑逻辑——**首次成功变更把出厂文件完整复制进用户层**（D22 首编继承），之后卡片即唯一入口，出厂兴趣与排程零丢失；读取与校验失败只读、不建层（看一眼卡片不会接管出厂配置）。
+- **校验**：兴趣 trim+折叠空白 / ≤60 字 / 大小写不敏感去重 / ≤32 条；窗口 HH:MM / 同日起始<结束 / 1–6 个 / 两两不重叠（裁判取第一个命中窗口）。`_comment` 等手工注释键保存时保留。
+- **RPC**：`interests.list / add / remove / setWindows` 四端点（走 C21 /api 路由）；成功编辑记审计 `interests_updated`。
+- **UI**：卡片新增「兴趣范围」分区（列表逐条删除二次确认 + 输入框添加 + 时段 `type=time` 起止编辑、加行/移除行、全量保存）；时段草稿只在首次加载填充，保存失败不清空用户输入。
+- 测试 8 条（tests/interests-edit.test.ts）：首编继承 / 去重与长度 / 上限 32 / 删除与 not-found 不建层 / 窗口校验矩阵 / `_schedule` 兄弟键保留。
 
 ### v1.3.1 · 2026-09-13（琥珀评审三项修正）
 
