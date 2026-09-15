@@ -713,9 +713,9 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5)
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
 
-  // ⑤a 反刍备料（2026-09-16 改版）：引擎室（momo）只备料，不决定说不说。
+  // ⑤a 反刍备料（2026-09-16 改版）：引擎室只备料，不决定说不说。
   // 从素材池候选里挑 ≤3 条、压缩成每行一句话；D23 保持 JSON {speak,text,seed_ids}
-  // 形状不变（兼容）；「此刻说不说、说哪条」移给 ⑤b 的琥珀（投递会话）。
+  // 形状不变（兼容）；「此刻说不说、说哪条」移给 ⑤b 的投递会话。
   // 素材只从 activeSeeds 候选里挑，不从归档区捞。
   const ruminationPrompt = buildRuminationPrompt({
     digestTact: digest.tact,
@@ -733,13 +733,13 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     noteBeat('spoke_failed', { reason: 'unparseable decision output' });
     return;
   }
-  // momo 一条素材都不合适 → 本轮不投递（记 silent）。
+  // 一条素材都不合适 → 本轮不投递（记 silent）。
   if (!parsed.speak || !Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'momo prepared no material' });
-    noteBeat('silent', { reason: 'momo prepared no material' });
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'no material' });
+    noteBeat('silent', { reason: 'no material' });
     return;
   }
-  // 素材 = seed_ids 映射回 activeSeeds（momo 压缩过的 text 在此包就是给琥珀看的一条）。
+  // 素材 = seed_ids 映射回 activeSeeds（压缩过的 text 在此包就是给目标会话看的一条）。
   const materials: MaterialInput[] = [];
   for (const s of offered) {
     if (parsed.seed_ids.includes(s.id)) {
@@ -749,8 +749,8 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   }
   // 素材必须真有内容；一条都没有（seed_ids 匹配失败）→ 不投递。
   if (materials.length === 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'momo seed_ids matched no active material' });
-    noteBeat('silent', { reason: 'momo seed_ids matched no active material' });
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'seed_ids matched no active material' });
+    noteBeat('silent', { reason: 'seed_ids matched no active material' });
     return;
   }
   // ⑤b 表达轮：在投递目标会话的 agent 上出声（无可用目标才回落正身）。
@@ -782,9 +782,9 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
     // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
     // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
-    // 素材包三段式（2026-09-16 改版）：琥珀（voiceAgent）收到素材包，自己判断
+    // 素材包三段式（2026-09-16 改版）：目标会话的 voiceAgent 收到素材包，自己判断
     // 要不要说、说哪条（或真心话）。buildMaterialPrompt 已含 ①②③（3条里≥2条 used>=1
-    // 时自动加「也可以说一句真心话」）。琥珀可以直接说素材里的一条，也可以顺着处境说
+    // 时自动加「也可以说一句真心话」）。它可以直接说素材里的一条，也可以顺着处境说
     // 想说的话；觉得没什么可说的可以沉默。
     const phrasePrompt = buildMaterialPrompt(materials);
 
@@ -801,7 +801,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     }
     // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
     // `</tool_calls>` 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
-    // 琥珀回合以工具调用收尾时，末行是 `</tool_calls>` 而真正要说的在更前面。
+    // 目标 agent 回合以工具调用收尾时，末行是 `</tool_calls>` 而真正要说的在更前面。
     const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
       .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
     const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));

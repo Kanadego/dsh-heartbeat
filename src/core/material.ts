@@ -1,4 +1,4 @@
-// Material delivery (redesign 2026-09-16): the engine room (momo) prepares
+// Material delivery (redesign 2026-09-16): the engine room prepares
 // a raw material package, and the persona (ambaka, the voice session) decides
 // whether/how to say something. All logic here is pure and unit-testable; the
 // orchestrator only threads data through.
@@ -22,7 +22,7 @@ export interface MaterialInput {
 export const PACKAGE_DECLARE =
   '这是心跳插件素材投递,请你根据当前处境判断要不要选一条说';
 
-/** ② each material as ONE sentence (momo already compressed it); no reasons, no order. */
+/** ② each material as ONE sentence (already compressed); no reasons, no order. */
 export function materialLines(materials: MaterialInput[]): string[] {
   return materials.map((m) => m.text.trim());
 }
@@ -74,7 +74,7 @@ export function attributionIds(
 }
 
 /**
- * The engine-room (momo) rumination prompt: pick <= max materials from the active
+ * The engine-room rumination prompt: pick <= max materials from the active
  * candidates and compress each into one sentence; the model still returns the D23 JSON
  * {speak,text,seed_ids} (text = one sentence per line).
  */
