@@ -42,6 +42,12 @@
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 ```
 
+# npm
+
+```powershell
+npm install @kanadego/dsh-heartbeat
+```
+
 重启 DSH 即生效——插件自动创建专用心跳会话并按节律运行，之后日常无需任何操作。
 
 **心跳预设是自动装的**：插件首次启动时检查 `<DSH_HOME>/.agent-presets/heartbeat/`，缺失就按包内模板建好，**已有文件永不覆写**（你手改过的预设原样保留）。没有这个预设，心跳 agent 是个"裸 agent"，连 `web_search` 都看不见。不想要这个行为，把插件 config 的 `installPreset` 设为 `false`；想手动检查/修复用 `preset status` / `preset install`（见下节）。
