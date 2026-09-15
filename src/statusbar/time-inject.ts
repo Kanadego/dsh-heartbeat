@@ -35,7 +35,7 @@ export function shouldInjectTime(input: {
   return input.now - input.lastInjectAt >= input.intervalMs;
 }
 
-/** Turn-origin probe (琥珀 review 2026-09-13 #2): does the OPEN turn begin
+/** Turn-origin probe (review 2026-09-13 #2): does the OPEN turn begin
  * with an inbox splice?
  *
  * An exact "last event is spliced" check silently breaks the moment any other

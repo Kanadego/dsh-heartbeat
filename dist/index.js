@@ -1809,8 +1809,8 @@ async function expressionPhases(bc) {
     return;
   }
   if (!parsed.speak || !Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "momo prepared no material" });
-    noteBeat("silent", { reason: "momo prepared no material" });
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "no material" });
+    noteBeat("silent", { reason: "no material" });
     return;
   }
   const materials = [];
@@ -1821,8 +1821,8 @@ async function expressionPhases(bc) {
     }
   }
   if (materials.length === 0) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "momo seed_ids matched no active material" });
-    noteBeat("silent", { reason: "momo seed_ids matched no active material" });
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "seed_ids matched no active material" });
+    noteBeat("silent", { reason: "seed_ids matched no active material" });
     return;
   }
   const { loadBindings: loadBindings2, deliverTargets } = await import("./bindings-XPPSKILN.js");
