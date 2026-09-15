@@ -26,6 +26,7 @@ import { collectPulse, readPulse } from '../env/envpulse.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { runGate, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
+import { buildMaterialPrompt, buildRuminationPrompt, attributionIds, type MaterialInput } from './material.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
 import { adviseWander, checkWatchlist, completeWander, browseStatePath } from '../browse/browse.js';
@@ -712,35 +713,18 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5)
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
 
-  // ⑤a 决策轮（引擎室，零工具；机器输出留在正身，不投递）
-  //
-  // 活泼度（2026-09-10 用户的要求：一天下来一句话都没说，应该更活泼点）：
-  // 原提示词以「沉默是常态」开头、判断参考里只有「不打扰 / 频率克制」，模型在
-  // 素材陈旧时几乎必然输出 {"speak":false}，一天下来一句都没有。现在把默认倾向
-  // 翻成「有话就说」，并把今天的开口次数 / 距上次开口的时长直接交给它自己掂量
-  // 分寸——不该说的场景仍然留在提示词里，但不再是默认答案。
-  const sent = readSentState(guard, paths, now);
-  const lastSentTs = sent.items.length > 0 ? sent.items[sent.items.length - 1]!.ts : null;
-  const gapText = lastSentTs === null
-    ? '今天还一句话都没说过。'
-    : `上次开口是 ${Math.max(1, Math.round((now - lastSentTs) / 60_000))} 分钟前。`;
-  const decisionPrompt = [
-    '这是心跳轮次的决策环节：判断此刻有没有想对主人说的一句话。',
-    '默认倾向是开口。有来处（素材/账本/画像）最好；只是想他了、看到好东西想分享、想起一件旧事，也算理由。',
-    '只有这几种情况才沉默：素材都用过且确实没什么新话可说 / 刚开口不久 / 他显然在忙 / 已到深夜。',
-    `今天已开口 ${sent.items.length} 次（上限 ${policy.gate.maxDailySend} 次）；${gapText}`,
-    '今天一次都没说过时，除非他正在忙或已到深夜，请挑一句说。',
-    '不要使用任何工具。只输出一个 JSON 对象：',
-    '- 沉默：{"speak":false}',
-    '- 开口：{"speak":true,"text":"想说的一句话（一两句中文）","seed_ids":["sN"]}',
-    '（seed_ids = 本轮用到的素材 id；没用到就给空数组）',
-    '',
-    '## 此刻处境', digest.tact,
-    '## 素材池候选（id: 内容）', seedsTop || '(空)',
-    '## 画像话题', digest.topic,
-    '## 账本待跟进', staleLedger || '(空)',
-  ].join('\n');
-  const raw = await agentTurn(bc.deps, bc.agent, decisionPrompt, 'decision');
+  // ⑤a 反刍备料（2026-09-16 改版）：引擎室（momo）只备料，不决定说不说。
+  // 从素材池候选里挑 ≤3 条、压缩成每行一句话；D23 保持 JSON {speak,text,seed_ids}
+  // 形状不变（兼容）；「此刻说不说、说哪条」移给 ⑤b 的琥珀（投递会话）。
+  // 素材只从 activeSeeds 候选里挑，不从归档区捞。
+  const ruminationPrompt = buildRuminationPrompt({
+    digestTact: digest.tact,
+    digestTopic: digest.topic,
+    staleLedger,
+    candidates: seedsTop,
+    max: 3,
+  });
+  const raw = await agentTurn(bc.deps, bc.agent, ruminationPrompt, 'decision');
   let parsed: { speak?: boolean; text?: string; seed_ids?: string[] };
   try {
     parsed = parseJsonBlock(raw) as typeof parsed;
@@ -749,12 +733,26 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     noteBeat('spoke_failed', { reason: 'unparseable decision output' });
     return;
   }
-  if (!parsed.speak || !parsed.text) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'model chose silence' });
-    noteBeat('silent', { reason: 'model chose silence' });
+  // momo 一条素材都不合适 → 本轮不投递（记 silent）。
+  if (!parsed.speak || !Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'momo prepared no material' });
+    noteBeat('silent', { reason: 'momo prepared no material' });
     return;
   }
-
+  // 素材 = seed_ids 映射回 activeSeeds（momo 压缩过的 text 在此包就是给琥珀看的一条）。
+  const materials: MaterialInput[] = [];
+  for (const s of offered) {
+    if (parsed.seed_ids.includes(s.id)) {
+      materials.push({ id: s.id, text: s.text, used: s.used });
+      if (materials.length >= 3) break;
+    }
+  }
+  // 素材必须真有内容；一条都没有（seed_ids 匹配失败）→ 不投递。
+  if (materials.length === 0) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'momo seed_ids matched no active material' });
+    noteBeat('silent', { reason: 'momo seed_ids matched no active material' });
+    return;
+  }
   // ⑤b 表达轮：在投递目标会话的 agent 上出声（无可用目标才回落正身）。
   const { loadBindings, deliverTargets } = await import('./bindings.js');
   const data = loadBindings(guard, paths.settingsDir);
@@ -784,10 +782,12 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
     // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
     // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
-    const phrasePrompt = [
-      '（此刻你想说的一句话，用中文直接说出来，不要提及本行。）',
-      parsed.text,
-    ].join('\n');
+    // 素材包三段式（2026-09-16 改版）：琥珀（voiceAgent）收到素材包，自己判断
+    // 要不要说、说哪条（或真心话）。buildMaterialPrompt 已含 ①②③（3条里≥2条 used>=1
+    // 时自动加「也可以说一句真心话」）。琥珀可以直接说素材里的一条，也可以顺着处境说
+    // 想说的话；觉得没什么可说的可以沉默。
+    const phrasePrompt = buildMaterialPrompt(materials);
+
     // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
     let spokenRaw: string;
     try {
@@ -799,11 +799,14 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
       noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
       return;
     }
-    // 表达文本：剥离思考块后取最后一行非空内容（模型可能漏出思考过程）。
-    const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-      .split('\n').map((l) => l.trim()).filter((l) => l);
-    const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1]! : '').slice(0, 200);
-    // 兜底闸：陪伴者说中文；纯英文输出是泄漏的思考，永不投递。
+    // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
+    // `</tool_calls>` 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
+    // 琥珀回合以工具调用收尾时，末行是 `</tool_calls>` 而真正要说的在更前面。
+    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
+      .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
+    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? '').slice(0, 200);
+    // 兜底闸：陪伴者说中文；整段完全没有中文才判为泄漏的思考，不投递。
     // （空文本另有原因：目标 agent 的回合自己死了——看同一时刻的
     //   `turn_extraction_empty label=expression turnError=...` 审计行。）
     if (!text || !/[\u4e00-\u9fff]/.test(text)) {
@@ -819,14 +822,9 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
       noteBeat('spoke_failed', { reason: confirm.reason });
       return;
     }
-    // A2 attribution：决策给出的 seed_ids 优先，输出↔候选包含匹配兜底。
-    const usedIds = new Set(parsed.seed_ids ?? []);
-    for (const s of offered) {
-      const a = s.text.trim(), b = text;
-      if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-        usedIds.add(s.id);
-      }
-    }
+    // A2 attribution（2026-09-16 改版）：material 里 seed_ids 优先 + 包含匹配兜底
+    // + 轻引导（attributionIds 只归「本轮真正出现在素材包里的」素材，不从归档区捞）。
+    const usedIds = new Set(attributionIds(materials, text, parsed.seed_ids));
     for (const id of usedIds) {
       surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
     }
