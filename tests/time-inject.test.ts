@@ -51,7 +51,7 @@ test('shouldInjectTime: full gate matrix', () => {
   assert.equal(shouldInjectTime({ ...pass, intervalMs: 0 }), false);
 });
 
-test('turnOriginIsInboxSplice: robust against interleaved events (琥珀 review #2)', () => {
+test('turnOriginIsInboxSplice: robust against interleaved events (review #2)', () => {
   const mk = (types: string[]) => ({
     id: 'session-x',
     snapshotEvents: () => types.map((type, i) => ({ type, time: i })),

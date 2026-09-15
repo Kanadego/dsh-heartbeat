@@ -20,7 +20,7 @@ import type { WorkspacePaths } from '../core/paths.js';
 import { StatusReader } from './store.js';
 import type { StatusState } from './store.js';
 
-// ── capability probe (琥珀 review 2026-09-13 #1: incremental tail scan) ───
+// ── capability probe (review 2026-09-13 #1: incremental tail scan) ───
 // Cache keyed by "how far we've scanned", NOT by log length: the length grows
 // every step, so a length key would miss (and rescan the whole log backwards)
 // on every assembly. We remember the scan watermark and, on new events, read
@@ -83,7 +83,7 @@ const SCENE_LABELS: Record<StatusState['scene'], string> = {
  * step". Any field varying faster than the scene belongs in the time
  * injection, never here.
  *
- * NOTE POLICY (琥珀 review 2026-09-13 #3): `withNote: false` for the Track A
+ * NOTE POLICY (review 2026-09-13 #3): `withNote: false` for the Track A
  * section — the scene label is a constant-table mapping (maximally stable),
  * while the note is engine-room free text that can differ every beat and
  * would defeat the host's byte-dedupe. The note is for the UI and the Track B
