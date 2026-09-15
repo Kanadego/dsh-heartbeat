@@ -38,11 +38,13 @@
 
 ## 安装
 
+### CMD
+
 ```powershell
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 ```
 
-# npm
+### npm
 
 ```powershell
 npm install @kanadego/dsh-heartbeat
