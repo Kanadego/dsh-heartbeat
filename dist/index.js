@@ -68,9 +68,9 @@ import {
   isPlainObject,
   mapValues,
   pick
-} from "./chunk-6ICVSSAU.js";
+} from "./chunk-AISZRA4C.js";
 
-// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+// node_modules/.pnpm/@deepseek-ai+schemastery@3.18.2/node_modules/@deepseek-ai/schemastery/lib/index.mjs
 var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
 var kValidationError = /* @__PURE__ */ Symbol.for("ValidationError");
 globalThis.__schemastery_index__ ??= 0;
@@ -1021,6 +1021,56 @@ function confirmSend(guard, policy, paths, kind, summary, now = Date.now()) {
   return { ok: true, sent };
 }
 
+// src/core/material.ts
+var PACKAGE_DECLARE = "\u8FD9\u662F\u5FC3\u8DF3\u63D2\u4EF6\u7D20\u6750\u6295\u9012,\u8BF7\u4F60\u6839\u636E\u5F53\u524D\u5904\u5883\u5224\u65AD\u8981\u4E0D\u8981\u9009\u4E00\u6761\u8BF4";
+function materialLines(materials) {
+  return materials.map((m) => m.text.trim());
+}
+function wantHonestOption(materials, threshold = 2) {
+  return materials.filter((m) => m.used >= 1).length >= threshold;
+}
+function buildMaterialPrompt(materials, opts = {}) {
+  const lines = [PACKAGE_DECLARE];
+  const items = materialLines(materials);
+  for (const it of items) lines.push("- " + it);
+  if (wantHonestOption(materials, opts.threshold ?? 2)) {
+    lines.push("(\u6216\u8005\u4E5F\u53EF\u4EE5\u8BF4\u4E00\u53E5\u771F\u5FC3\u8BDD,\u4E0D\u5E26\u7D20\u6750)");
+  }
+  return lines.join("\n");
+}
+function attributionIds(candidates, output, explicitIds = []) {
+  const used = new Set(explicitIds);
+  const b = output.trim();
+  for (const c of candidates) {
+    const a = c.text.trim();
+    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
+      used.add(c.id);
+    }
+  }
+  return [...used];
+}
+function buildRuminationPrompt(input) {
+  const max = input.max ?? 3;
+  const lines = [
+    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\u7684\u53CD\u520D\u5907\u6599\u73AF\u8282:\u4ECE\u5019\u9009\u7D20\u6750\u91CC\u6311(\u6700\u591A " + max + " \u6761),\u628A\u6BCF\u6761\u538B\u7F29\u6210\u4E00\u53E5\u8BDD\u3002",
+    "\u7D20\u6750\u53EA\u4ECE\u4E0B\u9762\u7ED9\u7684\u5019\u9009\u91CC\u6311,\u4E0D\u8981\u81EA\u5DF1\u7F16;\u6CA1\u5408\u9002\u7684\u5C31\u5C11\u6311,\u751A\u81F3\u53EF\u4EE5\u4E0D\u6311\u3002",
+    "\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\u3002\u53EA\u8F93\u51FA\u4E00\u4E2A JSON \u5BF9\u8C61:",
+    '- \u6709\u60F3\u9012\u7684:{"speak":true,"text":"\u7B2C1\u6761\u7D20\u6750\n\u7B2C2\u6761\u7D20\u6750...","seed_ids":["s1","s2"]}',
+    '- \u4E00\u6761\u90FD\u4E0D\u5408\u9002:{"speak":false,"seed_ids":[]}',
+    "- text = \u6311\u51FA\u7684\u7D20\u6750,\u6BCF\u6761\u7D20\u6750\u5355\u72EC\u4E00\u884C;seed_ids = \u5BF9\u5E94\u7684\u7D20\u6750 id\u3002",
+    "",
+    "## \u6B64\u523B\u5904\u5883",
+    input.digestTact,
+    "## \u753B\u50CF\u8BDD\u9898",
+    input.digestTopic,
+    "## \u8D26\u672C\u5F85\u8DDF\u8FDB",
+    input.staleLedger || "(\u7A7A)",
+    "## \u7D20\u6750\u6C60\u5019\u9009(id: \u5185\u5BB9)",
+    input.candidates || "(\u7A7A)"
+  ];
+  return lines.join("\n");
+}
+
 // src/statusbar/store.ts
 import fs5 from "fs";
 import path5 from "path";
@@ -1742,30 +1792,14 @@ async function expressionPhases(bc) {
   const offered = activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))).slice(0, 6);
   const seedsTop = offered.map((s) => `${s.id}: ${s.text.slice(0, 50)}`).join("\n");
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5).map((e) => `- ${e.text}\uFF08${e.date}\uFF09`).join("\n");
-  const sent = readSentState(guard, paths, now);
-  const lastSentTs = sent.items.length > 0 ? sent.items[sent.items.length - 1].ts : null;
-  const gapText = lastSentTs === null ? "\u4ECA\u5929\u8FD8\u4E00\u53E5\u8BDD\u90FD\u6CA1\u8BF4\u8FC7\u3002" : `\u4E0A\u6B21\u5F00\u53E3\u662F ${Math.max(1, Math.round((now - lastSentTs) / 6e4))} \u5206\u949F\u524D\u3002`;
-  const decisionPrompt = [
-    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\u7684\u51B3\u7B56\u73AF\u8282\uFF1A\u5224\u65AD\u6B64\u523B\u6709\u6CA1\u6709\u60F3\u5BF9\u4E3B\u4EBA\u8BF4\u7684\u4E00\u53E5\u8BDD\u3002",
-    "\u9ED8\u8BA4\u503E\u5411\u662F\u5F00\u53E3\u3002\u6709\u6765\u5904\uFF08\u7D20\u6750/\u8D26\u672C/\u753B\u50CF\uFF09\u6700\u597D\uFF1B\u53EA\u662F\u60F3\u4ED6\u4E86\u3001\u770B\u5230\u597D\u4E1C\u897F\u60F3\u5206\u4EAB\u3001\u60F3\u8D77\u4E00\u4EF6\u65E7\u4E8B\uFF0C\u4E5F\u7B97\u7406\u7531\u3002",
-    "\u53EA\u6709\u8FD9\u51E0\u79CD\u60C5\u51B5\u624D\u6C89\u9ED8\uFF1A\u7D20\u6750\u90FD\u7528\u8FC7\u4E14\u786E\u5B9E\u6CA1\u4EC0\u4E48\u65B0\u8BDD\u53EF\u8BF4 / \u521A\u5F00\u53E3\u4E0D\u4E45 / \u4ED6\u663E\u7136\u5728\u5FD9 / \u5DF2\u5230\u6DF1\u591C\u3002",
-    `\u4ECA\u5929\u5DF2\u5F00\u53E3 ${sent.items.length} \u6B21\uFF08\u4E0A\u9650 ${policy.gate.maxDailySend} \u6B21\uFF09\uFF1B${gapText}`,
-    "\u4ECA\u5929\u4E00\u6B21\u90FD\u6CA1\u8BF4\u8FC7\u65F6\uFF0C\u9664\u975E\u4ED6\u6B63\u5728\u5FD9\u6216\u5DF2\u5230\u6DF1\u591C\uFF0C\u8BF7\u6311\u4E00\u53E5\u8BF4\u3002",
-    "\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\u3002\u53EA\u8F93\u51FA\u4E00\u4E2A JSON \u5BF9\u8C61\uFF1A",
-    '- \u6C89\u9ED8\uFF1A{"speak":false}',
-    '- \u5F00\u53E3\uFF1A{"speak":true,"text":"\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF08\u4E00\u4E24\u53E5\u4E2D\u6587\uFF09","seed_ids":["sN"]}',
-    "\uFF08seed_ids = \u672C\u8F6E\u7528\u5230\u7684\u7D20\u6750 id\uFF1B\u6CA1\u7528\u5230\u5C31\u7ED9\u7A7A\u6570\u7EC4\uFF09",
-    "",
-    "## \u6B64\u523B\u5904\u5883",
-    digest.tact,
-    "## \u7D20\u6750\u6C60\u5019\u9009\uFF08id: \u5185\u5BB9\uFF09",
-    seedsTop || "(\u7A7A)",
-    "## \u753B\u50CF\u8BDD\u9898",
-    digest.topic,
-    "## \u8D26\u672C\u5F85\u8DDF\u8FDB",
-    staleLedger || "(\u7A7A)"
-  ].join("\n");
-  const raw = await agentTurn(bc.deps, bc.agent, decisionPrompt, "decision");
+  const ruminationPrompt = buildRuminationPrompt({
+    digestTact: digest.tact,
+    digestTopic: digest.topic,
+    staleLedger,
+    candidates: seedsTop,
+    max: 3
+  });
+  const raw = await agentTurn(bc.deps, bc.agent, ruminationPrompt, "decision");
   let parsed;
   try {
     parsed = parseJsonBlock(raw);
@@ -1774,9 +1808,21 @@ async function expressionPhases(bc) {
     noteBeat("spoke_failed", { reason: "unparseable decision output" });
     return;
   }
-  if (!parsed.speak || !parsed.text) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "model chose silence" });
-    noteBeat("silent", { reason: "model chose silence" });
+  if (!parsed.speak || !Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "momo prepared no material" });
+    noteBeat("silent", { reason: "momo prepared no material" });
+    return;
+  }
+  const materials = [];
+  for (const s of offered) {
+    if (parsed.seed_ids.includes(s.id)) {
+      materials.push({ id: s.id, text: s.text, used: s.used });
+      if (materials.length >= 3) break;
+    }
+  }
+  if (materials.length === 0) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "momo seed_ids matched no active material" });
+    noteBeat("silent", { reason: "momo seed_ids matched no active material" });
     return;
   }
   const { loadBindings: loadBindings2, deliverTargets } = await import("./bindings-XPPSKILN.js");
@@ -1801,10 +1847,7 @@ async function expressionPhases(bc) {
   const voiceAgent = liveTarget?.agent ?? bc.agent;
   const voiceSessionId = voiceAgent.session?.id ?? null;
   try {
-    const phrasePrompt = [
-      "\uFF08\u6B64\u523B\u4F60\u60F3\u8BF4\u7684\u4E00\u53E5\u8BDD\uFF0C\u7528\u4E2D\u6587\u76F4\u63A5\u8BF4\u51FA\u6765\uFF0C\u4E0D\u8981\u63D0\u53CA\u672C\u884C\u3002\uFF09",
-      parsed.text
-    ].join("\n");
+    const phrasePrompt = buildMaterialPrompt(materials);
     let spokenRaw;
     try {
       spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
@@ -1817,8 +1860,9 @@ async function expressionPhases(bc) {
       noteBeat("spoke_failed", { reason: "\u76EE\u6807\u4F1A\u8BDD\u6B63\u5FD9\uFF0C\u672C\u8F6E\u672A\u6295\u9012" });
       return;
     }
-    const spokenLines = spokenRaw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l);
-    const text = (spokenLines.length > 0 ? spokenLines[spokenLines.length - 1] : "").slice(0, 200);
+    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
+    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? "").slice(0, 200);
     if (!text || !/[\u4e00-\u9fff]/.test(text)) {
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
       noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
@@ -1830,13 +1874,7 @@ async function expressionPhases(bc) {
       noteBeat("spoke_failed", { reason: confirm.reason });
       return;
     }
-    const usedIds = new Set(parsed.seed_ids ?? []);
-    for (const s of offered) {
-      const a = s.text.trim(), b = text;
-      if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-        usedIds.add(s.id);
-      }
-    }
+    const usedIds = new Set(attributionIds(materials, text, parsed.seed_ids));
     for (const id of usedIds) {
       surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
     }
@@ -2637,7 +2675,7 @@ function apply(ctx, config = {}) {
   };
   void (async () => {
     try {
-      const { settingsNamespace, installSettingsSection } = await import("./lib-5A6677NY.js");
+      const { settingsNamespace, installSettingsSection } = await import("./lib-FJP7J4T6.js");
       installSettingsSection(
         ctx,
         settingsNamespace("heartbeat"),

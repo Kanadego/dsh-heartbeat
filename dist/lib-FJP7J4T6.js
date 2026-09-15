@@ -2,9 +2,9 @@ import {
   defineProperty,
   hyphenate,
   isNullable
-} from "./chunk-6ICVSSAU.js";
+} from "./chunk-AISZRA4C.js";
 
-// node_modules/@deepseek-ai/cordis/lib/index.js
+// node_modules/.pnpm/@deepseek-ai+cordis@4.0.2/node_modules/@deepseek-ai/cordis/lib/index.js
 var DisposableList = class {
   sn = 0;
   map = /* @__PURE__ */ new Map();
@@ -1727,7 +1727,7 @@ var Service = class Service2 {
   }
 };
 
-// node_modules/@deepseek-ai/dsh-settings/lib/index.js
+// node_modules/.pnpm/@deepseek-ai+dsh-settings@0_2dd31f709f91e7b96c62a2afe9d4c22c/node_modules/@deepseek-ai/dsh-settings/lib/index.js
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2278,4 +2278,4 @@ export {
   redactSecrets,
   settingsNamespace
 };
-//# sourceMappingURL=lib-5A6677NY.js.map
+//# sourceMappingURL=lib-FJP7J4T6.js.map
