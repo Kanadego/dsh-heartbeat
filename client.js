@@ -12,7 +12,7 @@
 //   - custom host data flows through an exact Fetch route under /api:
 //     ctx.get('connection').rpc.call('/api', 'heartbeat', { endpoint, ...payload }).
 window.__ModuleLoader__.load({
-	id: "@Kanadego/dsh-heartbeat",
+	id: "@kanadego/dsh-heartbeat",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
