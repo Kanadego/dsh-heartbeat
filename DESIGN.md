@@ -31,7 +31,7 @@
           结果由【代码】入池 seeds + completeWander 登记节流（D10，模型不碰登记）
  ③ 闸门   纯代码：静默窗 → 忙时窗口类别 → 在场联动 → 每日 cap → 冷却；判定留痕
  ④ Digest 现拼三切面（tact/topic/wander，≤800 tok）+ 时间 + 素材池 top + 账本待办
- ⑤ 决策+表达 两轮（r6）：决策轮（引擎室，零工具）输出机器 JSON {speak,text,seed_ids}；开口时表达轮在投递目标会话的 agent 上执行措辞（零工具），话落在用户读的会话
+ ⑤ 反刍+投递（2026-09-16 改版）：⑤a 引擎室 momo 反刍备料（零工具）输出机器 JSON {speak,text,seed_ids}，从 activeSeeds 挑 ≤3 条各压缩成一句；⑤b 素材包三段式（buildMaterialPrompt）——①声明『这是心跳插件素材投递…』＋②momo 备的素材（每条一句，不带理由不排序）＋③（3 条里 ≥2 条 used≥1 时）『也可以说一句真心话』——注入投递目标会话的 voiceAgent（琥珀），由她自己判断说不说/说哪条，话落在用户读的会话；归账 = attributionIds（seed_ids 优先 + ≥8 字符包含匹配兜底）
  ⑥ 投递   正身=专用心跳会话（followup 轮次已落盘）+ toast 提示（仅"有新消息"）+ D13 绑定会话投递
  ⑦ 留痕   heartbeat.jsonl（spoke/silent/spoke_failed + 原因）+ ledger + confirmSend（仅成功时计数，A5）
 ```
@@ -48,6 +48,7 @@ config(load/schema) ← orchestrator, cli
 vault(vault.ts + assets/vault.ps1) ← seeds, screen, gate(sent), profile(全部), ledger(明文部分)
 gate(busy-rules) ← env(窗口类别), orchestrator
 seeds/pool ← orchestrator(闲逛入池/归账)
+core/material（反刍备料/素材包三段式，纯函数） ← orchestrator
 profile/{inbox,store,schema,consolidate,digest} ← orchestrator, cli
 browse ← orchestrator(闲逛/定向), cli
 notify ← orchestrator(投递后提示)
@@ -104,7 +105,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `atomic-fs.ts` | 原子写 | 同目录随机 tmp + rename（Windows 下替换写）；`shredFileSync` 覆写 x N 后删除 |
 | `audit-log.ts` | JSONL 审计 | `appendAuditLine` / `readAuditLines`（坏行保留为标记）/ `pruneAuditFile`（按龄裁剪，原子重写） |
 | `runtime.ts` | 运行时单例 | paths/guard/policy 注入各模块；测试用 reset 钩子 |
-| `orchestrator.ts` | 七相编排 | 见 §2.1；`agentTurn` 提取助手文本（形态防御 + 失败落盘事件窗口形态）；闲逛归账 = 输出↔候选素材双向包含匹配（≥8 字符）；投递 = D13 绑定会话 splice（wakeup=true，live 才投） |
+| `orchestrator.ts` | 七相编排 | 见 §2.1；⑤a 反刍备料 + ⑤b 素材包投递（buildRuminationPrompt / buildMaterialPrompt，见 `material.ts`）；`agentTurn` 提取助手文本（形态防御 + 失败落盘事件窗口形态；取最后一个含中文行，过滤工具收尾标签，2026-09-16 修）；归账 = attributionIds（seed_ids 优先 + 输出↔素材包含匹配，轻引导）（≥8 字符）；投递 = D13 绑定会话 splice（wakeup=true，live 才投） |
 
 ### 4.2 config/（三层优先级，从低到高）
 
@@ -214,10 +215,10 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `agent_create_start/ok/failed`、`agent_resume_start/ok`、`agent_reuse_live`、`agent_acquire_failed`、`agent_resume_failed` | 专用会话获取三态 + 自愈 | failed 带 error：identity 冲突→应走 resume；while it is live→应走 get；timeout→工厂挂起；resume 失败（正身被删）自动 fallback create（`selfHealed: true`），心跳不死 |
 | `home_reset` | `bind remove` 了正身会话 | 正身已重置，下次心跳创建新正身；旧会话从此安静 |
 | `phase_done: maintenance/collect/wander` | 各相完成锚点 | 停在哪相，问题在哪相 |
-| `silent`（reason） | 沉默判定 | reason：quiet hours / busy window(...) / master actively typing / daily cap / cooldown / model chose silence |
+| `silent`（reason） | 沉默判定 | reason：quiet hours / busy window(...) / master actively typing / daily cap / cooldown / momo prepared no material（⑤a 无素材） |
 | `spoke` | 已开口（文本前 80 字） | 应伴随 toast；`delivered` 行 = 绑定会话投递 |
 | `deliver_target_live` / `deliver_target_resumed` / `deliver_target_resume_failed` / `deliver_target_released` | 表达轮挑投递目标 | live = 目标会话已有活 agent；resumed = 插件自己拉起来的（**必须带 agentOptions**，C12），其 `model` 字段正常应等于部署默认模型；released = 投递结束已 `dispose` 还回去；resume_failed 时若还有别的目标会继续试 |
-| `spoke_failed` | 投递/生成失败 | reason：no heartbeat agent / unparseable / non-Chinese output / confirm 拒绝 |
+| `spoke_failed` | 投递/生成失败 | reason：no heartbeat agent / unparseable / non-Chinese output（整段无中文才拒，见 §7.2）/ confirm 拒绝 |
 | `observed` / `observe_error` | 绑定会话观察 | added 条数 / 异常 |
 | `wander` / `wander_parse_error` | 闲逛结果 | registered 条数 / 解析失败 |
 | `consolidation` / `consolidation_failed` | 画像合并 | applied/rejected 计数 / LLM 输出不可用 |
@@ -249,6 +250,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 每跳 `beat_error: Cannot read properties of undefined (reading 'length')` | 宿主移除了 `Session.events`（0.1.2-rc.1）→ 改走 `snapshotEvents()/seq`（C5/C14）；确认 dist 已同步（C10） |
 | 每轮 prompt 组装抛 `prompt variable "{{model}}" has no value …(section "deployment:persona")` | agent 没有模型路由（C12）：审计 `agent_create_start` / `agent_resume_ok` 会打 `model` 字段，出现 `(none)` 即确诊 |
 | 闲逛相 0.4 秒结束、永远返回 `{"items":[]}`，`tool_policy` 报 `unknown global tool "web_search"` | agent 没加入预设（裸 agent，C13）：先 `node dist/cli/index.js preset status`（看 installed/是否与模板一致）；不一致或缺失就 `preset install`（手改过想还原加 `--force`，C18）；再看 `tool_policy` 行是否为 `preset=mounted(...) restrict=ok` |
+| 素材投递偶尔 `spoke_failed: non-Chinese output discarded`（尤其琥珀收到素材包后爱调工具时） | **根因（2026-09-16 修）**：`agentTurn` 从目标会话事件倒序取最后一个非空 assistant 文本，`assistantText` 拼接了所有 text 段；琥珀（voiceAgent）回合以工具调用收尾时，末行是 `</tool_calls>`（纯 ASCII），⑤b 旧逻辑取最后一行 + 中文兜底闸就把它判成“非中文”丢弃——**不是投递坏了，是取末行没跳过工具收尾标签**。已修：`spokenLines` 过滤工具收尾标签行（`/^<\/?tool_calls?>$/i`），再取最后一个含中文的行（`cnLine`），兜底用最后一行；non-Chinese 闸放宽为**整段无中文才拒**。确认 dist 已同步（C10）并重启 |
 | **投递会话里自己冒出** `prompt variable "{{model}}" has no value`（引擎室侧反而安静） | 看同一时刻的 `deliver_target_resumed`：`model` 为 `(none)` = 插件 resume 投递目标时没带 `agentOptions`（C12）；同一跳还会有 `turn_extraction_empty label=expression turnError=…` 与 `spoke_failed: non-Chinese output discarded`（空文本被兜底闸拦下，别被这句误导）。确认 dist 已同步（C10） |
 | `preset_install` 报 `action:"error"` + `bundled template not found next to the plugin` | 部署副本里没有 `assets/presets/`（`pnpm add file:` 的拷贝发生在模板加入包之前，或发布时漏了 `files`）：把 `assets/presets/heartbeat/` 补进插件的 `assets/`，或重装插件 |
 | `preset_install` 报 `skipped-no-root` / `agent-preset/not-found` | 用户预设根不在 roster（`$DSH_HOME` 被改过？）或 id 不在 `[a-z0-9][a-z0-9-]*`；`skipped-custom-id` = `agentPreset` 不是 `heartbeat`（插件不替你造自定义预设，请自行放好同名目录） |
@@ -366,7 +368,17 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 15. 变更日志
 
-> 版本口径：v1.4 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.5 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+
+### v1.5.0 · 2026-09-16（反刍/投递改版 + 表达提取健壮化）
+
+反刍与投递的决策权从引擎室移交给琥珀（voiceAgent），引擎室 momo 只备料 + 跑闸门（木偶人拍板，D23 保持 `{speak,text,seed_ids}` JSON 结构不变）：
+
+- **⑤a momo 反刍备料**：`buildRuminationPrompt` 从 activeSeeds 挑 ≤3 条，momo 各压缩成一句（不带理由不排序），输出机器 JSON `{speak,text,seed_ids}`；无素材 → silent `momo prepared no material`。
+- **⑤b 素材包三段式投递**：`buildMaterialPrompt` 拼成 ①声明『这是心跳插件素材投递…』＋②3 条素材＋③（3 条里 ≥2 条 used≥1 时）『也可以说一句真心话』，注入投递目标会话的 voiceAgent（琥珀），由她判断说不说/说哪条/说真心话。处境不进包；敏感度靠阅后即焚。
+- **归账 attributionIds**（§4.1）：seed_ids 优先 + ≥8 字符包含匹配兜底；retireAfterUsed=2 且 lastEvidenceAt≤lastUsedAt 才归档消费。
+- **表达提取健壮化**：`agentTurn` 取文本倒序扫最后一个非空 assistant 文本，`assistantText` 拼接所有 text 段；琥珀回合以工具调用收尾时末行是 `</tool_calls>`（纯 ASCII），旧逻辑取最后一行被 non-Chinese 闸误拦。已修：过滤 `/^<\/?tool_calls?>$/i` 标签行 + 取最后一个含中文的行（`cnLine`），non-Chinese 闸放宽为**整段无中文才拒**。
+- 新增 `src/core/material.ts`（buildRuminationPrompt / buildMaterialPrompt / attributionIds / wantHonestOption）+ tests/material.test.ts（9 条，全绿）。
 
 ### v1.4.0 · 2026-09-13（兴趣范围 / 浏览时段卡片管理）
 
