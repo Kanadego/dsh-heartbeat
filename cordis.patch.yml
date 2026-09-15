@@ -11,4 +11,4 @@
 # Default: <packageRoot>/data.
 - insert:
     - id: heartbeat
-      name: '@Kanadego/dsh-heartbeat'
+      name: '@kanadego/dsh-heartbeat'

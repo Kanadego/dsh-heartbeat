@@ -423,7 +423,7 @@ C19（`assistant/chunk` → `assistant/attempt` 诊断兼容）+ C20（持久层
 | `Session.events` 移除 | 每跳 `beat_error` / `consolidation_failed`：`TypeError: Cannot read properties of undefined (reading 'length')`；数据面照写，只是每跳都死 | `sessionEvents()` / `sessionEventCount()`：优先 `snapshotEvents()`，缺失才回退 `events`（C5/C14） |
 | `agents.create/resume` 不再代填部署默认模型 | `turn_extraction_empty turnError=… prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")`，所有轮次（含决策）在起点抛 | `defaultAgentOptions(ctx)` 读 `agentDefaultModel.currentSelection()` 显式传 `agentOptions`（C12） |
 | 未加入预设的 agent = 空全局层 | `tool_policy` 报 `names unknown global tool "web_search"`；闲逛相 0.4s 返回 `{"items":[]}` | `setup` 里 `agentPresets.mount(agentCtx, agentPreset)`；随包提供 `assets/presets/heartbeat/`，**启动时自动装到用户预设根**（C13/C18，§8 第 2 条） |
-| client 模块注册 id 必须严格等于包名 | 设置页心跳区块**整块消失**，host 侧毫无异常 | `client.js` 注册 id 与 `cordis.patch.yml` insert `name` 统一为 `@Kanadego/dsh-heartbeat`（C15） |
+| client 模块注册 id 必须严格等于包名 | 设置页心跳区块**整块消失**，host 侧毫无异常 | `client.js` 注册 id 与 `cordis.patch.yml` insert `name` 统一为 `@kanadego/dsh-heartbeat`（C15） |
 | 会话标题迁到 per-record 投影缓存 | 卡片把会话显示成 `session-c9ba6998…` 而不是会话名 | 读 `session_projcache/sessions/<id>.json` 的 `rows.title.val`，旧聚合仅作回退（C17、§14） |
 
 **功能改进**
