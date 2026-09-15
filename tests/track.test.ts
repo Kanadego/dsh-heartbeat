@@ -75,7 +75,7 @@ test('supportsInHistory: route change re-arms the cache via tail scan', () => {
   assert.equal(supportsInHistory(s), false);
 });
 
-test('supportsInHistory: incremental tail scan, no full rescans (琥珀 review #1)', () => {
+test('supportsInHistory: incremental tail scan, no full rescans (review #1)', () => {
   const events: { type: string; data?: unknown }[] = [{ type: 'request/context', data: { systemPromptUpdate: 'in-history' } }];
   const reads: number[] = [];
   const s = {
@@ -141,7 +141,7 @@ test('render purity: identical state renders byte-identical text (review #2)', (
   assert.equal(c, a);
 });
 
-test('registerStatusbarSection: Track A renders scene only (no note, 琥珀 review #3); Track B renders empty', () => {
+test('registerStatusbarSection: Track A renders scene only (no note, review #3); Track B renders empty', () => {
   const reader = new StatusReader();
   writeStatus(guard, workspace(), { at: 'x', scene: 'just-spoke', note: '刚跟你聊了两句' });
   let sectionDef: { text: (context: unknown) => string } | null = null;
