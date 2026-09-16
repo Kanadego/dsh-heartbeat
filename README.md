@@ -38,16 +38,16 @@
 
 ## 安装
 
-### CMD
+### npm 包（推荐）
+
+```powershell
+dsh plugin --profile web add @kanadego/dsh-heartbeat
+```
+
+### 从源码安装（开发/改造用）
 
 ```powershell
 dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
-```
-
-### npm
-
-```powershell
-npm install @kanadego/dsh-heartbeat
 ```
 
 重启 DSH 即生效——插件自动创建专用心跳会话并按节律运行，之后日常无需任何操作。
@@ -127,7 +127,7 @@ node <插件目录>/dist/cli/index.js <命令>
 ## 卸载
 
 ```powershell
-dsh plugin --profile web remove dsh-heartbeat
+dsh plugin --profile web remove @kanadego/dsh-heartbeat
 ```
 
 卸载只拆插件本体（包、挂载行、注册项，无残留引用）；**`data/` 用户数据默认保留在插件目录**，重装后记忆原样回来。想连数据一起删，手动删除 `data/` 目录或先用 `burn --all` 焚毁敏感内容。
@@ -136,7 +136,8 @@ dsh plugin --profile web remove dsh-heartbeat
 
 | 插件版本 | 适配的 DSH | 备注 |
 |---|---|---|
-| **v1.5**（当前） | ≥ `0.1.2-rc.1` | 反刍投递改版 |
+| **v1.5.1**（当前） | ≥ `0.1.2-rc.1` | 元数据补全（repository / peer 依赖），无行为改动 |
+| v1.5 | ≥ `0.1.2-rc.1` | 反刍投递改版 |
 | v1.4 | ≥ `0.1.2-rc.1` | M7 全部能力在 `0.1.5-rc.2` 验收；旧宿主上状态栏自动走 pre-step 轨道 |
 | v1.2.x – v1.3.x | ≥ `0.1.2-rc.1` | `0.1.5` 下须 ≥ v1.2.1，否则卡片 RPC 405 |
 | v1.1 | ≥ `0.1.2-rc.1` | `0.1.5` 下诊断行缺细节，功能不受影响 |
@@ -145,6 +146,14 @@ dsh plugin --profile web remove dsh-heartbeat
 > ⚠️ **升级宿主到 0.1.5 会触发会话格式 v3 自动迁移**（所有旧会话首次访问时被转换）——动用户数据，升级前先备份 `~/.dsh/sessions`。
 
 ## 版本更新
+
+### v1.5.1 · 2026-09-16
+
+**元数据补全，无行为改动**——只影响安装与生态对接：
+
+- `package.json` 补 `repository` / `homepage` / `bugs` / `keywords`，npm 包与 GitHub 仓库正式关联；
+- `@deepseek-ai/dsh-settings` 改以 `peerDependencies` 声明（此前只在 devDependencies，靠宿主环境碰巧解析到）；移除两个从未被代码引用的 `dependencies`；
+- 新增 `screenshots.json`：插件市场详情页按声明顺序展示设置页卡片截图。
 
 ### v1.5.0 · 2026-09-16
 
