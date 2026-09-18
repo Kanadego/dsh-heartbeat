@@ -121,3 +121,78 @@ test('completeWander records throttle timestamps (browse.json encrypted)', () =>
   assert.equal(st.includes('独立游戏'), false);
   assert.equal(st.slice(0, 5), 'KHBV1');
 });
+
+// ── M4: refill wander (2026-09-18 spec ⑥) ─────────────────────────────────
+
+import {
+  adviseRefillWander,
+  REFILL_MAX_PER_DAY,
+  REFILL_TOPIC_THRESHOLD,
+} from '../src/browse/browse.js';
+import { addSeed, loadPool, normalizeCategory, seedsFilePath, activeSeeds } from '../src/seeds/pool.js';
+
+const seedFile = () => seedsFilePath(paths.dataDir);
+
+test('spec ⑥: refill triggers at topic<=4, bypasses window and min-interval', () => {
+  // off-window late night + min-interval exhausted: normal wander would skip
+  const night = new Date('2026-09-06T23:30:00.000+08:00');
+  for (let i = 0; i < REFILL_TOPIC_THRESHOLD; i += 1) {
+    addSeed(guard, seedFile(), policy, { text: `话题 ${i}`, topic: `t${i}`, source: 'browse', tag: 'scene' }, night.getTime() + i);
+  }
+  const advice = adviseRefillWander(guard, paths, policy, night);
+  assert.equal(advice.skipped, null, 'refill fires despite off-window and pool status');
+  assert.ok(advice.focus, 'a focus is picked');
+  assert.match(advice.query!, /2026 最新/);
+  // one more topic seed (5 > 4) and it stands down
+  addSeed(guard, seedFile(), policy, { text: '话题 补充', topic: 't9', source: 'browse', tag: 'scene' }, night.getTime() + 10);
+  const over = adviseRefillWander(guard, paths, policy, night);
+  assert.match(over.skipped!, /topic-stock-ok/);
+});
+
+test('spec ⑥: daily cap 2 registered via completeWander refill flag', () => {
+  const noon = new Date('2026-09-06T12:30:00.000+08:00');
+  for (let i = 0; i < 2; i += 1) {
+    addSeed(guard, seedFile(), policy, { text: `话题 ${i}`, topic: `t${i}`, source: 'browse', tag: 'scene' }, noon.getTime() + i);
+  }
+  completeWander(guard, paths, 'AI 模型消息', noon.getTime(), { refill: true });
+  const once = adviseRefillWander(guard, paths, policy, noon);
+  assert.equal(once.skipped, null, 'second refill of the day still allowed');
+  completeWander(guard, paths, '独立游戏', noon.getTime(), { refill: true });
+  const capped = adviseRefillWander(guard, paths, policy, noon);
+  assert.match(capped.skipped!, /refill-daily-cap\(2\)/);
+  // non-refill wander does NOT consume the daily quota
+  completeWander(guard, paths, '网络热梗', noon.getTime());
+  const stillCapped = adviseRefillWander(guard, paths, policy, noon);
+  assert.match(stillCapped.skipped!, /refill-daily-cap\(2\)/);
+  // next local day resets the quota
+  const tomorrow = new Date(noon.getTime() + 24 * 3600_000);
+  const nextDay = adviseRefillWander(guard, paths, policy, tomorrow);
+  assert.equal(nextDay.skipped, null);
+});
+
+test('spec ⑥: focus cooldown (3d) still applies to refill', async () => {
+  const noon = new Date('2026-09-06T12:30:00.000+08:00');
+  addSeed(guard, seedFile(), policy, { text: '话题 0', topic: 't0', source: 'browse', tag: 'scene' }, noon.getTime());
+  const cooled = ['AI 模型消息', 'DSH 生态消息', '独立游戏'];
+  for (const f of cooled) completeWander(guard, paths, f, noon.getTime());
+  // pickFocus round-robins: the refill focus must not be one of the cooled ones
+  const advice = adviseRefillWander(guard, paths, policy, noon);
+  assert.ok(advice.focus, 'factory list has 14 interests, a fresh one exists');
+  assert.ok(!cooled.includes(advice.focus!), 'cooled focus was not picked');
+  // cool down every factory interest -> refill has nowhere to go
+  const { loadInterests } = await import('../src/browse/browse.js');
+  for (const f of loadInterests(paths).interests ?? []) {
+    completeWander(guard, paths, f, noon.getTime());
+  }
+  const drained = adviseRefillWander(guard, paths, policy, noon);
+  assert.equal(drained.skipped, 'no-focus');
+});
+
+test('spec ⑤/⑥: loadPool rows carry category so refill counting matches the pool', () => {
+  const noon = new Date('2026-09-06T12:30:00.000+08:00');
+  addSeed(guard, seedFile(), policy, { text: '聊天种子', source: 'chat' }, noon.getTime());
+  addSeed(guard, seedFile(), policy, { text: '话题种子', source: 'browse', tag: 'scene' }, noon.getTime());
+  const db = loadPool(guard, seedFile());
+  const cats = activeSeeds(db).map((s) => normalizeCategory(s.category)).sort();
+  assert.deepEqual(cats, ['chat', 'topic']);
+});

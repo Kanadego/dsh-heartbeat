@@ -17,6 +17,7 @@ import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { loadJson, saveJson } from '../vault/vault.js';
+import { activeSeeds, loadPool, normalizeCategory, seedsFilePath } from '../seeds/pool.js';
 
 const WATCH_THROTTLE_MS = 6 * 3600_000;
 const UA = { 'User-Agent': 'dsh-heartbeat/2.0 (+local; personal companion)' };
@@ -52,11 +53,13 @@ export interface BrowseState {
     focusHistory: Record<string, number>;
     focusCount: Record<string, number>;
     last_wander_at: number;
+    /** Spec ⑥: refill wanders per LOCAL day, e.g. "2026-09-18" -> 1. */
+    refillCount?: Record<string, number>;
   };
 }
 
 export function emptyBrowseState(): BrowseState {
-  return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0 } };
+  return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
 }
 
 export function browseStatePath(paths: WorkspacePaths): string {
@@ -221,20 +224,78 @@ export function adviseWander(
 /**
  * Registration is CODE-OWNED (D10): called by the orchestrator after the
  * wander phase's model call returned selections. Records cooldown/count/
- * throttle timestamps for the focus.
+ * throttle timestamps for the focus. `refill` additionally bumps the daily
+ * refill counter (spec ⑥).
  */
 export function completeWander(
   guard: PathGuard,
   paths: WorkspacePaths,
   focus: string,
   now = Date.now(),
-): { focus: string; count: number } {
+  opts: { refill?: boolean } = {},
+): { focus: string; count: number; refillsToday?: number } {
   const state = loadState(guard, paths);
   state.wander.focusHistory[focus] = now;
   state.wander.focusCount[focus] = (state.wander.focusCount[focus] ?? 0) + 1;
   state.wander.last_wander_at = now;
+  let refillsToday: number | undefined;
+  if (opts.refill) {
+    const today = localDayKey(new Date(now));
+    state.wander.refillCount = state.wander.refillCount ?? {};
+    state.wander.refillCount[today] = (state.wander.refillCount[today] ?? 0) + 1;
+    refillsToday = state.wander.refillCount[today];
+  }
   saveJson(guard, browseStatePath(paths), state);
-  return { focus, count: state.wander.focusCount[focus]! };
+  return { focus, count: state.wander.focusCount[focus]!, ...(refillsToday === undefined ? {} : { refillsToday }) };
+}
+
+/** LOCAL day key (refill quota is a daily human-day budget, not a UTC day). */
+function localDayKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// ── C. refill wander (spec ⑥, 2026-09-18): top up topic stock when it runs
+// dry. Independent of the window/minInterval gates (user decision: may stack
+// with a normal wander in the same beat) but still respects the 3-day focus
+// cooldown, and is capped at REFILL_MAX_PER_DAY per local day.
+
+export const REFILL_TOPIC_THRESHOLD = 4;
+export const REFILL_MAX_PER_DAY = 2;
+
+export interface RefillAdvice {
+  focus: string | null;
+  query: string | null;
+  skipped: string | null;
+  topicCount: number;
+  refillsToday: number;
+}
+
+export function adviseRefillWander(
+  guard: PathGuard,
+  paths: WorkspacePaths,
+  policy: Policy,
+  now = new Date(),
+): RefillAdvice {
+  const state = loadState(guard, paths);
+  const today = localDayKey(now);
+  const refillsToday = state.wander.refillCount?.[today] ?? 0;
+  const topicCount = activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir)))
+    .filter((s) => normalizeCategory(s.category) === 'topic').length;
+  if (refillsToday >= REFILL_MAX_PER_DAY) {
+    return { focus: null, query: null, skipped: `refill-daily-cap(${refillsToday})`, topicCount, refillsToday };
+  }
+  if (topicCount > REFILL_TOPIC_THRESHOLD) {
+    return { focus: null, query: null, skipped: `topic-stock-ok(${topicCount})`, topicCount, refillsToday };
+  }
+  const interests = loadInterests(paths);
+  const focus = pickFocus(state, interests, now.getTime()); // 3-day cooldown still applies
+  if (!focus) {
+    return { focus: null, query: null, skipped: 'no-focus', topicCount, refillsToday };
+  }
+  return { focus, query: `${focus} 2026 最新`, skipped: null, topicCount, refillsToday };
 }
 
 export function browseStatus(guard: PathGuard, paths: WorkspacePaths): BrowseState {

@@ -1,8 +1,12 @@
 import {
-  loadEncryptedText,
+  activeSeeds,
+  loadPool,
+  normalizeCategory,
+  seedsFilePath
+} from "./chunk-SVP2NDRF.js";
+import {
   loadJson,
   readText,
-  saveEncryptedText,
   saveJson,
   writeText
 } from "./chunk-LLD7LUNN.js";
@@ -244,229 +248,12 @@ function loadPolicy(guard, configDir, settingsDir) {
   return merged;
 }
 
-// src/seeds/pool.ts
-import path5 from "path";
-
-// src/seeds/types.ts
-function emptySeedDb() {
-  return { seq: 0, seeds: [] };
-}
-var SEED_SOURCE_DEFAULT_CONFIDENCE = {
-  hand: 1,
-  profile: 0.7,
-  chat: 0.6,
-  screen: 0.4,
-  browse: 0.4
-};
-
-// src/seeds/pool.ts
-var DAY_MS = 864e5;
-var TTL_KEYS = ["news", "fandom", "scene", "promise"];
-function normalizeTag(tag) {
-  if (tag && TTL_KEYS.includes(tag)) return tag;
-  return "scene";
-}
-function parseIso(v) {
-  const t = Date.parse(v);
-  return Number.isFinite(t) ? t : 0;
-}
-function seedsFilePath(dataDir) {
-  return path5.join(dataDir, "seeds.jsonl");
-}
-function loadPool(guard, file) {
-  const raw = loadEncryptedText(guard, file);
-  if (raw === null) return emptySeedDb();
-  const db = emptySeedDb();
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const obj = JSON.parse(trimmed);
-      if (typeof obj.id === "string" && obj.id.startsWith("s")) {
-        db.seeds.push(obj);
-        const n = Number(obj.id.slice(1));
-        if (Number.isFinite(n) && n > db.seq) db.seq = n;
-      }
-    } catch {
-    }
-  }
-  return db;
-}
-function savePool(guard, file, db) {
-  const body = db.seeds.map((s) => JSON.stringify(s)).join("\n");
-  saveEncryptedText(guard, file, body ? body + "\n" : "");
-}
-var activeSeeds = (db) => db.seeds.filter((s) => s.status === "active");
-var archivedSeeds = (db) => db.seeds.filter((s) => s.status === "archived");
-function evictionScore(seed, policy, now) {
-  const ttlDays = policy.seeds.ttlDays[seed.tag] || 14;
-  const daysStale = Math.max(0, (now - parseIso(seed.lastEvidenceAt)) / DAY_MS);
-  const freshness = Math.max(0, 1 - daysStale / ttlDays);
-  const unused = seed.used === 0 ? 1 : 1 / seed.used;
-  const w = policy.seeds.scoreWeights;
-  return freshness * w.freshness + unused * w.unused + seed.confidence * w.confidence;
-}
-function pickEvictionVictim(db, policy, now) {
-  const actives = activeSeeds(db);
-  if (actives.length === 0) return null;
-  const unprotected = actives.filter((s) => !s.protected);
-  const candidates = unprotected.length > 0 ? unprotected : actives;
-  let worst = null;
-  let worstScore = Number.POSITIVE_INFINITY;
-  for (const s of candidates) {
-    const score = evictionScore(s, policy, now);
-    if (score < worstScore) {
-      worstScore = score;
-      worst = s;
-    }
-  }
-  return worst;
-}
-function archiveSeed(seed, reason, now) {
-  seed.status = "archived";
-  seed.retireReason = reason;
-  seed.retiredAt = new Date(now).toISOString();
-}
-function addSeed(guard, file, policy, input, now = Date.now()) {
-  const db = loadPool(guard, file);
-  const text = input.text.trim();
-  if (!text) throw new Error("seed text must not be empty");
-  const tag = normalizeTag(input.tag);
-  const source = input.source ?? "chat";
-  const confidence = input.confidence ?? SEED_SOURCE_DEFAULT_CONFIDENCE[source];
-  const dup = activeSeeds(db).find((s) => s.text === text);
-  if (dup) return { kind: "duplicate", seed: dup };
-  const nowIso = new Date(now).toISOString();
-  const ttlMs = (policy.seeds.ttlDays[tag] || 14) * DAY_MS;
-  const sameTopic = activeSeeds(db).filter((s) => s.topic === (input.topic ?? text.slice(0, 24)));
-  let seed;
-  if (sameTopic.length > 0) {
-    const kept = sameTopic[0];
-    kept.text = text;
-    kept.tag = tag;
-    kept.source = source;
-    kept.confidence = Math.max(kept.confidence, confidence);
-    kept.used = sameTopic.reduce((acc, s) => acc + s.used, 0);
-    kept.lastEvidenceAt = [kept.lastEvidenceAt, nowIso, ...sameTopic.map((s) => s.lastEvidenceAt)].reduce((a, b) => parseIso(b) > parseIso(a) ? b : a);
-    kept.expiresAt = new Date(Math.max(parseIso(kept.expiresAt), now + ttlMs)).toISOString();
-    kept.protected = kept.protected || source === "hand" || source === "profile" && confidence >= 0.7;
-    for (const extra of sameTopic.slice(1)) {
-      extra.status = "archived";
-      extra.retireReason = "completed";
-      extra.retiredAt = nowIso;
-    }
-    seed = kept;
-    if (activeSeeds(db).length > policy.seeds.maxActive) {
-      const victim = pickEvictionVictim(db, policy, now);
-      if (victim && victim.id !== kept.id) {
-        archiveSeed(victim, "pool_cap", now);
-        savePool(guard, file, db);
-        return { kind: "merged", seed: kept, evicted: victim };
-      }
-    }
-    savePool(guard, file, db);
-    return { kind: "merged", seed: kept };
-  }
-  let evicted;
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    const victim = pickEvictionVictim(db, policy, now);
-    if (victim) {
-      archiveSeed(victim, "pool_cap", now);
-      evicted = victim;
-    }
-  }
-  db.seq += 1;
-  seed = {
-    id: `s${db.seq}`,
-    text,
-    topic: input.topic ?? text.slice(0, 24),
-    tag,
-    source,
-    confidence,
-    protected: source === "hand" || source === "profile" && confidence >= 0.7,
-    used: 0,
-    bornAt: nowIso,
-    expiresAt: new Date(now + ttlMs).toISOString(),
-    lastUsedAt: null,
-    lastEvidenceAt: nowIso,
-    status: "active"
-  };
-  db.seeds.push(seed);
-  savePool(guard, file, db);
-  return { kind: "added", seed, evicted };
-}
-function gcPool(guard, file, policy, now = Date.now()) {
-  const db = loadPool(guard, file);
-  const report = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0 };
-  for (const s of activeSeeds(db)) {
-    const ageMs = now - parseIso(s.bornAt);
-    const sinceEvidence = parseIso(s.lastEvidenceAt);
-    const sinceUsed = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
-    if (s.used >= policy.seeds.retireAfterUsed && sinceEvidence <= sinceUsed) {
-      archiveSeed(s, "consumed", now);
-      report.consumed += 1;
-    } else if (now > parseIso(s.expiresAt)) {
-      archiveSeed(s, "expired", now);
-      report.expired += 1;
-    } else if (s.used === 0 && ageMs >= policy.seeds.coldBenchDays * DAY_MS) {
-      archiveSeed(s, "cold_bench", now);
-      report.coldBench += 1;
-    }
-  }
-  report.activeAfter = activeSeeds(db).length;
-  savePool(guard, file, db);
-  return report;
-}
-function surfaceSeed(guard, file, policy, id, now = Date.now()) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "active");
-  if (!s) return null;
-  s.used += 1;
-  s.lastUsedAt = new Date(now).toISOString();
-  if (s.used >= policy.seeds.retireAfterUsed && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
-    archiveSeed(s, "consumed", now);
-  }
-  savePool(guard, file, db);
-  return s;
-}
-function archiveSeedById(guard, file, id, reason = "completed", now = Date.now()) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "active");
-  if (!s) return null;
-  archiveSeed(s, reason, now);
-  savePool(guard, file, db);
-  return s;
-}
-function restoreSeed(guard, file, policy, id, now = Date.now()) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "archived");
-  if (!s) return { ok: false, reason: "archived seed not found" };
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
-  }
-  s.status = "active";
-  s.retireReason = void 0;
-  s.retiredAt = void 0;
-  s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
-  s.lastEvidenceAt = new Date(now).toISOString();
-  savePool(guard, file, db);
-  return { ok: true, seed: s };
-}
-function deleteSeed(guard, file, id) {
-  const db = loadPool(guard, file);
-  const before = db.seeds.length;
-  db.seeds = db.seeds.filter((x) => x.id !== id);
-  if (db.seeds.length === before) return false;
-  savePool(guard, file, db);
-  return true;
-}
-
 // src/ledger/ledger.ts
-import path6 from "path";
+import path5 from "path";
 import { randomUUID as randomUUID2 } from "crypto";
-var DAY_MS2 = 864e5;
+var DAY_MS = 864e5;
 function ledgerFilePath(dataDir) {
-  return path6.join(dataDir, "ledger.md");
+  return path5.join(dataDir, "ledger.md");
 }
 var LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([0-9a-f]{6})\] (.*)$/;
 function renderEntry(e) {
@@ -523,20 +310,20 @@ function scanPending(guard, file, now = Date.now()) {
   return entries.filter((e) => e.status === "open").sort((a, b) => a.date < b.date ? -1 : 1);
 }
 function pendingOlderThan(guard, file, days, now = Date.now()) {
-  const cutoff = new Date(now - days * DAY_MS2).toISOString().slice(0, 10);
+  const cutoff = new Date(now - days * DAY_MS).toISOString().slice(0, 10);
   return scanPending(guard, file, now).filter((e) => e.date <= cutoff);
 }
 
 // src/browse/browse.ts
 import fs5 from "fs";
-import path7 from "path";
+import path6 from "path";
 var WATCH_THROTTLE_MS = 6 * 36e5;
 var UA = { "User-Agent": "dsh-heartbeat/2.0 (+local; personal companion)" };
 function emptyBrowseState() {
-  return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0 } };
+  return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
 }
 function browseStatePath(paths) {
-  return path7.join(paths.dataDir, "browse.json");
+  return path6.join(paths.dataDir, "browse.json");
 }
 function readJsonFile(file, fallback) {
   try {
@@ -546,14 +333,14 @@ function readJsonFile(file, fallback) {
   }
 }
 function loadInterests(paths) {
-  const userPath = path7.join(paths.settingsDir, "interests.json");
+  const userPath = path6.join(paths.settingsDir, "interests.json");
   if (fs5.existsSync(userPath)) return readJsonFile(userPath, { interests: [], _schedule: {} });
-  return readJsonFile(path7.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
+  return readJsonFile(path6.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
 }
 function loadWatchlist(paths) {
-  const userPath = path7.join(paths.settingsDir, "watchlist.json");
+  const userPath = path6.join(paths.settingsDir, "watchlist.json");
   if (fs5.existsSync(userPath)) return readJsonFile(userPath, { targets: [] });
-  return readJsonFile(path7.join(paths.configDir, "watchlist.json"), { targets: [] });
+  return readJsonFile(path6.join(paths.configDir, "watchlist.json"), { targets: [] });
 }
 function loadState(guard, paths) {
   return loadJson(guard, browseStatePath(paths)) ?? emptyBrowseState();
@@ -646,20 +433,53 @@ function adviseWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
   if (!focus) return { focus: null, query: null, skipped: "no-focus" };
   return { focus, query: `${focus} 2026 \u6700\u65B0`, skipped: null };
 }
-function completeWander(guard, paths, focus, now = Date.now()) {
+function completeWander(guard, paths, focus, now = Date.now(), opts = {}) {
   const state = loadState(guard, paths);
   state.wander.focusHistory[focus] = now;
   state.wander.focusCount[focus] = (state.wander.focusCount[focus] ?? 0) + 1;
   state.wander.last_wander_at = now;
+  let refillsToday;
+  if (opts.refill) {
+    const today = localDayKey(new Date(now));
+    state.wander.refillCount = state.wander.refillCount ?? {};
+    state.wander.refillCount[today] = (state.wander.refillCount[today] ?? 0) + 1;
+    refillsToday = state.wander.refillCount[today];
+  }
   saveJson(guard, browseStatePath(paths), state);
-  return { focus, count: state.wander.focusCount[focus] };
+  return { focus, count: state.wander.focusCount[focus], ...refillsToday === void 0 ? {} : { refillsToday } };
+}
+function localDayKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+var REFILL_TOPIC_THRESHOLD = 4;
+var REFILL_MAX_PER_DAY = 2;
+function adviseRefillWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
+  const state = loadState(guard, paths);
+  const today = localDayKey(now);
+  const refillsToday = state.wander.refillCount?.[today] ?? 0;
+  const topicCount = activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))).filter((s) => normalizeCategory(s.category) === "topic").length;
+  if (refillsToday >= REFILL_MAX_PER_DAY) {
+    return { focus: null, query: null, skipped: `refill-daily-cap(${refillsToday})`, topicCount, refillsToday };
+  }
+  if (topicCount > REFILL_TOPIC_THRESHOLD) {
+    return { focus: null, query: null, skipped: `topic-stock-ok(${topicCount})`, topicCount, refillsToday };
+  }
+  const interests = loadInterests(paths);
+  const focus = pickFocus(state, interests, now.getTime());
+  if (!focus) {
+    return { focus: null, query: null, skipped: "no-focus", topicCount, refillsToday };
+  }
+  return { focus, query: `${focus} 2026 \u6700\u65B0`, skipped: null, topicCount, refillsToday };
 }
 function browseStatus(guard, paths) {
   return loadState(guard, paths);
 }
 
 // src/profile/store.ts
-import path9 from "path";
+import path8 from "path";
 import { randomUUID as randomUUID3 } from "crypto";
 import fs7 from "fs";
 
@@ -681,10 +501,10 @@ function emptyProfile() {
 
 // src/profile/schema.ts
 import fs6 from "fs";
-import path8 from "path";
+import path7 from "path";
 function loadProfileSchema(paths) {
-  const userPath = path8.join(paths.settingsDir, "profile-schema.json");
-  const file = fs6.existsSync(userPath) ? userPath : path8.join(paths.configDir, "profile-schema.json");
+  const userPath = path7.join(paths.settingsDir, "profile-schema.json");
+  const file = fs6.existsSync(userPath) ? userPath : path7.join(paths.configDir, "profile-schema.json");
   try {
     const raw = JSON.parse(fs6.readFileSync(file, "utf8"));
     if (!raw.partitions) throw new Error("partitions missing");
@@ -714,12 +534,12 @@ function checkAddAgainstSchema(schema, partition, topic, subTopic, nominated) {
 }
 
 // src/profile/store.ts
-var DAY_MS3 = 864e5;
+var DAY_MS2 = 864e5;
 function profileFilePath(dataDir) {
-  return path9.join(dataDir, "profile.json");
+  return path8.join(dataDir, "profile.json");
 }
 function journalFilePath(dataDir) {
-  return path9.join(dataDir, "profile_journal.jsonl");
+  return path8.join(dataDir, "profile_journal.jsonl");
 }
 function loadProfile(guard, file) {
   const doc = loadJson(guard, file);
@@ -729,14 +549,14 @@ function loadProfile(guard, file) {
   }
   return doc;
 }
-function parseIso2(v) {
+function parseIso(v) {
   const t = Date.parse(v);
   return Number.isFinite(t) ? t : 0;
 }
 function refExists(guard, dataDir, ref) {
   const base = ref.split("#")[0] ?? "";
   if (!base) return false;
-  const target = path9.join(dataDir, base);
+  const target = path8.join(dataDir, base);
   try {
     return fs7.existsSync(guard.assert(target));
   } catch {
@@ -840,7 +660,7 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
         rejected.push({ op, reason: "volatile expiry is code-owned (time-driven), not LLM-nominated" });
         continue;
       }
-      const hasNewObservation = (op.evidence ?? []).length > 0 && (op.evidence ?? []).some((e) => parseIso2(e.at) > parseIso2(entry.evidence[entry.evidence.length - 1]?.at ?? ""));
+      const hasNewObservation = (op.evidence ?? []).length > 0 && (op.evidence ?? []).some((e) => parseIso(e.at) > parseIso(entry.evidence[entry.evidence.length - 1]?.at ?? ""));
       if (!hasNewObservation) {
         rejected.push({ op, reason: "stable INVALIDATE requires a newer contradicting observation" });
         continue;
@@ -864,15 +684,15 @@ function runDeterministicAging(doc, policy, now) {
   for (const p of PARTITIONS) {
     for (const e of doc.partitions[p].entries) {
       if (e.validTo !== null) continue;
-      const lastEvidence = Math.max(...e.evidence.map((x) => parseIso2(x.at)), parseIso2(e.updatedAt));
+      const lastEvidence = Math.max(...e.evidence.map((x) => parseIso(x.at)), parseIso(e.updatedAt));
       if (e.temporal === "volatile") {
-        if (now - lastEvidence > policy.profile.volatileDays * DAY_MS3) {
+        if (now - lastEvidence > policy.profile.volatileDays * DAY_MS2) {
           e.validTo = nowIso;
           e.updatedAt = nowIso;
           e.updateCount += 1;
           volatileExpired += 1;
         }
-      } else if (!e.lowActivity && now - lastEvidence > policy.profile.stableLowActivityDays * DAY_MS3) {
+      } else if (!e.lowActivity && now - lastEvidence > policy.profile.stableLowActivityDays * DAY_MS2) {
         e.lowActivity = true;
         lowActivityMarked += 1;
       }
@@ -979,7 +799,7 @@ function verifyProfile(guard, dataDir) {
 function rebuildProfile(guard, dataDir, opts = {}) {
   const replayed = replayJournal(guard, dataDir);
   const target = profileFilePath(dataDir);
-  const tmp = path9.join(dataDir, `.profile.rebuild.${Date.now()}.tmp`);
+  const tmp = path8.join(dataDir, `.profile.rebuild.${Date.now()}.tmp`);
   atomicWriteFileSync(tmp, JSON.stringify(replayed.doc, null, 2));
   if (opts.check) {
     const onDisk = loadProfile(guard, target);
@@ -997,7 +817,7 @@ function rebuildProfile(guard, dataDir, opts = {}) {
   if (replayed.truncatedTail > 0) {
     writeText(
       guard,
-      path9.join(dataDir, "logs", "rebuild-report.txt"),
+      path8.join(dataDir, "logs", "rebuild-report.txt"),
       `rebuild truncated ${replayed.truncatedTail} torn line(s) at journal tail; ${replayed.records} records applied
 `
     );
@@ -1007,11 +827,11 @@ function rebuildProfile(guard, dataDir, opts = {}) {
 
 // src/notify/notify.ts
 import { spawnSync } from "child_process";
-import path10 from "path";
+import path9 from "path";
 function runNotify(paths, args) {
   const r = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path10.join(paths.assetsDir, "notify.ps1"), ...args],
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path9.join(paths.assetsDir, "notify.ps1"), ...args],
     { timeout: 2e4, encoding: "utf8" }
   );
   return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
@@ -1030,7 +850,7 @@ function sendNewMessageHint(paths) {
 // src/core/preset-install.ts
 import fs8 from "fs";
 import os from "os";
-import path11 from "path";
+import path10 from "path";
 import { fileURLToPath } from "url";
 var COMPOSITION_FILE = "agent.cordis.yml";
 var METADATA_FILE = "preset.yml";
@@ -1038,14 +858,14 @@ var BUNDLED_PRESET_ID = "heartbeat";
 function bundledPresetDir(moduleUrl, id = BUNDLED_PRESET_ID) {
   let dir;
   try {
-    dir = path11.dirname(fileURLToPath(moduleUrl));
+    dir = path10.dirname(fileURLToPath(moduleUrl));
   } catch {
     return void 0;
   }
   for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = path11.join(dir, "assets", "presets", id);
-    if (fs8.existsSync(path11.join(candidate, COMPOSITION_FILE))) return candidate;
-    const parent = path11.dirname(dir);
+    const candidate = path10.join(dir, "assets", "presets", id);
+    if (fs8.existsSync(path10.join(candidate, COMPOSITION_FILE))) return candidate;
+    const parent = path10.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -1055,12 +875,12 @@ function userPresetRoot(roots) {
   const found = roots?.find(
     (root) => root?.trust === "user" && typeof root.path === "string" && root.path.length > 0
   );
-  return found?.path === void 0 ? void 0 : path11.resolve(found.path);
+  return found?.path === void 0 ? void 0 : path10.resolve(found.path);
 }
 function conventionalUserPresetRoot(env = process.env, home = os.homedir()) {
   const override = env.DSH_HOME?.trim();
-  const root = override && override.length > 0 ? override : path11.join(home, ".dsh");
-  return path11.join(root, ".agent-presets");
+  const root = override && override.length > 0 ? override : path10.join(home, ".dsh");
+  return path10.join(root, ".agent-presets");
 }
 function installBundledPreset(options) {
   const id = options.id && options.id.length > 0 ? options.id : BUNDLED_PRESET_ID;
@@ -1092,12 +912,12 @@ function installBundledPreset(options) {
       detail: "the roster mounts no user preset root (includeUserRoot=false)"
     };
   }
-  const dir = path11.join(root, id);
-  const composition = path11.join(dir, COMPOSITION_FILE);
+  const dir = path10.join(root, id);
+  const composition = path10.join(dir, COMPOSITION_FILE);
   try {
     if (fs8.existsSync(composition)) {
       if (options.force !== true) {
-        const drifted = !sameBytes(composition, path11.join(bundledDir, COMPOSITION_FILE));
+        const drifted = !sameBytes(composition, path10.join(bundledDir, COMPOSITION_FILE));
         return {
           action: "exists",
           id,
@@ -1106,7 +926,7 @@ function installBundledPreset(options) {
           detail: drifted ? "kept as-is (differs from the bundled template)" : "kept as-is"
         };
       }
-      fs8.copyFileSync(path11.join(bundledDir, COMPOSITION_FILE), composition);
+      fs8.copyFileSync(path10.join(bundledDir, COMPOSITION_FILE), composition);
       return {
         action: "restored",
         id,
@@ -1117,9 +937,9 @@ function installBundledPreset(options) {
     }
     const existed = fs8.existsSync(dir);
     fs8.mkdirSync(dir, { recursive: true });
-    fs8.copyFileSync(path11.join(bundledDir, COMPOSITION_FILE), composition);
-    const metadata = path11.join(dir, METADATA_FILE);
-    if (!fs8.existsSync(metadata)) fs8.copyFileSync(path11.join(bundledDir, METADATA_FILE), metadata);
+    fs8.copyFileSync(path10.join(bundledDir, COMPOSITION_FILE), composition);
+    const metadata = path10.join(dir, METADATA_FILE);
+    if (!fs8.existsSync(metadata)) fs8.copyFileSync(path10.join(bundledDir, METADATA_FILE), metadata);
     return {
       action: existed ? "repaired" : "created",
       id,
@@ -1137,16 +957,16 @@ function describeInstall(result) {
   return `preset ${result.id} ${result.action}${where}${why}`;
 }
 function presetStatus(moduleUrl, id = BUNDLED_PRESET_ID, root = conventionalUserPresetRoot()) {
-  const dir = path11.join(root, id);
+  const dir = path10.join(root, id);
   const bundledDir = bundledPresetDir(moduleUrl, id);
-  const installed = fs8.existsSync(path11.join(dir, COMPOSITION_FILE));
+  const installed = fs8.existsSync(path10.join(dir, COMPOSITION_FILE));
   return {
     id,
     dir,
     ...bundledDir === void 0 ? {} : { bundledDir },
     installed,
-    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path11.join(dir, COMPOSITION_FILE), path11.join(bundledDir, COMPOSITION_FILE)),
-    metadataMatches: bundledDir !== void 0 && fs8.existsSync(path11.join(dir, METADATA_FILE)) && sameBytes(path11.join(dir, METADATA_FILE), path11.join(bundledDir, METADATA_FILE))
+    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path10.join(dir, COMPOSITION_FILE), path10.join(bundledDir, COMPOSITION_FILE)),
+    metadataMatches: bundledDir !== void 0 && fs8.existsSync(path10.join(dir, METADATA_FILE)) && sameBytes(path10.join(dir, METADATA_FILE), path10.join(bundledDir, METADATA_FILE))
   };
 }
 function sameBytes(left, right) {
@@ -1165,16 +985,6 @@ export {
   pruneAuditFile,
   deepMerge,
   loadPolicy,
-  seedsFilePath,
-  loadPool,
-  activeSeeds,
-  archivedSeeds,
-  addSeed,
-  gcPool,
-  surfaceSeed,
-  archiveSeedById,
-  restoreSeed,
-  deleteSeed,
   ledgerFilePath,
   readLedger,
   appendEntry,
@@ -1186,6 +996,7 @@ export {
   checkWatchlist,
   adviseWander,
   completeWander,
+  adviseRefillWander,
   browseStatus,
   loadProfileSchema,
   profileFilePath,
@@ -1204,4 +1015,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-2M35HRL6.js.map
+//# sourceMappingURL=chunk-5TNGUHIR.js.map

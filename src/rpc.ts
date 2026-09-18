@@ -58,6 +58,19 @@ type RpcResult = { ok: true; value: unknown } | { ok: false; error: { code: stri
 const ok = (value: unknown): RpcResult => ({ ok: true, value });
 const err = (code: string, message: string): RpcResult => ({ ok: false, error: { code, message, details: {} } });
 
+let cachedVersion: string | null = null;
+/** Plugin version for the card's status block (read once from package.json). */
+function pluginVersion(paths: WorkspacePaths): string {
+  if (cachedVersion) return cachedVersion;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(paths.packageRoot, 'package.json'), 'utf8')) as { version?: string };
+    cachedVersion = typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    cachedVersion = 'unknown';
+  }
+  return cachedVersion;
+}
+
 function homeSessionId(paths: WorkspacePaths, guard: PathGuard): string | null {
   try {
     const raw = loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json'));
@@ -195,6 +208,7 @@ export function installHeartbeatRpc(
             } catch { /* pre-init: report defaults */ }
             return ok({
               now: new Date(now).toISOString(),
+              version: pluginVersion(paths),
               intervalMin: policy.heartbeat.intervalMin,
               cap: { used: sent.items.length, max: policy.gate.maxDailySend },
               quiet: inQuietHours(policy, now),
