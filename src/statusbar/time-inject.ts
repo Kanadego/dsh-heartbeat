@@ -23,16 +23,41 @@ import type { HostSession } from '../core/orchestrator.js';
 /** Pure gate (§17.6): every condition must hold for an injection. */
 export function shouldInjectTime(input: {
   step: number;
-  /** Type of the session log's LAST event (`undefined` for an empty log). */
-  lastEventType?: string;
+  /** Turn-origin probe (see {@link turnOriginIsInboxSplice}). */
+  originIsInboxSplice: boolean;
   lastInjectAt: number;
   now: number;
   intervalMs: number;
 }): boolean {
   if (input.step !== 1) return false;
-  if (input.lastEventType !== 'agent/inbox/spliced') return false;
+  if (!input.originIsInboxSplice) return false;
   if (input.intervalMs <= 0) return false;
   return input.now - input.lastInjectAt >= input.intervalMs;
+}
+
+/** Turn-origin probe (琥珀 review 2026-09-13 #2): does the OPEN turn begin
+ * with an inbox splice?
+ *
+ * An exact "last event is spliced" check silently breaks the moment any other
+ * plugin writes a session event between the splice and this hook. Instead,
+ * scan backwards for the last `agent/inbox/spliced` vs the last `turn/end`:
+ * the turn is inbox-driven iff a splice happened after the previous turn
+ * finished. This is stable against arbitrary interleaving events. Known
+ * semantic: our own delivery followups also splice, so a delivery turn counts
+ * as inbox-driven — acceptable (throttled like any other; the alternative,
+ * inspecting the spliced messages' sources, is deferred until it matters).
+ * Cost: bounded by one turn length, and only paid at step === 1. */
+export function turnOriginIsInboxSplice(session: HostSession): boolean {
+  const events = sessionEvents(session);
+  let splicedIdx = -1;
+  let turnEndIdx = -1;
+  for (let i = events.length - 1; i >= 0 && (splicedIdx < 0 || turnEndIdx < 0); i--) {
+    const t = events[i]!.type;
+    if (t === 'agent/inbox/spliced' && splicedIdx < 0) splicedIdx = i;
+    else if (t === 'turn/end' && turnEndIdx < 0) turnEndIdx = i;
+  }
+  if (splicedIdx < 0) return false;
+  return splicedIdx > turnEndIdx; // no turn/end at all (-1) → splice wins
 }
 
 function formatElapsed(ms: number): string {
@@ -155,17 +180,15 @@ export function registerTimeInjection(
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next() as EnterDecision;
     if (decision.kind === 'reject' || payload.signal?.aborted) return decision;
-    const events = sessionEvents(payload.agent.session);
-    const last = events[events.length - 1];
-    const now = Date.now();
     const sessionId = payload.agent.session.id;
+    const now = Date.now();
     // Turn-start track pin (review #5): re-pinned at EVERY step===1, before
     // any throttle logic, so the pin never goes stale across turns.
     const track = payload.step === 1 ? opts.pinTrack(sessionId, payload.agent.session) : undefined;
     const intervalMs = Math.max(0, opts.getTimeInjectMin()) * 60_000;
     if (!shouldInjectTime({
       step: payload.step,
-      lastEventType: last?.type,
+      originIsInboxSplice: payload.step === 1 ? turnOriginIsInboxSplice(payload.agent.session) : false,
       lastInjectAt: state[sessionId] ?? 0,
       now,
       intervalMs,
