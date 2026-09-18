@@ -66,12 +66,33 @@ test('supportsInHistory: no evidence yet defaults to Track B', () => {
   assert.equal(trackFor(fresh), 'pre-step');
 });
 
-test('supportsInHistory: route change re-arms the cache via seq', () => {
+test('supportsInHistory: route change re-arms the cache via tail scan', () => {
   const events: { type: string; data?: unknown }[] = [{ type: 'request/context', data: { systemPromptUpdate: 'in-history' } }];
   const s = session('s-switch', events);
   assert.equal(supportsInHistory(s), true);
   events.push({ type: 'request/context', data: {} });
   (s as { seq?: number }).seq = 2;
+  assert.equal(supportsInHistory(s), false);
+});
+
+test('supportsInHistory: incremental tail scan, no full rescans (琥珀 review #1)', () => {
+  const events: { type: string; data?: unknown }[] = [{ type: 'request/context', data: { systemPromptUpdate: 'in-history' } }];
+  const reads: number[] = [];
+  const s = {
+    id: 's-incr',
+    snapshotEvents: (from?: number) => {
+      reads.push(from ?? 0);
+      return events.slice(from ?? 0);
+    },
+  };
+  assert.equal(supportsInHistory(s), true); // initial full scan (from 0)
+  // 50 noise events appended — no new request/context
+  for (let i = 0; i < 50; i++) events.push({ type: 'step/end' });
+  assert.equal(supportsInHistory(s), true);
+  // the follow-up read was RANGED (watermark), not a full rescan
+  assert.equal(reads[reads.length - 1], 1);
+  // a new request/context in the tail still flips the verdict
+  events.push({ type: 'request/context', data: {} });
   assert.equal(supportsInHistory(s), false);
 });
 
@@ -120,9 +141,9 @@ test('render purity: identical state renders byte-identical text (review #2)', (
   assert.equal(c, a);
 });
 
-test('registerStatusbarSection: Track A renders status, Track B renders empty', () => {
+test('registerStatusbarSection: Track A renders scene only (no note, 琥珀 review #3); Track B renders empty', () => {
   const reader = new StatusReader();
-  writeStatus(guard, workspace(), { at: 'x', scene: 'just-spoke' });
+  writeStatus(guard, workspace(), { at: 'x', scene: 'just-spoke', note: '刚跟你聊了两句' });
   let sectionDef: { text: (context: unknown) => string } | null = null;
   const ctx = {
     inject(_services: string[], cb: (scoped: unknown) => void) {
@@ -141,9 +162,11 @@ test('registerStatusbarSection: Track A renders status, Track B renders empty', 
   // Track B session (no request/context evidence) → empty
   const fresh = { agent: { session: session('s-b', [{ type: 'user/message' }]) } };
   assert.equal(def.text(fresh), '');
-  // Track A session (in-history evidence) → status line
+  // Track A session (in-history evidence) → scene line WITHOUT the note
   const capable = { agent: { session: session('s-a', [{ type: 'request/context', data: { systemPromptUpdate: 'in-history' } }]) } };
-  assert.match(def.text(capable), /心跳此刻：刚去和你说过话/);
+  const rendered = def.text(capable);
+  assert.match(rendered, /心跳此刻：刚去和你说过话。$/);
+  assert.doesNotMatch(rendered, /刚跟你聊了两句/);
   // disabled → empty even on Track A sessions
   const ctxOff = {
     inject(_services: string[], cb: (scoped: unknown) => void) {

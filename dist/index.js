@@ -1974,9 +1974,21 @@ import fs8 from "fs";
 import path8 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
-  if (input.lastEventType !== "agent/inbox/spliced") return false;
+  if (!input.originIsInboxSplice) return false;
   if (input.intervalMs <= 0) return false;
   return input.now - input.lastInjectAt >= input.intervalMs;
+}
+function turnOriginIsInboxSplice(session) {
+  const events = sessionEvents(session);
+  let splicedIdx = -1;
+  let turnEndIdx = -1;
+  for (let i = events.length - 1; i >= 0 && (splicedIdx < 0 || turnEndIdx < 0); i--) {
+    const t = events[i].type;
+    if (t === "agent/inbox/spliced" && splicedIdx < 0) splicedIdx = i;
+    else if (t === "turn/end" && turnEndIdx < 0) turnEndIdx = i;
+  }
+  if (splicedIdx < 0) return false;
+  return splicedIdx > turnEndIdx;
 }
 function formatElapsed(ms) {
   const minutes = Math.max(1, Math.round(ms / 6e4));
@@ -2039,15 +2051,13 @@ function registerTimeInjection(ctx, guard, dataDir, opts) {
   ctx.on("agent/pre-step", async (payload, next) => {
     const decision = await next();
     if (decision.kind === "reject" || payload.signal?.aborted) return decision;
-    const events = sessionEvents(payload.agent.session);
-    const last = events[events.length - 1];
-    const now = Date.now();
     const sessionId = payload.agent.session.id;
+    const now = Date.now();
     const track = payload.step === 1 ? opts.pinTrack(sessionId, payload.agent.session) : void 0;
     const intervalMs = Math.max(0, opts.getTimeInjectMin()) * 6e4;
     if (!shouldInjectTime({
       step: payload.step,
-      lastEventType: last?.type,
+      originIsInboxSplice: payload.step === 1 ? turnOriginIsInboxSplice(payload.agent.session) : false,
       lastInjectAt: state[sessionId] ?? 0,
       now,
       intervalMs
@@ -2323,20 +2333,29 @@ function installHeartbeatRpc(ctx, deps) {
 // src/statusbar/track.ts
 var capabilityCache = /* @__PURE__ */ new Map();
 function supportsInHistory(session) {
-  const seq = sessionEventCount(session);
   const key = session.id;
+  const len = sessionEventCount(session);
   const hit = capabilityCache.get(key);
-  if (hit && hit.seq === seq) return hit.supported;
+  if (hit && hit.scannedUpTo === len) return hit.supported;
+  const from2 = hit && len >= hit.scannedUpTo ? hit.scannedUpTo : 0;
   let supported = false;
-  const events = sessionEvents(session);
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
+  if (from2 !== 0 && hit) supported = hit.supported;
+  const readTail = (fromSeq) => {
+    if (typeof session.snapshotEvents === "function") {
+      try {
+        const slice = session.snapshotEvents(fromSeq);
+        if (Array.isArray(slice)) return slice;
+      } catch {
+      }
+    }
+    return sessionEvents(session).slice(fromSeq);
+  };
+  for (const e of readTail(from2)) {
     if (e.type === "request/context") {
       supported = e.data?.systemPromptUpdate === "in-history";
-      break;
     }
   }
-  capabilityCache.set(key, { seq, supported });
+  capabilityCache.set(key, { scannedUpTo: len, supported });
   return supported;
 }
 var SCENE_LABELS = {
@@ -2347,10 +2366,10 @@ var SCENE_LABELS = {
   present: "\u5728\u573A\u5F85\u7740",
   away: "\u4F60\u4E0D\u5728\uFF0C\u81EA\u5DF1\u5F85\u7740"
 };
-function renderStatusText(status) {
+function renderStatusText(status, opts) {
   if (!status) return "";
   const label = SCENE_LABELS[status.scene] ?? "\u5728\u573A";
-  const note = status.note ? `\u2014\u2014${status.note}` : "";
+  const note = opts?.withNote === false ? "" : status.note ? `\u2014\u2014${status.note}` : "";
   return `\u5FC3\u8DF3\u6B64\u523B\uFF1A${label}${note}\u3002`;
 }
 var pinnedTrack = /* @__PURE__ */ new Map();
@@ -2396,7 +2415,7 @@ function registerStatusbarSection(ctx, guard, paths, opts) {
         const track = pinnedTrackFor(agent.session.id, agent.session);
         noteTrack(paths.logsDir + "/heartbeat.jsonl", agent.session.id, track);
         if (track !== "system-prompt") return "";
-        return renderStatusText(opts.reader.read(guard, paths));
+        return renderStatusText(opts.reader.read(guard, paths), { withNote: false });
       }
     }), "heartbeat: statusbar section");
   });
