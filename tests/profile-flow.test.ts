@@ -195,3 +195,63 @@ test('burn: plan previews without writing; execute shreds runtime data but prese
   assert.ok(all.burned.includes('settings'));
   assert.equal(fs.existsSync(paths.settingsDir), false);
 });
+
+// ── M3: chat seeds from consolidation (2026-09-18 spec ⑧) ─────────────────
+
+test('spec ⑧: CHAT_SEED ops split out and written to the pool (category=chat)', async () => {
+  inboxAppend(guard, inboxFile(), {
+    kind: 'chat', at: new Date(NOW).toISOString(), ref: 'cs1',
+    note: '他说想去看新上映的那部科幻片',
+  });
+  const llm = async () => JSON.stringify([
+    { op: 'CHAT_SEED', text: '他想看新上映的科幻片', topic: '科幻片' },
+    { op: 'CHAT_SEED', text: '另一个话题' },
+    { op: 'NOOP', why: '无画像变化' },
+  ]);
+  const run = await runConsolidation(guard, paths, policy, llm, NOW);
+  assert.equal(run.ran, true);
+  assert.equal(run.applied, 1); // only the NOOP counts as a profile op
+  assert.equal(inboxCount(guard, inboxFile()), 0);
+  const { loadPool, seedsFilePath } = await import('../src/seeds/pool.js');
+  const db = loadPool(guard, seedsFilePath(paths.dataDir));
+  const chatSeeds = db.seeds.filter((s) => s.category === 'chat' && s.status === 'active');
+  assert.equal(chatSeeds.length, 2);
+  assert.ok(chatSeeds.some((s) => s.text === '他想看新上映的科幻片' && s.topic === '科幻片'));
+});
+
+test('spec ⑧: invalid CHAT_SEED rows dropped silently; per-run cap 3 enforced', async () => {
+  for (let i = 0; i < 5; i++) {
+    inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: `csx${i}`, note: `观察${i}` });
+  }
+  const llm = async () => JSON.stringify([
+    { op: 'CHAT_SEED', text: '种子一' },
+    { op: 'CHAT_SEED', text: '   ' },           // blank text -> dropped
+    { op: 'CHAT_SEED' },                          // no text -> dropped
+    { op: 'CHAT_SEED', text: '种子二' },
+    { op: 'CHAT_SEED', text: '种子三' },
+    { op: 'CHAT_SEED', text: '种子四' },          // beyond cap 3 -> dropped
+  ]);
+  const run = await runConsolidation(guard, paths, policy, llm, NOW);
+  assert.equal(run.ran, true);
+  const { loadPool, seedsFilePath } = await import('../src/seeds/pool.js');
+  const db = loadPool(guard, seedsFilePath(paths.dataDir));
+  const texts = db.seeds.filter((s) => s.category === 'chat').map((s) => s.text).sort();
+  assert.deepEqual(texts, ['种子一', '种子三', '种子二']);
+});
+
+test('spec ⑧: same-topic chat seed merges into the existing row (addSeed semantics)', async () => {
+  const { addSeed, loadPool, seedsFilePath } = await import('../src/seeds/pool.js');
+  addSeed(guard, seedsFilePath(paths.dataDir), policy, { text: '旧的一句', topic: '科幻片', source: 'chat' }, NOW - 1000);
+  for (let i = 0; i < policy.profile.consolidation.inboxBacklog; i++) {
+    inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: `csm${i}`, note: `观察${i}` });
+  }
+  const llm = async () => JSON.stringify([
+    { op: 'CHAT_SEED', text: '新的一句更准', topic: '科幻片' },
+  ]);
+  const run = await runConsolidation(guard, paths, policy, llm, NOW);
+  assert.equal(run.ran, true);
+  const db = loadPool(guard, seedsFilePath(paths.dataDir));
+  const rows = db.seeds.filter((s) => s.category === 'chat' && s.status === 'active');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.text, '新的一句更准');
+});

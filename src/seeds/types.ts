@@ -4,6 +4,7 @@
 
 export type SeedTag = 'news' | 'fandom' | 'scene' | 'promise';
 export type SeedSource = 'chat' | 'screen' | 'browse' | 'hand' | 'profile';
+export type SeedCategory = 'topic' | 'chat';
 export type SeedRetireReason = 'consumed' | 'expired' | 'cold_bench' | 'pool_cap' | 'completed';
 
 export interface Seed {
@@ -14,6 +15,10 @@ export interface Seed {
   topic: string;
   tag: SeedTag;
   source: SeedSource;
+  /** Loop role, decoupled from source (2026-09-18 spec ⑤): 'topic' = wander/
+   *  hand/profile stock (random pick), 'chat' = conversation-grown, consumed
+   *  once. Absent on pre-v1.5 rows; loadPool defaults them to 'topic'. */
+  category?: SeedCategory;
   /** 0..1 trust level; handwriting and high-confidence profile sources gain eviction protection. */
   confidence: number;
   /** Eviction protection (§4.2 pool-cap rule): handwritten / high-confidence profile sources. */

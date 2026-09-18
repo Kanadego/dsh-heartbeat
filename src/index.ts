@@ -27,8 +27,11 @@ export const name = 'heartbeat';
 /**
  * Host services required by the orchestrator (verified present in
  * DSH 0.1.1-rc.2 via hb-probe: agents service + agent/created + followup).
+ * `settings` = the host SettingsProvider service (0.1.5): the web card's
+ * rhythm edits live there. 0.1.5's strict resolution refuses undeclared
+ * service access, so the name must be declared here.
  */
-export const inject = ['agents'];
+export const inject = ['agents', 'settings'];
 
 export const Config = z.object({
   /** Override the runtime data dir (workspace guard boundary). Empty = default (<packageRoot>/data). */
@@ -152,17 +155,40 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   };
   void (async () => {
     try {
-      const { settingsNamespace, installSettingsSection } = await import('@deepseek-ai/dsh-settings');
-      installSettingsSection(
-        ctx as never,
-        settingsNamespace('heartbeat'),
-        Config as never,
-        config as never,
-        {
+      // 0.1.5 API (dsh-settings 0.1.5-rc.2): the old free function
+      // `installSettingsSection(ctx, ns, ...)` is GONE; the equivalent is the
+      // `installSection` METHOD on the host `settings` service (a cordis
+      // Service named "settings", declared in our module inject above).
+      // Feature-detected so an older host bundle (0.1.1/0.1.2 era, where the
+      // package still exported the free function) keeps working.
+      const settingsService = (ctx as unknown as { get(name: string): unknown }).get('settings') as
+        | {
+            installSection(
+              owner: unknown,
+              ns: string,
+              schema: unknown,
+              entry: unknown,
+              hooks: { setSource(fn: () => unknown): void; onChange(): void },
+            ): void;
+          }
+        | undefined;
+      const legacy = (await import('@deepseek-ai/dsh-settings')) as {
+        settingsNamespace?(ns: string): string;
+        installSettingsSection?(ctx: unknown, ns: string, schema: unknown, entry: unknown, hooks: object): void;
+      };
+      if (settingsService && typeof settingsService.installSection === 'function') {
+        settingsService.installSection(ctx, 'heartbeat', Config, config, {
           setSource: (current) => { sectionSource = current as () => HeartbeatConfig; },
           onChange: () => { applySettingsOverrides(); },
-        },
-      );
+        });
+      } else if (typeof legacy.installSettingsSection === 'function' && typeof legacy.settingsNamespace === 'function') {
+        legacy.installSettingsSection(ctx as never, legacy.settingsNamespace('heartbeat'), Config as never, config as never, {
+          setSource: (current: unknown) => { sectionSource = current as () => HeartbeatConfig; },
+          onChange: () => { applySettingsOverrides(); },
+        });
+      } else {
+        throw new Error('no installSection method on the settings service and no legacy export');
+      }
       applySettingsOverrides();
       ctx.logger.info('heartbeat: settings section registered');
     } catch (e) {

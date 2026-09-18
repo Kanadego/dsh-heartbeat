@@ -124,6 +124,7 @@ window.__ModuleLoader__.load({
 				return React.createElement(
 					"div",
 					{ style: listStyle },
+					React.createElement("div", null, "插件版本：v" + (view.version || "未知")),
 					React.createElement("div", null, "上次心跳：", fmtTime(lb.at)),
 					React.createElement("div", null, "结果：", verdictText),
 					React.createElement("div", null, "今日表达：", view.cap.used, " / ", view.cap.max, " 条"),

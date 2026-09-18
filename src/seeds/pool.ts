@@ -10,6 +10,7 @@ import {
   SEED_SOURCE_DEFAULT_CONFIDENCE,
   emptySeedDb,
   type Seed,
+  type SeedCategory,
   type SeedDb,
   type SeedRetireReason,
   type SeedSource,
@@ -18,11 +19,27 @@ import {
 
 const DAY_MS = 86_400_000;
 
+// Per-category pool caps (2026-09-18 spec ⑤): topic stock vs conversation-grown
+// chat material, decoupled from `source`; sum == the global maxActive default.
+export const SEED_CATEGORY_CAPS: Record<SeedCategory, number> = { topic: 16, chat: 14 };
+
+const CATEGORY_VALUES: readonly string[] = ['topic', 'chat'];
+
+/** Lenient category coercion for on-disk rows: anything missing/unknown (all
+ *  pre-v1.5 seeds) counts as topic stock. */
+export function normalizeCategory(v: unknown): SeedCategory {
+  return typeof v === 'string' && (CATEGORY_VALUES as readonly string[]).includes(v)
+    ? (v as SeedCategory)
+    : 'topic';
+}
+
 export interface AddSeedInput {
   text: string;
   topic?: string;
   tag?: SeedTag;
   source?: SeedSource;
+  /** Loop role (spec ⑤); defaults from source: chat->chat, everything else->topic. */
+  category?: SeedCategory;
   confidence?: number;
 }
 
@@ -67,6 +84,9 @@ export function loadPool(guard: PathGuard, file: string): SeedDb {
     try {
       const obj = JSON.parse(trimmed) as Seed;
       if (typeof obj.id === 'string' && obj.id.startsWith('s')) {
+        // spec ⑤ loadPool tolerance: only the id is load-bearing; a missing or
+        // unknown category (every pre-v1.5 row) falls back to topic stock.
+        obj.category = normalizeCategory(obj.category);
         db.seeds.push(obj);
         const n = Number(obj.id.slice(1));
         if (Number.isFinite(n) && n > db.seq) db.seq = n;
@@ -103,9 +123,10 @@ export function evictionScore(seed: Seed, policy: Policy, now: number): number {
   return freshness * w.freshness + unused * w.unused + seed.confidence * w.confidence;
 }
 
-/** Pick the eviction victim: unprotected actives first (§4.2 加权保护). */
-export function pickEvictionVictim(db: SeedDb, policy: Policy, now: number): Seed | null {
-  const actives = activeSeeds(db);
+/** Pick the eviction victim: unprotected actives first (§4.2 加权保护); with
+ *  `category`, only that category's actives compete (spec ⑤ per-category caps). */
+export function pickEvictionVictim(db: SeedDb, policy: Policy, now: number, category?: SeedCategory): Seed | null {
+  const actives = activeSeeds(db).filter((s) => category === undefined || normalizeCategory(s.category) === category);
   if (actives.length === 0) return null;
   const unprotected = actives.filter((s) => !s.protected);
   const candidates = unprotected.length > 0 ? unprotected : actives;
@@ -127,6 +148,12 @@ function archiveSeed(seed: Seed, reason: SeedRetireReason, now: number): void {
   seed.retiredAt = new Date(now).toISOString();
 }
 
+/** Spec ④: chat-grown material is consumed ONCE (conversation freshness);
+ *  every other category follows the policy-wide retireAfterUsed. */
+function retireLimit(s: Seed, policy: Policy): number {
+  return normalizeCategory(s.category) === 'chat' ? 1 : policy.seeds.retireAfterUsed;
+}
+
 // ── operations ──────────────────────────────────────────────────────────
 
 export function addSeed(
@@ -141,6 +168,7 @@ export function addSeed(
   if (!text) throw new Error('seed text must not be empty');
   const tag = normalizeTag(input.tag);
   const source: SeedSource = input.source ?? 'chat';
+  const category = normalizeCategory(input.category ?? (source === 'chat' ? 'chat' : 'topic'));
   const confidence = input.confidence ?? SEED_SOURCE_DEFAULT_CONFIDENCE[source];
 
   // Exact-text dedup against actives.
@@ -158,6 +186,7 @@ export function addSeed(
     kept.text = text; // brief takes the latest
     kept.tag = tag;
     kept.source = source;
+    kept.category = normalizeCategory(input.category ?? kept.category ?? category);
     kept.confidence = Math.max(kept.confidence, confidence);
     kept.used = sameTopic.reduce((acc, s) => acc + s.used, 0); // used accumulates
     kept.lastEvidenceAt = [kept.lastEvidenceAt, nowIso, ...sameTopic.map((s) => s.lastEvidenceAt)]
@@ -173,7 +202,7 @@ export function addSeed(
     seed = kept;
     // capacity still applies after growth check below if kept is somehow over cap
     if (activeSeeds(db).length > policy.seeds.maxActive) {
-      const victim = pickEvictionVictim(db, policy, now);
+      const victim = pickEvictionVictim(db, policy, now, normalizeCategory(kept.category));
       if (victim && victim.id !== kept.id) {
         archiveSeed(victim, 'pool_cap', now);
         savePool(guard, file, db);
@@ -184,13 +213,23 @@ export function addSeed(
     return { kind: 'merged', seed: kept };
   }
 
-  // Capacity first (rule 4): evict before inserting when full.
+  // Capacity first (rules 4 + spec ⑤): per-category cap evicts within its own
+  // pool; the global cap evicts in the incoming seed's category (a full topic
+  // stock must not push chat material out and vice versa).
   let evicted: Seed | undefined;
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    const victim = pickEvictionVictim(db, policy, now);
+  const catCount = activeSeeds(db).filter((s) => normalizeCategory(s.category) === category).length;
+  if (catCount >= SEED_CATEGORY_CAPS[category]) {
+    const victim = pickEvictionVictim(db, policy, now, category);
     if (victim) {
       archiveSeed(victim, 'pool_cap', now);
       evicted = victim;
+    }
+  }
+  if (activeSeeds(db).length >= policy.seeds.maxActive) {
+    const victim = pickEvictionVictim(db, policy, now, category);
+    if (victim) {
+      archiveSeed(victim, 'pool_cap', now);
+      evicted = evicted ?? victim;
     }
   }
 
@@ -201,6 +240,7 @@ export function addSeed(
     topic: input.topic ?? text.slice(0, 24),
     tag,
     source,
+    category,
     confidence,
     protected: source === 'hand' || (source === 'profile' && confidence >= 0.7),
     used: 0,
@@ -225,7 +265,7 @@ export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Dat
     const ageMs = now - parseIso(s.bornAt);
     const sinceEvidence = parseIso(s.lastEvidenceAt);
     const sinceUsed = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
-    if (s.used >= policy.seeds.retireAfterUsed && sinceEvidence <= sinceUsed) {
+    if (s.used >= retireLimit(s, policy) && sinceEvidence <= sinceUsed) {
       archiveSeed(s, 'consumed', now);
       report.consumed += 1;
     } else if (now > parseIso(s.expiresAt)) {
@@ -254,7 +294,7 @@ export function surfaceSeed(
   if (!s) return null;
   s.used += 1;
   s.lastUsedAt = new Date(now).toISOString();
-  if (s.used >= policy.seeds.retireAfterUsed && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
+  if (s.used >= retireLimit(s, policy) && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
     archiveSeed(s, 'consumed', now);
   }
   savePool(guard, file, db);

@@ -1,12 +1,8 @@
 import {
   BUNDLED_PRESET_ID,
-  activeSeeds,
-  addSeed,
   adviseWander,
   appendAuditLine,
   appendEntry,
-  archiveSeedById,
-  archivedSeeds,
   browseStatus,
   checkWatchlist,
   completeWander,
@@ -14,12 +10,10 @@ import {
   createPathGuard,
   describeInstall,
   ensureRegistered,
-  gcPool,
   installBundledPreset,
   ledgerFilePath,
   loadInterests,
   loadPolicy,
-  loadPool,
   loadProfile,
   loadWatchlist,
   markDone,
@@ -29,12 +23,20 @@ import {
   readLedger,
   rebuildProfile,
   scanPending,
-  seedsFilePath,
   sendNewMessageHint,
   shredFileSync,
-  surfaceSeed,
   verifyProfile
-} from "../chunk-2M35HRL6.js";
+} from "../chunk-5TNGUHIR.js";
+import {
+  activeSeeds,
+  addSeed,
+  archiveSeedById,
+  archivedSeeds,
+  gcPool,
+  loadPool,
+  seedsFilePath,
+  surfaceSeed
+} from "../chunk-SVP2NDRF.js";
 import {
   initWorkspace,
   loadEncryptedText,

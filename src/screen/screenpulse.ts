@@ -1,6 +1,7 @@
 // Screen pulse (v0.4/v0.9 port). Collects foreground title/process/rect,
-// focus window, visible top-level windows (cap 20), and a screenshot
-// downsampled to width 1024 - all DPAPI-encrypted at rest (D14).
+// focus window, visible top-level windows (cap 20), and a FULL-screen
+// screenshot at native resolution (spec ①, 2026-09-18) - all DPAPI-encrypted
+// at rest (D14).
 //
 // Discipline: the plaintext window exists only inside data/tmp between the
 // PowerShell collector and the vault encryption; raw intermediates are

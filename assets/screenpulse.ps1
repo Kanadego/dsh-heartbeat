@@ -1,13 +1,14 @@
-# screenpulse.ps1 - screen pulse collector (port of v1, logic unchanged).
+# screenpulse.ps1 - screen pulse collector (port of v1; screenshot at native
+# resolution since 2026-09-18 spec ①).
 # Collects: foreground title + process + rect, focus window, visible top-level
-# windows (taskbar-level, cap 20), full-screen screenshot downsampled to
-# width 1024.
+# windows (taskbar-level, cap 20), full-screen screenshot at native size.
 #
 # Privacy discipline (privacy charter v0.9, user-authorized):
 #   - visible-window enumeration only (EnumWindows + IsWindowVisible, cap 20);
 #     no tray icons, no process enumeration
-#   - screenshot force-downsampled to width 1024 (mood-level detail, small
-#     text is unreadable)
+#   - screenshot saved at NATIVE resolution (spec ①: fixes the "partial
+#     screen misread as full-screen game" failure); the file is DPAPI-
+#     encrypted at rest by the caller and burned after use
 #   - this script only produces PLAINTEXT intermediates in the caller-provided
 #     outdir (which must be data/tmp); encryption at rest is the caller's job
 #   - title/process text is sensitive -> DPAPI-encrypted by caller, or burned
@@ -120,7 +121,9 @@ foreach ($w in [WinForeground]::VisibleTopLevel()) {
     $visible += @{ title = $wi.title; process = $wi.process; pid = $wi.pid }
 }
 
-# -- 2. screenshot, downsampled to width 1024 (degrade to text-only on failure) --
+# -- 2. screenshot, FULL screen at native resolution (spec ①, 2026-09-18:
+#       the old width-1024 downsample made a full-screen game look like a
+#       windowed shot; degrade to text-only on failure) --
 $shotPath = ''
 $scr = $null
 $sw = 0; $sh = 0
@@ -135,19 +138,11 @@ try {
     $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
     $g.Dispose()
 
-    $sw = 1024
-    $sh = [int]([math]::Round($bounds.Height * ($sw / [double]$bounds.Width)))
-    if ($sh -le 0) { throw 'bad resize' }
-    $small = New-Object System.Drawing.Bitmap $sw, $sh
-    $sg = [System.Drawing.Graphics]::FromImage($small)
-    $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-    $sg.DrawImage($bmp, 0, 0, $sw, $sh)
-    $sg.Dispose()
-    $bmp.Dispose()
-
+    $sw = $bounds.Width
+    $sh = $bounds.Height
     $shotPath = Join-Path $outdir 'screen.raw.jpg'
-    $small.Save($shotPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-    $small.Dispose()
+    $bmp.Save($shotPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+    $bmp.Dispose()
 } catch {
     Write-Warning "screen shot skipped: $($_.Exception.Message)"
 }

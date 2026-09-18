@@ -63,16 +63,18 @@ export function shouldConsolidate(
 }
 
 /** Parse the model's JSON array, tolerating fences, surrounding prose, or a
- * repeated array (scan every bracket-bounded candidate, left edge ascending,
- * right edge descending, take the first slice that parses — a naive
- * first-`[`-to-last-`]` slice can span two arrays and throw). */
-function parseOps(raw: string): ProfileOp[] {
+ *  repeated array (scan every bracket-bounded candidate, left edge ascending,
+ *  right edge descending, take the first slice that parses — a naive
+ *  first-`[`-to-last-`]` slice can span two arrays and throw). Typed as
+ *  unknown[]: spec ⑧ CHAT_SEED rows ride in the same array and are split out
+ *  by splitChatSeedOps before the profile pipeline validates anything. */
+function parseOps(raw: string): unknown[] {
   const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   for (let start = text.indexOf('['); start >= 0; start = text.indexOf('[', start + 1)) {
     for (let end = text.lastIndexOf(']'); end > start; end = text.lastIndexOf(']', end - 1)) {
       try {
         const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
-        if (Array.isArray(parsed)) return parsed as ProfileOp[];
+        if (Array.isArray(parsed)) return parsed;
       } catch { /* try a shorter slice */ }
     }
   }
@@ -84,8 +86,16 @@ const RULES = [
   '拿不准就不记（NOOP 偏置）：宁缺毋滥。',
   'stable 条目只能被"更新的矛盾观察"反驳；没有矛盾就不要 INVALIDATE。',
   '每条 ADD/UPDATE 必须引用 inbox 提供的观察（why 说明来处）。',
-  '只输出一个 JSON 数组，元素形如 {"op":"ADD"|"UPDATE"|"INVALIDATE"|"NOOP",...}。',
+  '只输出一个 JSON 数组，元素形如 {"op":"ADD"|"UPDATE"|"INVALIDATE"|"NOOP"|...,..}。',
 ].join('\n');
+
+// Spec ⑧ (2026-09-18): consolidation also yields chat seeds — the engine-room agent picks
+// conversation-worthy topics from the observations. Two independent duties:
+// consolidation writes the profile + chat seeds; rumination only reads the pool.
+const CHAT_SEED_RULE =
+  '聊天种子（spec ⑧）：从观察里挑"值得主动聊的话题"——只挑他真正表现出兴趣的、' +
+  '新出现的事物或他想深入的话题；普通寒暄、客套、已完结的小事不记。' +
+  '每条输出为 {"op":"CHAT_SEED","text":"一句话素材(<=60字)"}（topic 可选）。没有合适的就不挑。';
 
 export function buildConsolidationPrompt(
   entriesView: string,
@@ -96,6 +106,7 @@ export function buildConsolidationPrompt(
     '你是用户画像的合并裁决器。下面是当前画像条目与新观察。请产出结构化操作。',
     '裁决规则：',
     RULES,
+    CHAT_SEED_RULE,
     '',
     '## 当前条目（仅非 psy 分区；字段：id/partition/topic/subTopic/content/confidence）',
     entriesView || '(空)',
@@ -106,6 +117,33 @@ export function buildConsolidationPrompt(
     '输出：一个 JSON 数组的 ops。ADD 需含 partition/topic/subTopic/content/temporal/evidence[{kind,at,ref}]；',
     'UPDATE 需含 id/changes；INVALIDATE 需含 id/why。不要输出数组以外的任何内容。',
   ].join('\n');
+}
+
+/** Chat-seed rows in the model output (spec ⑧). Validated leniently: a row
+ *  without a usable text is simply dropped, never rejected loudly. */
+export interface ChatSeedCandidate {
+  text: string;
+  topic?: string;
+}
+
+/** Per-run chat-seed cap (code constant like the category caps; deliberately
+ *  not a policy key per spec §三 "尽量不加配置项"). */
+export const MAX_CHAT_SEEDS_PER_RUN = 3;
+
+export function splitChatSeedOps(raw: unknown[]): { profileOps: unknown[]; chatSeeds: ChatSeedCandidate[] } {
+  const chatSeeds: ChatSeedCandidate[] = [];
+  const profileOps: unknown[] = [];
+  for (const o of raw) {
+    if (typeof o === 'object' && o !== null && (o as { op?: unknown }).op === 'CHAT_SEED') {
+      const text = String((o as { text?: unknown }).text ?? '').trim();
+      if (!text) continue;
+      const topic = typeof (o as { topic?: unknown }).topic === 'string' ? (o as { topic: string }).topic.trim() : undefined;
+      chatSeeds.push({ text: text.slice(0, 60), ...(topic ? { topic: topic.slice(0, 24) } : {}) });
+      continue;
+    }
+    profileOps.push(o);
+  }
+  return { profileOps, chatSeeds: chatSeeds.slice(0, MAX_CHAT_SEEDS_PER_RUN) };
 }
 
 export interface ConsolidationRun {
@@ -150,7 +188,7 @@ export async function runConsolidation(
     const prompt = buildConsolidationPrompt(entriesView, all);
 
     // LLM output invalid -> retry once -> still invalid: skip, inbox preserved.
-    let ops: ProfileOp[] | null = null;
+    let ops: unknown[] | null = null;
     let lastError = '';
     for (let attempt = 0; attempt < 2 && ops === null; attempt++) {
       try {
@@ -166,19 +204,35 @@ export async function runConsolidation(
       return { ran: false, reason: `llm output unusable: ${lastError}`, applied: 0, rejected: 0 };
     }
 
-    if (ops.length > policy.profile.maxOpsPerRun) {
-      ops = ops.slice(0, policy.profile.maxOpsPerRun); // hard per-run cap (§3.3)
+    // spec ⑧: chat seeds split out before the profile pipeline sees the array.
+    const { profileOps, chatSeeds } = splitChatSeedOps(ops);
+    let profileOpsCast = profileOps as ProfileOp[];
+    if (profileOpsCast.length > policy.profile.maxOpsPerRun) {
+      profileOpsCast = profileOpsCast.slice(0, policy.profile.maxOpsPerRun); // hard per-run cap (§3.3)
     }
 
-    const report = applyOpsToDoc(guard, paths.dataDir, doc, ops, schema, policy, now);
+    const report = applyOpsToDoc(guard, paths.dataDir, doc, profileOpsCast, schema, policy, now);
     const aged = runDeterministicAging(doc, policy, now);
     persistWithJournal(guard, paths.dataDir, doc, { runId, applied: report.applied, rejected: report.rejected });
+    // Chat seeds land in the material pool (category=chat via source 'chat');
+    // addSeed merges by topic and applies the chat cap (spec ⑤) itself.
+    const { addSeed, seedsFilePath } = await import('../seeds/pool.js');
+    let chatSeedsAdded = 0;
+    for (const cs of chatSeeds) {
+      try {
+        addSeed(guard, seedsFilePath(paths.dataDir), policy, {
+          text: cs.text, ...(cs.topic ? { topic: cs.topic } : {}), source: 'chat', tag: 'scene',
+        }, now);
+        chatSeedsAdded += 1;
+      } catch { /* a bad seed must not fail the consolidation run */ }
+    }
     inboxClear(guard, inboxFilePath(paths.dataDir)); // drain commits only on success
     markConsolidation(guard, paths, now);
     appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
       event: 'consolidation', runId,
       applied: report.applied.length, rejected: report.rejected.length,
       volatileExpired: aged.volatileExpired, lowActivityMarked: aged.lowActivityMarked,
+      chatSeeds: chatSeedsAdded,
     });
     return {
       ran: true, reason: 'ok',

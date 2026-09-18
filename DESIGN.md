@@ -49,7 +49,8 @@ vault(vault.ts + assets/vault.ps1) ← seeds, screen, gate(sent), profile(全部
 gate(busy-rules) ← env(窗口类别), orchestrator
 seeds/pool ← orchestrator(闲逛入池/归账)
 core/material（反刍备料/素材包三段式，纯函数） ← orchestrator
-profile/{inbox,store,schema,consolidate,digest} ← orchestrator, cli
+screen/vision（ModLens 视觉桥，C23） ← orchestrator（表达相起头）
+profile/{inbox,store,schema,consolidate,digest} ← orchestrator, cli（⑧consolidate 产聊天种子入池）
 browse ← orchestrator(闲逛/定向), cli
 notify ← orchestrator(投递后提示)
 screen, env, rhythm, ledger ← orchestrator
@@ -77,7 +78,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C5 | 模型轮次 | `agent.followup(createUserMessage({content, source:{kind:'plugin', plugin, form:'snapshot', sections}}))` + `await agent.whenIdle()`；助手文本扫描事件流里 `type含'assistant'` 的事件提取（content 可能是字符串/数组/嵌套，见 orchestrator.assistantText；**必须排除 reasoning 块，见 C14**）。**0.1.2-rc.1 移除了 `Session.events`**：改读 `snapshotEvents(fromSeq?, toSeqExclusive?)` + `seq`，插件侧封装 `sessionEvents()` / `sessionEventCount()` 做兼容回退 |
 | C6 | 工具限制 | `agentCtx.get('tools').restrict({allow:['web_search']})` —— 在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效（需求 8 的模型侧硬保险）。**只能点名"继承层"里的工具**：`dsh-tools` 的 `view(scope)` 把 agent 自身层的注册只加进 `knownNames`、**不加进 `restrictableNames`**，所以没有预设的裸 agent 连 `web_search` 都点不了名（`tools.restrict() names unknown global tool "web_search"`）——见 C13。另：`tools.schemas()` 不传 scope 拿的是**全局视图**，不能拿来判断预设是否挂上，判据是同行的 `restrict=ok` |
 | C7 | pre-step 注入 | `ctx.on('agent/pre-step', async ({agent,turn,step,signal}, next) => {...}, {prepend:true})`；waterfall：`await next()` 后返回 `{kind:'enter', messages:[...]}` 追加式注入（不碰前缀）。**step===1 且末事件 `agent/inbox/spliced` = 用户发起轮次；step>1 且 `step/end` = 任务中途**（日常会话时间注入/状态栏的门控信号） |
-| C8 | settings | host：`installSettingsSection(ctx, settingsNamespace('heartbeat'), Config, entry, {setSource, onChange})`（arity 5）；client：`ctx.settingsScope.bind({namespace})` → `getSnapshot()/subscribe()/set(field, value)` |
+| C8 | settings | **两代 API（v1.6.0 起特性探测并存）**。0.1.5-rc.2（dsh-settings 0.1.5）：旧自由函数 `installSettingsSection` **已删除**，改为宿主 `settings` 服务（cordis Service 名 `"settings"`）的实例方法 `provider.installSection(ctx, 'heartbeat', Config, entry, {setSource, onChange})`，且插件模块 `inject` **必须声明 `'settings'`**（严格解析，未声明即拒——与 C21 同族）；0.1.1/0.1.2 时代包内仍是自由函数 `installSettingsSection(ctx, settingsNamespace(ns), …)`。**此包是插件运行时真依赖，必须放 dependencies**（v1.5.1 误挪 peer 后 profile 里的实体包被清掉，节律配置"保存不生效 + 重启回默认"——2026-09-18 修）。client：`ctx.settingsScope.bind({namespace})` → `getSnapshot()/subscribe()/set(field, value)`，落宿主 settings 服务的 user 层持久化 |
 | C9 | client 契约 | `dsh.client:{platform:'web'}` + exports `"./client"`；client 模块 = `window.__ModuleLoader__.load({id, factory})`，**factory 必须返回带 `apply` 的对象**（client 侧也跑 cordis，同样校验）；设置卡片 = `ctx.slots.inject('settings.section', function*(){ yield ctx.slots.register({name:'settings.section', id, order, label, inject}, ReactComponent) })`；client inject 服务：`settingsScope / slots / locale / sessions / remote` |
 | C10 | 安装是复制 | `file:` 协议安装 = 目录拷贝，**改源码后必须重拷 dist 到 node_modules 副本或重跑 `dsh plugin add`**，否则跑的是旧代码 |
 | C11 | 持久化布局 | `~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 node:zlib 解）；会话 flush 是惰性的，活跃内容可能只在内存 |
@@ -92,6 +93,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C20 | **0.1.5 持久层重构（格式 v3 迁移）** | 持久层拆成中立契约包 `dsh-session-persistence` + 独立后端 `dsh-session-persistence-jsonl`（仍是一个仅追加 `.jsonl.zstd` 产物/会话）。`SESSION_FORMAT_VERSION` **0 → 3**：旧版本头被拒绝（"session header version must be 3"），宿主内置**代际迁移**——保留历史代文件（`session.jsonl.zstd` = v0），首次访问时解码-迁移-校验后发布当前代文件（版本化文件名），源文件只读不改。**升级宿主前必须备份 `~/.dsh/sessions`**（用户数据危险操作）；会话目录从单文件变多代文件布局，`scripts/repair-session.mjs` 的"先找备份再改 v0 文件"手册要按新布局复查（迁移后的当前代是 v3 格式，修复工具只应再碰 v0 历史代） |
 | C21 | **0.1.5 cordis 严格服务解析（自定义 RPC 通道退役 → /api 精确路由）** | 0.1.5 的 cordis 解析器沿 fiber 链找服务，访问许可由 fiber 的模块级 `inject` 声明决定；而 cordis `Service` 把 `this.ctx` **固定在提供方自己的上下文**（client-connection 的模块 inject 只有 `['credentials']`）。于是 `connection.rpc.handle(channel, …)` 内部的 `owner.webServer.register(route)` 是在**别人的 fiber** 上读 `webServer` → 必抛 `cannot get property "webServer" without inject`——**调用方无论怎么 inject 都救不了**（现场取证 2026-09-12：合并 inject `['connection','webServer']` + effect 包裹仍是此错，`scoped` 本身读 webServer 正常）。症状：路由不存在 → 浏览器 POST `<channel>/<endpoint>` 落到 `dsh-host-frontend-static` 的 **fallback 座位** → **HTTP 405**（卡片全部分区"加载失败"，host 静默）。**0.1.5 正解**：`connection.fetch.register()` 在 `/api` 下注册精确 Fetch 路由——只写 connection 内部路由表、不碰任何其他服务，0.1.2/0.1.5 的 `/api` 共享处理器都先查精确路由，两代通用；浏览器认证由 `/api` 前缀的 `requestRejection` 统一把关。信封与 `/api` 同构（`client-request`/`server-response`），端点名走 `payload.endpoint`；客户端 `rpc.call('/api', 'heartbeat', {endpoint, …})`。**鉴别**：405 = 路由没注册；404 = 端点不匹配；401/403 = /api 认证拦截 |
 | C22 | **兴趣/时段卡片编辑（interests-edit，v1.4.0）** | 权威文件仍是 `interests.json`（browse.ts `loadInterests`：用户层**整体取代**出厂层）。卡片编辑走 `interests.list/add/remove/setWindows` 四端点；**首次成功变更时把出厂文件逐字节复制进用户层**（D22 首编继承），此后用户层即唯一权威——出厂文件更新不再自动跟上。读取（`interests.list`）与**失败的校验**都是只读，绝不顺手创建用户层（否则看一眼卡片就接管了出厂配置）。窗口校验：HH:MM、同日起始<结束、1–6 个、两两不重叠（裁判取第一个命中窗口，重叠会静默改变优先级）；兴趣条目：trim+折叠空白、≤60 字、大小写不敏感去重、≤32 条。`_comment` 等未知顶层键在保存时保留 |
+| C23 | **ModLens 视觉缝隙（screen/vision.ts，v1.6.0）** | 截图描述走宿主 profile 里的 `@liustack/modlens` CLI（与插件同在 profile node_modules 树，**运行时向上解析** `dist/main.js`，不存绝对路径；解析不到 = 视觉静默关闭）。调用形态 `node main.js -i <解密截图> -o <tmpJson> -p <provider> --timeout <ms>`，输出 JSON 取 `result.summary`（宽容解析 result.summary/summary/ocr.full_text）。**必须 `-p` 钉死 provider**：默认链先探测 Antigravity CLI 登录态，未配置时干转 ~97s 后 exit 1（2026-09-18 现场故障）；默认 `-p openai`（本部署的 glm-4v-flash 通道），`data/settings/vision.json` 的 `{provider,prompt}` 可覆盖。stderr 捕获（截 4000 字）进 `screen_vision` 审计行。异步 spawn（同步会冻结宿主事件循环）；截图"解密→用→焚"复用 screenpulse 的 unlockShot/burnUnlocked |
 
 ## 4. 模块详解
 
@@ -152,7 +154,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 模块 | 要点 |
 |---|---|
 | `rhythm/` | hour×weekday presence 直方图，30 天滚动 + 指数衰减（τ≈10 天）；纯统计无语义内容，明文 |
-| `screen/` | screenpulse.ps1（前台/焦点/可见窗口≤20/截图降采样 1024 宽）→ raw 落 `data/tmp` → vault 加密成 screen.json/jpg → 焚 raw；`unlockShot` 用毕即焚 |
+| `screen/` | screenpulse.ps1（前台/焦点/可见窗口≤20/全屏原图截图，spec ①）→ raw 落 `data/tmp` → vault 加密成 screen.json/jpg → 焚 raw；`unlockShot` 用毕即焚 |
 | `env/` | idle.ps1（仅输出空闲秒数）+ presenceOf 三档（<30s 活跃看窗口类别 / 30-1200s present / ≥1200s away）+ timeflow 纯时间函数（节日表） |
 | `browse/` | watchlist（npm/GitHub，6h 节流，首见不产素材；fetcher 可注入便于测试）+ 闲逛裁决（窗口/间隔/focus 冷却轮换）+ `completeWander` 代码登记（D10） |
 | `ledger/` | 唯一账本，Markdown 行格式 `- [YYYY-MM-DD HH:MM][open|done][#id] text`；手写乱行原样保留；`pendingOlderThan` 供跟进时机 |
@@ -231,6 +233,8 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `time_injected` | M7 自研时间注入（D20） | 门控 = step===1 且用户发起（末事件 `agent/inbox/spliced`）且距上次 ≥ timeInjectMin；节流状态在 `data/time-inject-state.json`（按会话，重启不丢）；官方 time-context 已停用（用户 patch 移除，D20） |
 | `statusbar_track` | 状态栏轨道翻转（M7c，D19） | `system-prompt`（in-history 模型）/ `pre-step`（其余 + 无证据的新会话）/ `off`（开关关闭）；只在翻转时记一条；轨道**钉在轮次起点**（step===1 重钉），中途能力翻转不会劈开同一轮 |
 | `interests_updated` | 兴趣/浏览时段卡片编辑（v1.4.0，C22） | `action=add/remove/set-windows`，`detail` 为条目文本或窗口 JSON（截 80 字）；只在成功时记一条，失败原因走 RPC err 回卡片 |
+| `screen_vision` | 每跳视觉识别（v1.6.0，C23） | `ok=true/false`；失败带 `error`（ModLens 退出码 + stderr 成 140 字）。识别失败时画面与窗口标题**都不进**反刍提示词（规格②隐私红线） |
+| `refill_wander` / `phase_done phase=refill_wander` | 补货闲逛（v1.6.0，spec ⑥） | `focus` + `registered` 条数；触发 = 话题种子 ≤4 且当日补货 <2（本地日，browse.json `refillCount`）；绕过窗口/4h 间隔，保留 focus 3 天冷却 |
 
 ### 7.2 症状 → 排查表
 
@@ -368,7 +372,20 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 15. 变更日志
 
-> 版本口径：v1.5 是**当前版本**（DSH ≥ 0.1.2-rc.1；M7 的时间注入/状态栏在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.6 是**当前版本**（DSH ≥ 0.1.2-rc.1；状态栏/时间注入/视觉识别在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B、视觉静默降级）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+
+### v1.6.0 · 2026-09-19（素材闭环 + 视觉识别 + 0.1.5 settings 适配）
+
+需求侧见《心跳素材闭环 · 改造说明书》（SPEC，2026-09-18 定稿，D22 后续）。闭环 = 截图→视觉识别→引擎室总结→投递→聊天→observe 沉淀→consolidation 生成聊天种子→素材池→反刍投递：
+
+- **素材池品类化（spec ⑤④）**：`Seed.category: topic|chat`（与 source 解耦；loadPool 宽松容错，旧行默认 topic）；分池上限 话题 16 / 聊天 14（品类满只在自己池内按现有 evictionScore 淘汰）；聊天种子 used 上限 **1**（话题仍按 policy 2）。
+- **反刍候选组包代码化（spec ③）**：`assembleCandidates` 话题随机 4 + 聊天按 lastEvidenceAt 最新取 2 + 双向互补，封顶 6 条给反刍 agent 挑 ≤3；候选全空直接 silent（省一次模型调用）。
+- **consolidation 产聊天种子（spec ⑧）**：引擎室从观察对话自主挑"值得聊的话题"输出 `CHAT_SEED` op（在画像管线前分流，不污染 ProfileOp/journal），单次 ≤3 条写入素材池 category=chat、按 topic 自动合并；审计 `consolidation` 加 `chatSeeds` 计数。规则同步进引擎室人设卡。
+- **补货闲逛（spec ⑥⑦）**：话题种子 ≤4 触发，绕过浏览窗口与 4h 间隔（独立触发、可与正常闲逛同跳叠加），保留 focus 3 天冷却，每本地日至多 2 次（browse.json `refillCount`）；闲逛搜索次数 3→**3~9**。
+- **视觉识别 + "我在干嘛"（spec ①②，C23）**：截图改全屏原图（修"降采样被误判全屏游戏"）；每跳经 ModLens CLI（`-p` 钉死 provider）识别画面，成功时反刍提示词带画面描述+任务栏标题、引擎室输出 `doing` 一句随每次投递携带；**识别失败则画面、标题、doing 三者全无**（隐私红线）。
+- **0.1.5 settings 适配（C8，重要修复）**：dsh-settings 0.1.5 删除自由函数 `installSettingsSection` → 宿主 `settings` 服务的 `installSection` 方法 + 模块 inject 声明 `'settings'`（新旧 API 特性探测并存）；并把该包挪回 dependencies（v1.5.1 误挪 peer 导致 profile 实体包被清 → **节律配置"保存不生效 + 重启回默认"**）。
+- **UI**：状态卡新增插件版本行；`status` 端点带 `version`。
+- 测试 163 条全绿（新增 24：品类/上限/组包/聊天种子/补货/视觉桥/doing 隐私语义）。
 
 ### v1.5.0 · 2026-09-16（反刍/投递改版 + 表达提取健壮化）
 
