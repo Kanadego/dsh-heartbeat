@@ -778,7 +778,27 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     max: 3,
     ...(screen ? { screen } : {}),
   });
-  const raw = await agentTurn(bc.deps, bc.agent, ruminationPrompt, 'decision');
+  const raw = await (async () => {
+    try {
+      return await agentTurn(bc.deps, bc.agent!, ruminationPrompt, 'decision');
+    } catch (e) {
+      // A slow/hung decision turn used to kill the whole beat as beat_error
+      // (2026-09-19: `decision: whenIdle timeout` right after vision succeeded
+      // — most likely the model wandering off into web_search over the new
+      // screen description). Same graceful semantics as the expression turn:
+      // defer to the next beat, cancel the orphan turn so it stops burning
+      // tokens, and surface as silence rather than an error.
+      try {
+        (bc.agent as { cancel?: () => unknown }).cancel?.();
+      } catch { /* best effort */ }
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'decision_deferred', reason: String(e).slice(0, 160),
+      });
+      noteBeat('silent', { reason: '决策轮超时，素材留到下一跳' });
+      return null;
+    }
+  })();
+  if (raw === null) return;
   let parsed: { speak?: boolean; text?: string; seed_ids?: string[]; doing?: string };
   try {
     parsed = parseJsonBlock(raw) as typeof parsed;
