@@ -235,6 +235,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `interests_updated` | 兴趣/浏览时段卡片编辑（v1.4.0，C22） | `action=add/remove/set-windows`，`detail` 为条目文本或窗口 JSON（截 80 字）；只在成功时记一条，失败原因走 RPC err 回卡片 |
 | `screen_vision` | 每跳视觉识别（v1.6.0，C23） | `ok=true/false`；失败带 `error`（ModLens 退出码 + stderr 成 140 字）。识别失败时画面与窗口标题**都不进**反刍提示词（规格②隐私红线） |
 | `refill_wander` / `phase_done phase=refill_wander` | 补货闲逛（v1.6.0，spec ⑥） | `focus` + `registered` 条数；触发 = 话题种子 ≤4 且当日补货 <2（本地日，browse.json `refillCount`）；绕过窗口/4h 间隔，保留 focus 3 天冷却 |
+| `decision_deferred` | 反刍（decision）轮超时降级（v1.6.0） | 240s whenIdle 超时**不再打成 `beat_error`**（2026-09-19 现场决策轮跑满预算）——记本行 + best-effort `agent.cancel()` 掉孤儿轮次，本跳按沉默处理，素材留下一跳；`reason` 带超时原文 |
 
 ### 7.2 症状 → 排查表
 

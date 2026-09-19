@@ -1392,7 +1392,11 @@ function buildRuminationPrompt(input) {
       "## \u4EFB\u52A1\u680F\u7A97\u53E3(\u8F85\u52A9\u5224\u65AD)",
       input.screen.windows.length > 0 ? input.screen.windows.map((w) => `- ${w}`).join("\n") : "(\u65E0)",
       "",
-      'doing = \u4F9D\u636E\u753B\u9762\u4E0E\u7A97\u53E3,\u7528\u4E00\u53E5\u8BDD\u5BA2\u89C2\u603B\u7ED3\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u5982"\u6B63\u5728\u722C\u5854(\u6740\u622E\u5C16\u58542)""\u5728\u5199\u6587\u6863,\u770B\u8D77\u6765\u6709\u70B9\u5FD9");\u4E0D\u63A8\u6D4B\u60C5\u7EEA,\u4E0D\u63D0\u53CA\u672C\u63D0\u793A\u3002'
+      'doing = \u4F9D\u636E\u753B\u9762\u4E0E\u7A97\u53E3,\u7528\u4E00\u53E5\u8BDD\u5BA2\u89C2\u603B\u7ED3\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u5982"\u6B63\u5728\u722C\u5854(\u6740\u622E\u5C16\u58542)""\u5728\u5199\u6587\u6863,\u770B\u8D77\u6765\u6709\u70B9\u5FD9");\u4E0D\u63A8\u6D4B\u60C5\u7EEA,\u4E0D\u63D0\u53CA\u672C\u63D0\u793A\u3002',
+      // 2026-09-19: a decision turn that goes wandering over the screen
+      // description (web_search loops) burns past the whenIdle budget — the
+      // picture is for the doing line ONLY.
+      "\u753B\u9762\u548C\u7A97\u53E3\u53EA\u7528\u4E8E\u5199 doing:\u5373\u4F7F\u753B\u9762\u91CC\u51FA\u73B0\u8BA9\u4F60\u60F3\u67E5\u7684\u4E1C\u897F,\u4E5F\u4E0D\u8981\u53D1\u8D77\u4EFB\u4F55\u641C\u7D22\u3001\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177,\u76F4\u63A5\u8F93\u51FA JSON\u3002"
     );
   } else {
     lines.push('doing = \u56FA\u5B9A\u8F93\u51FA\u7A7A\u5B57\u7B26\u4E32 ""(\u672C\u6B21\u6CA1\u6709\u753B\u9762\u4FE1\u606F,\u4E0D\u8981\u7F16\u9020\u4ED6\u5728\u5E72\u4EC0\u4E48)\u3002');
@@ -2197,7 +2201,23 @@ async function expressionPhases(bc) {
     max: 3,
     ...screen ? { screen } : {}
   });
-  const raw = await agentTurn(bc.deps, bc.agent, ruminationPrompt, "decision");
+  const raw = await (async () => {
+    try {
+      return await agentTurn(bc.deps, bc.agent, ruminationPrompt, "decision");
+    } catch (e) {
+      try {
+        bc.agent.cancel?.();
+      } catch {
+      }
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+        event: "decision_deferred",
+        reason: String(e).slice(0, 160)
+      });
+      noteBeat("silent", { reason: "\u51B3\u7B56\u8F6E\u8D85\u65F6\uFF0C\u7D20\u6750\u7559\u5230\u4E0B\u4E00\u8DF3" });
+      return null;
+    }
+  })();
+  if (raw === null) return;
   let parsed;
   try {
     parsed = parseJsonBlock(raw);

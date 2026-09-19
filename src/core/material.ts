@@ -162,6 +162,10 @@ export function buildRuminationPrompt(input: {
       '## 任务栏窗口(辅助判断)', input.screen.windows.length > 0 ? input.screen.windows.map((w) => `- ${w}`).join('\n') : '(无)',
       '',
       'doing = 依据画面与窗口,用一句话客观总结他此刻在干什么(如"正在爬塔(杀戮尖塔2)""在写文档,看起来有点忙");不推测情绪,不提及本提示。',
+      // 2026-09-19: a decision turn that goes wandering over the screen
+      // description (web_search loops) burns past the whenIdle budget — the
+      // picture is for the doing line ONLY.
+      '画面和窗口只用于写 doing:即使画面里出现让你想查的东西,也不要发起任何搜索、不要使用任何工具,直接输出 JSON。',
     );
   } else {
     // spec ② privacy: vision failed -> no image, no titles, no invented "doing".
