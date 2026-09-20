@@ -384,7 +384,7 @@ window.__ModuleLoader__.load({
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, "闲着模式"),
 						React.createElement("button", { style: draftIdle ? buttonStyle : buttonGhost, onClick: () => setDraftIdle(!draftIdle) }, draftIdle ? "☑ 开启" : "☐ 关闭"),
-						React.createElement("span", { style: hintStyle }, "素材池空时用画像话题兜底主动搭话（闸门仍生效）"))
+						React.createElement("span", { style: hintStyle }, "素材池空时用画像话题兜底主动搭话（闸门仍生效）")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, "保存"),
 						React.createElement("span", { style: hintStyle }, status || "全部参数保存后即时生效，无需重启")),
