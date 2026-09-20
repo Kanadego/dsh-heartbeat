@@ -58,6 +58,8 @@ export const Config = z.object({
   timeZone: z.string().default(''),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
   statusbar: z.boolean().default(true),
+  /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
+  idleMode: z.boolean().default(false),
 });
 
 export interface HeartbeatConfig {
@@ -69,6 +71,7 @@ export interface HeartbeatConfig {
   timeInjectMin?: number;
   timeZone?: string;
   statusbar?: boolean;
+  idleMode?: boolean;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
@@ -98,6 +101,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     flags: {
       statusbarEnabled: () => statusbarEnabledRef,
       timeInjectMin: () => timeInjectMinRef,
+      idleMode: () => idleModeRef,
     },
   });
 
@@ -140,6 +144,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   let sectionSource: (() => HeartbeatConfig) | null = null;
   let timeInjectMinRef = config.timeInjectMin ?? 25;
   let statusbarEnabledRef = config.statusbar !== false;
+  let idleModeRef = config.idleMode === true;
   const applySettingsOverrides = (): void => {
     try {
       const v = sectionSource?.();
@@ -148,6 +153,10 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
       if (typeof v.timeInjectMin === 'number' && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
       if (typeof v.statusbar === 'boolean') statusbarEnabledRef = v.statusbar;
+      if (typeof v.idleMode === 'boolean') {
+        idleModeRef = v.idleMode;
+        getRuntime().policy.heartbeat.idleMode = v.idleMode;
+      }
       ctx.logger.info('heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)', v.intervalMin ?? '-', v.maxDailySend ?? '-', v.timeInjectMin ?? '-');
     } catch (e) {
       ctx.logger.warn('heartbeat: settings override failed (%s)', String(e).slice(0, 120));

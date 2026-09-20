@@ -9,7 +9,7 @@ import { assertPolicy, deepMerge } from '../src/config/schema.js';
 let sandbox = '';
 
 const FACTORY = {
-  heartbeat: { intervalMin: 20 },
+  heartbeat: { intervalMin: 20, idleMode: false },
   gate: { maxDailySend: 3, cooldownMinutes: 30, quietHours: { start: '01:00', end: '08:00' } },
   browse: { windows: [{ start: '11:00', end: '15:00' }], minIntervalHours: 4, maxSeedsPerVisit: 2 },
   seeds: { maxActive: 30, ttlDays: { news: 3, fandom: 14, scene: 60, promise: 90 }, coldBenchDays: 21, retireAfterUsed: 2, scoreWeights: { freshness: 0.4, unused: 0.3, confidence: 0.3 } },

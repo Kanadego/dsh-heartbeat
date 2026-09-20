@@ -161,6 +161,7 @@ function assertPolicy(input) {
   if (typeof hb.intervalMin !== "number" || hb.intervalMin < 1 || hb.intervalMin > 1440) {
     fail("heartbeat.intervalMin must be a number in [1, 1440]");
   }
+  if (typeof hb.idleMode !== "boolean") fail("heartbeat.idleMode must be boolean");
   const g = p.gate;
   if (!isPlainObject(g)) fail("gate missing");
   if (typeof g.maxDailySend !== "number" || g.maxDailySend < 0) fail("gate.maxDailySend must be >= 0");
@@ -1012,4 +1013,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-QAJ2D445.js.map
+//# sourceMappingURL=chunk-TFMQKETS.js.map

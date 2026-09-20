@@ -1,6 +1,7 @@
 {
   "heartbeat": {
-    "intervalMin": 20
+    "intervalMin": 20,
+    "idleMode": false
   },
   "gate": {
     "maxDailySend": 3,
@@ -12,8 +13,14 @@
   },
   "browse": {
     "windows": [
-      { "start": "11:00", "end": "15:00" },
-      { "start": "17:00", "end": "21:00" }
+      {
+        "start": "11:00",
+        "end": "15:00"
+      },
+      {
+        "start": "17:00",
+        "end": "21:00"
+      }
     ],
     "minIntervalHours": 4,
     "maxSeedsPerVisit": 2

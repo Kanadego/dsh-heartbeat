@@ -200,16 +200,17 @@ export function installHeartbeatRpc(
                 if (typeof v === 'number' && v > (lastTimeInjectAt ?? 0)) lastTimeInjectAt = v;
               }
             } catch { /* missing state file = never injected */ }
-            let flags = { statusbarEnabled: true, timeInjectMin: 25 };
+            let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
             try {
               const { getRuntime } = await import('./core/runtime.js');
               const f = getRuntime().flags;
-              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin() };
+              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
             } catch { /* pre-init: report defaults */ }
             return ok({
               now: new Date(now).toISOString(),
               version: pluginVersion(paths),
               intervalMin: policy.heartbeat.intervalMin,
+              idleMode: policy.heartbeat.idleMode,
               cap: { used: sent.items.length, max: policy.gate.maxDailySend },
               quiet: inQuietHours(policy, now),
               lastBeat: beat,
