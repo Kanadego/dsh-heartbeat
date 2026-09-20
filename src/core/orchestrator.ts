@@ -721,6 +721,108 @@ async function runWanderTurn(
   return true;
 }
 
+/** ⑤b→⑥→⑦ 投递包（v1.6.3 从 expressionPhases 抽出）：在投递目标会话的 agent 上出声，
+ * 归账素材、留痕。素材池路径与画像兜底路径共用；失败/沉默时把 resume 出来的 agent 还回去。
+ * seedIds = 本轮素材的显式归账 id（画像兜底传空数组，其伪素材不归账）。 */
+async function deliverPackage(
+  bc: BeatContext,
+  materials: MaterialInput[],
+  opts: { seedIds: string[]; doing?: string },
+): Promise<void> {
+  const { deps, now } = bc;
+  const { guard, paths, policy } = deps;
+  const homeId = bc.agent?.session?.id ?? null;
+  const { loadBindings, deliverTargets } = await import('./bindings.js');
+  const data = loadBindings(guard, paths.settingsDir);
+  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  let liveTarget: { sessionId: string; agent: HostAgent; release: () => void } | null = null;
+  for (const b of targets) {
+    const acquired = await acquireTargetAgent(deps, b.sessionId);
+    if (acquired) { liveTarget = { sessionId: b.sessionId, ...acquired }; break; }
+  }
+  if (!liveTarget && targets.length > 0) {
+    // Never silently reroute: an un-live target is the difference between
+    // "she spoke to him" and "she spoke in her own room".
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'spoke_fallback', reason: 'no deliver target could be brought live',
+      targets: targets.map((t) => t.sessionId).join(','),
+    });
+  }
+  const voiceAgent = liveTarget?.agent ?? bc.agent;
+  if (!voiceAgent) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'no voice agent' });
+    noteBeat('spoke_failed', { reason: 'no voice agent' });
+    return;
+  }
+  const voiceSessionId = voiceAgent.session?.id ?? null;
+  // 投递全程包在 try 里：无论成功、沉默还是中途 return，都要把我们 resume 出来的
+  // agent 还回去（acquireTargetAgent 的注释里写了为什么不能留）。
+  try {
+    // 投递文本 = 写法①（2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
+    // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
+    // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 'plugin: heartbeat'。
+    // 素材包三段式（2026-09-16 改版）：目标会话的 voiceAgent 收到素材包，自己判断
+    // 要不要说、说哪条（或真心话）。buildMaterialPrompt 已含 ①②③（3条里≥2条 used>=1
+    // 时自动加「也可以说一句真心话」）。它可以直接说素材里的一条，也可以顺着处境说
+    // 想说的话；觉得没什么可说的可以沉默。
+    const phrasePrompt = buildMaterialPrompt(materials, {
+      // spec ②: the "我在干嘛" line rides on every delivery when vision
+      // produced one this beat; absent otherwise (never invented).
+      ...(typeof opts.doing === 'string' && opts.doing.trim()
+        ? { doing: opts.doing.trim().slice(0, 80) }
+        : {}),
+    });
+
+    // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
+    let spokenRaw: string;
+    try {
+      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
+      });
+      noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
+      return;
+    }
+    // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
+    // '</tool_calls>' 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
+    // 目标 agent 回合以工具调用收尾时，末行是 '</tool_calls>' 而真正要说的在更前面。
+    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
+      .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
+    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? '').slice(0, 200);
+    // 兜底闸：陪伴者说中文；整段完全没有中文才判为泄漏的思考，不投递。
+    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
+      noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
+      return;
+    }
+
+    // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
+    const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
+    if (!confirm.ok) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
+      noteBeat('spoke_failed', { reason: confirm.reason });
+      return;
+    }
+    // A2 attribution（2026-09-16 改版）：seed_ids 优先 + 包含匹配兜底 + 轻引导。
+    // 画像兜底的伪素材 id（idle-N）在真实池里不存在，surfaceSeed 会安全返回 null，不产生误归账。
+    const usedIds = new Set(attributionIds(materials, text, opts.seedIds));
+    for (const id of usedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    }
+    sendNewMessageHint(paths);
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
+    if (voiceSessionId && voiceSessionId !== homeId) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
+    }
+    noteBeat('spoke', { text });
+
+  } finally {
+    liveTarget?.release();
+  }
+}
+
 /** ③ 闸门 → ④ Digest → ⑤ 决策（引擎室）→ ⑥ 表达（投递目标会话出声）→ ⑦ 留痕
  *  两轮设计（r5）：决策轮的机器输出留在正身（引擎室），开口的表达轮改在
  *  投递目标会话的 agent 上执行——话只出现在用户读的会话里。 */
@@ -758,6 +860,21 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   // at all (全空不投递).
   const offered = assembleCandidates(activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))));
   if (offered.length === 0) {
+    // v1.6.3 闲着模式：素材池为空时，若开启 idleMode，用本跳 digest 的话题切面兜底，
+    // 仍复用投递链路（闸门已在上面通过）；未开启则照旧沉默。
+    if (policy.heartbeat.idleMode && bc.agent) {
+      const idleTopics = digest.topic.trim();
+      if (idleTopics) {
+        const fallback: MaterialInput[] = idleTopics.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3)
+          .map((line, i) => ({ id: 'idle-' + i, text: line.slice(0, 60), used: 0 }));
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'idle_fallback', topics: fallback.length });
+        // 画像兜底同样携带"我在干嘛"（vision 成功时才有；失败不编造）。
+        return deliverPackage(bc, fallback, {
+          seedIds: [],
+          doing: screen ? screen.windows.slice(0, 3).join('、').slice(0, 80) : undefined,
+        });
+      }
+    }
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'no candidates' });
     noteBeat('silent', { reason: 'no candidates' });
     return;
@@ -827,99 +944,14 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     noteBeat('silent', { reason: 'seed_ids matched no active material' });
     return;
   }
-  // ⑤b 表达轮：在投递目标会话的 agent 上出声（无可用目标才回落正身）。
-  const { loadBindings, deliverTargets } = await import('./bindings.js');
-  const data = loadBindings(guard, paths.settingsDir);
-  const homeId = bc.agent.session?.id ?? null;
-  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
-  let liveTarget: { sessionId: string; agent: HostAgent; release: () => void } | null = null;
-  for (const b of targets) {
-    const acquired = await acquireTargetAgent(deps, b.sessionId);
-    if (acquired) { liveTarget = { sessionId: b.sessionId, ...acquired }; break; }
-  }
-  if (!liveTarget && targets.length > 0) {
-    // Never silently reroute: an un-live target is the difference between
-    // "she spoke to him" and "she spoke in her own room".
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-      event: 'spoke_fallback', reason: 'no deliver target could be brought live',
-      targets: targets.map((t) => t.sessionId).join(','),
-    });
-  }
-  const voiceAgent = liveTarget?.agent ?? bc.agent;
-  const voiceSessionId = voiceAgent.session?.id ?? null;
-  // 投递全程包在 try 里：无论成功、沉默还是中途 return，都要把我们 resume 出来的
-  // agent 还回去（acquireTargetAgent 的注释里写了为什么不能留）。
-  try {
-
-    // 投递文本 = 写法①（2026-09-10 定稿）：正文只留一句舞台提示，不点名插件/引擎室等机器细节。
-    // 理由：9/6 那版（“请在下轮回应中自然带出这句话”）会让接收方先花推理去解析“这条注入是什么”，
-    // 而脚手架文本会永久留在目标会话历史里、此后每轮都吃上下文。
-    // 来源声明不进正文——它已在消息 source 元数据里（kind=plugin / plugin=heartbeat /
-    // sections:[{name:'heartbeat', text:'expression'}]），轨迹视图按 messageSourceLabel() 标成 `plugin: heartbeat`。
-    // 素材包三段式（2026-09-16 改版）：目标会话的 voiceAgent 收到素材包，自己判断
-    // 要不要说、说哪条（或真心话）。buildMaterialPrompt 已含 ①②③（3条里≥2条 used>=1
-    // 时自动加「也可以说一句真心话」）。它可以直接说素材里的一条，也可以顺着处境说
-    // 想说的话；觉得没什么可说的可以沉默。
-    const phrasePrompt = buildMaterialPrompt(materials, {
-      // spec ②: the "我在干嘛" line rides on every delivery when vision
-      // produced one this beat; absent otherwise (never invented).
-      ...(typeof parsed.doing === 'string' && parsed.doing.trim() && screen
-        ? { doing: parsed.doing.trim().slice(0, 80) }
-        : {}),
-    });
-
-    // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
-    let spokenRaw: string;
-    try {
-      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
-    } catch (e) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-        event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
-      });
-      noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
-      return;
-    }
-    // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
-    // `</tool_calls>` 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
-    // 目标 agent 回合以工具调用收尾时，末行是 `</tool_calls>` 而真正要说的在更前面。
-    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
-      .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
-    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
-    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? '').slice(0, 200);
-    // 兜底闸：陪伴者说中文；整段完全没有中文才判为泄漏的思考，不投递。
-    // （空文本另有原因：目标 agent 的回合自己死了——看同一时刻的
-    //   `turn_extraction_empty label=expression turnError=...` 审计行。）
-    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
-      noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
-      return;
-    }
-
-    // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
-    const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
-    if (!confirm.ok) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
-      noteBeat('spoke_failed', { reason: confirm.reason });
-      return;
-    }
-    // A2 attribution（2026-09-16 改版）：material 里 seed_ids 优先 + 包含匹配兜底
-    // + 轻引导（attributionIds 只归「本轮真正出现在素材包里的」素材，不从归档区捞）。
-    const usedIds = new Set(attributionIds(materials, text, parsed.seed_ids));
-    for (const id of usedIds) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
-    }
-    sendNewMessageHint(paths);
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
-    if (voiceSessionId && voiceSessionId !== homeId) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
-    }
-    noteBeat('spoke', { text });
-
-  } finally {
-    liveTarget?.release();
-  }
+  // ⑤b 表达轮：投递目标会话出声 + 归账 + 留痕（v1.6.3 抽出 deliverPackage，素材池与画像兜底共用）。
+  return deliverPackage(bc, materials, {
+    seedIds: parsed.seed_ids ?? [],
+    doing: (typeof parsed.doing === 'string' && parsed.doing.trim() && screen)
+      ? parsed.doing.trim().slice(0, 80)
+      : undefined,
+  });
 }
-
 // ── the beat ────────────────────────────────────────────────────────────
 
 /** §17.3: derive the scene from this beat's signals and persist it for the

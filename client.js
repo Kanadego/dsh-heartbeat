@@ -341,12 +341,14 @@ window.__ModuleLoader__.load({
 				const cap = Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 3;
 				const timeInject = value.timeInjectMin === 0 ? 0 : (Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
 				const statusbar = value.statusbar !== false;
+				const idleMode = value.idleMode === true;
 				const [draftInterval, setDraftInterval] = React.useState(interval);
 				const [draftCap, setDraftCap] = React.useState(cap);
 				const [draftTimeInject, setDraftTimeInject] = React.useState(timeInject);
 				const [draftStatusbar, setDraftStatusbar] = React.useState(statusbar);
+				const [draftIdle, setDraftIdle] = React.useState(idleMode);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); }, [interval, cap, timeInject, statusbar]);
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); }, [interval, cap, timeInject, statusbar, idleMode]);
 				const save = async () => {
 					try {
 						const di = Math.max(1, Math.min(1440, Math.floor(Number(draftInterval) || 0)));
@@ -356,6 +358,7 @@ window.__ModuleLoader__.load({
 						await scope.set("maxDailySend", dc);
 						await scope.set("timeInjectMin", dt);
 						await scope.set("statusbar", !!draftStatusbar);
+						await scope.set("idleMode", !!draftIdle);
 						setStatus("已保存（全部即时生效，无需重启）");
 					} catch (e) {
 						setStatus("保存失败：" + String(e).slice(0, 80));
@@ -378,6 +381,10 @@ window.__ModuleLoader__.load({
 						React.createElement("span", { style: labelStyle }, "状态栏"),
 						React.createElement("button", { style: draftStatusbar ? buttonStyle : buttonGhost, onClick: () => setDraftStatusbar(!draftStatusbar) }, draftStatusbar ? "☑ 开启" : "☐ 关闭"),
 						React.createElement("span", { style: hintStyle }, "日常会话中的心跳状态感知")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, "闲着模式"),
+						React.createElement("button", { style: draftIdle ? buttonStyle : buttonGhost, onClick: () => setDraftIdle(!draftIdle) }, draftIdle ? "☑ 开启" : "☐ 关闭"),
+						React.createElement("span", { style: hintStyle }, "素材池空时用画像话题兜底主动搭话（闸门仍生效）"))
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, "保存"),
 						React.createElement("span", { style: hintStyle }, status || "全部参数保存后即时生效，无需重启")),

@@ -12,6 +12,7 @@ export interface HeartbeatRuntime {
   flags: {
     statusbarEnabled(): boolean;
     timeInjectMin(): number;
+    idleMode(): boolean;
   };
 }
 

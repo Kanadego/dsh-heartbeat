@@ -22,11 +22,11 @@ import {
   scanPending,
   sendNewMessageHint,
   userPresetRoot
-} from "./chunk-QAJ2D445.js";
+} from "./chunk-TFMQKETS.js";
 import {
   getRuntime,
   setRuntime
-} from "./chunk-S7PTR42P.js";
+} from "./chunk-SJUNS2BE.js";
 import {
   activeSeeds,
   addSeed,
@@ -2181,6 +2181,81 @@ async function runWanderTurn(bc, prompt, focus, opts) {
   appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: opts.label, focus, registered });
   return true;
 }
+async function deliverPackage(bc, materials, opts) {
+  const { deps, now } = bc;
+  const { guard, paths, policy } = deps;
+  const homeId = bc.agent?.session?.id ?? null;
+  const { loadBindings: loadBindings2, deliverTargets } = await import("./bindings-XPPSKILN.js");
+  const data = loadBindings2(guard, paths.settingsDir);
+  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  let liveTarget = null;
+  for (const b of targets) {
+    const acquired = await acquireTargetAgent(deps, b.sessionId);
+    if (acquired) {
+      liveTarget = { sessionId: b.sessionId, ...acquired };
+      break;
+    }
+  }
+  if (!liveTarget && targets.length > 0) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+      event: "spoke_fallback",
+      reason: "no deliver target could be brought live",
+      targets: targets.map((t) => t.sessionId).join(",")
+    });
+  }
+  const voiceAgent = liveTarget?.agent ?? bc.agent;
+  if (!voiceAgent) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "no voice agent" });
+    noteBeat("spoke_failed", { reason: "no voice agent" });
+    return;
+  }
+  const voiceSessionId = voiceAgent.session?.id ?? null;
+  try {
+    const phrasePrompt = buildMaterialPrompt(materials, {
+      // spec ②: the "我在干嘛" line rides on every delivery when vision
+      // produced one this beat; absent otherwise (never invented).
+      ...typeof opts.doing === "string" && opts.doing.trim() ? { doing: opts.doing.trim().slice(0, 80) } : {}
+    });
+    let spokenRaw;
+    try {
+      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+        event: "spoke_deferred",
+        reason: "target session busy",
+        error: String(e).slice(0, 120)
+      });
+      noteBeat("spoke_failed", { reason: "\u76EE\u6807\u4F1A\u8BDD\u6B63\u5FD9\uFF0C\u672C\u8F6E\u672A\u6295\u9012" });
+      return;
+    }
+    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
+    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? "").slice(0, 200);
+    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
+      noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
+      return;
+    }
+    const confirm = confirmSend(guard, policy, paths, "topic", text, now);
+    if (!confirm.ok) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: confirm.reason });
+      noteBeat("spoke_failed", { reason: confirm.reason });
+      return;
+    }
+    const usedIds = new Set(attributionIds(materials, text, opts.seedIds));
+    for (const id of usedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    }
+    sendNewMessageHint(paths);
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
+    if (voiceSessionId && voiceSessionId !== homeId) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
+    }
+    noteBeat("spoke", { text });
+  } finally {
+    liveTarget?.release();
+  }
+}
 async function expressionPhases(bc) {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
@@ -2210,6 +2285,17 @@ async function expressionPhases(bc) {
   });
   const offered = assembleCandidates(activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))));
   if (offered.length === 0) {
+    if (policy.heartbeat.idleMode && bc.agent) {
+      const idleTopics = digest.topic.trim();
+      if (idleTopics) {
+        const fallback = idleTopics.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).map((line, i) => ({ id: "idle-" + i, text: line.slice(0, 60), used: 0 }));
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "idle_fallback", topics: fallback.length });
+        return deliverPackage(bc, fallback, {
+          seedIds: [],
+          doing: screen ? screen.windows.slice(0, 3).join("\u3001").slice(0, 80) : void 0
+        });
+      }
+    }
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "no candidates" });
     noteBeat("silent", { reason: "no candidates" });
     return;
@@ -2266,72 +2352,10 @@ async function expressionPhases(bc) {
     noteBeat("silent", { reason: "seed_ids matched no active material" });
     return;
   }
-  const { loadBindings: loadBindings2, deliverTargets } = await import("./bindings-XPPSKILN.js");
-  const data = loadBindings2(guard, paths.settingsDir);
-  const homeId = bc.agent.session?.id ?? null;
-  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
-  let liveTarget = null;
-  for (const b of targets) {
-    const acquired = await acquireTargetAgent(deps, b.sessionId);
-    if (acquired) {
-      liveTarget = { sessionId: b.sessionId, ...acquired };
-      break;
-    }
-  }
-  if (!liveTarget && targets.length > 0) {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
-      event: "spoke_fallback",
-      reason: "no deliver target could be brought live",
-      targets: targets.map((t) => t.sessionId).join(",")
-    });
-  }
-  const voiceAgent = liveTarget?.agent ?? bc.agent;
-  const voiceSessionId = voiceAgent.session?.id ?? null;
-  try {
-    const phrasePrompt = buildMaterialPrompt(materials, {
-      // spec ②: the "我在干嘛" line rides on every delivery when vision
-      // produced one this beat; absent otherwise (never invented).
-      ...typeof parsed.doing === "string" && parsed.doing.trim() && screen ? { doing: parsed.doing.trim().slice(0, 80) } : {}
-    });
-    let spokenRaw;
-    try {
-      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
-    } catch (e) {
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
-        event: "spoke_deferred",
-        reason: "target session busy",
-        error: String(e).slice(0, 120)
-      });
-      noteBeat("spoke_failed", { reason: "\u76EE\u6807\u4F1A\u8BDD\u6B63\u5FD9\uFF0C\u672C\u8F6E\u672A\u6295\u9012" });
-      return;
-    }
-    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
-    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
-    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? "").slice(0, 200);
-    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
-      noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
-      return;
-    }
-    const confirm = confirmSend(guard, policy, paths, "topic", text, now);
-    if (!confirm.ok) {
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: confirm.reason });
-      noteBeat("spoke_failed", { reason: confirm.reason });
-      return;
-    }
-    const usedIds = new Set(attributionIds(materials, text, parsed.seed_ids));
-    for (const id of usedIds) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
-    }
-    sendNewMessageHint(paths);
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
-    if (voiceSessionId && voiceSessionId !== homeId) {
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
-    }
-    noteBeat("spoke", { text });
-  } finally {
-    liveTarget?.release();
-  }
+  return deliverPackage(bc, materials, {
+    seedIds: parsed.seed_ids ?? [],
+    doing: typeof parsed.doing === "string" && parsed.doing.trim() && screen ? parsed.doing.trim().slice(0, 80) : void 0
+  });
 }
 function writeBeatStatus(deps, info) {
   const { guard, paths, policy } = deps;
@@ -2776,17 +2800,18 @@ function installHeartbeatRpc(ctx, deps) {
               }
             } catch {
             }
-            let flags = { statusbarEnabled: true, timeInjectMin: 25 };
+            let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
             try {
-              const { getRuntime: getRuntime2 } = await import("./runtime-J5NOPRBA.js");
+              const { getRuntime: getRuntime2 } = await import("./runtime-YHJT6TXF.js");
               const f = getRuntime2().flags;
-              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin() };
+              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
             } catch {
             }
             return ok({
               now: new Date(now).toISOString(),
               version: pluginVersion(paths),
               intervalMin: policy.heartbeat.intervalMin,
+              idleMode: policy.heartbeat.idleMode,
               cap: { used: sent.items.length, max: policy.gate.maxDailySend },
               quiet: inQuietHours(policy, now),
               lastBeat: beat2,
@@ -3073,7 +3098,9 @@ var Config = Schema.object({
   /** IANA timezone for the injected clock; empty = process zone. */
   timeZone: Schema.string().default(""),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-  statusbar: Schema.boolean().default(true)
+  statusbar: Schema.boolean().default(true),
+  /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
+  idleMode: Schema.boolean().default(false)
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
@@ -3092,7 +3119,8 @@ function apply(ctx, config = {}) {
     policy,
     flags: {
       statusbarEnabled: () => statusbarEnabledRef,
-      timeInjectMin: () => timeInjectMinRef
+      timeInjectMin: () => timeInjectMinRef,
+      idleMode: () => idleModeRef
     }
   });
   ctx.inject(["agentPresets"], (presetCtx) => {
@@ -3122,6 +3150,7 @@ function apply(ctx, config = {}) {
   let sectionSource = null;
   let timeInjectMinRef = config.timeInjectMin ?? 25;
   let statusbarEnabledRef = config.statusbar !== false;
+  let idleModeRef = config.idleMode === true;
   const applySettingsOverrides = () => {
     try {
       const v = sectionSource?.();
@@ -3130,6 +3159,10 @@ function apply(ctx, config = {}) {
       if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
       if (typeof v.timeInjectMin === "number" && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
       if (typeof v.statusbar === "boolean") statusbarEnabledRef = v.statusbar;
+      if (typeof v.idleMode === "boolean") {
+        idleModeRef = v.idleMode;
+        getRuntime().policy.heartbeat.idleMode = v.idleMode;
+      }
       ctx.logger.info("heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)", v.intervalMin ?? "-", v.maxDailySend ?? "-", v.timeInjectMin ?? "-");
     } catch (e) {
       ctx.logger.warn("heartbeat: settings override failed (%s)", String(e).slice(0, 120));
