@@ -1,31 +1,139 @@
 {
   "version": 1,
-  "_comment": "profile-schema.json is the machine-executable collection boundary (privacy charter). Partitions/topics/subtopics NOT listed here are rejected by code, no matter what the consolidation LLM proposes. Each sub_topic declares its ALLOWED temporal tiers and the DEFAULT tier; the LLM nominates within the allowed set only. Unlisted defaults to 'stable' (asymmetric risk: mislabeling stable->volatile costs forgetting; the reverse is absorbed by the low-activity marker). psy is additionally gated by policy.profile.psyEnabled. Edit the copy in data/settings/ - this factory file is read-only.",
+  "_comment": "profile-schema.json is the machine-executable collection boundary (privacy charter). Partitions/topics/subtopics NOT listed here are rejected by code, no matter what the consolidation LLM proposes. Each sub_topic declares its ALLOWED temporal tiers and the DEFAULT tier; the LLM nominates within the allowed set only. Unlisted defaults to 'stable'. psy is additionally gated by policy.profile.psyEnabled. Edit the copy in data/settings/ - this factory file is read-only. NOTE (2026-09-20): partitions are hardcoded to interest/projects/comm/psy in code (Partition type + PARTITIONS const); DO NOT add new top-level partitions here. Expansion happens at topic/subTopic level only.",
   "partitions": {
     "interest": {
       "topics": {
         "games": {
           "subtopics": {
-            "current": { "allowed": ["volatile"], "default": "volatile" },
-            "preference": { "allowed": ["stable"], "default": "stable" }
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         },
         "anime_manga": {
           "subtopics": {
-            "current": { "allowed": ["volatile"], "default": "volatile" },
-            "preference": { "allowed": ["stable"], "default": "stable" }
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         },
         "tech": {
           "subtopics": {
-            "current": { "allowed": ["volatile"], "default": "volatile" },
-            "preference": { "allowed": ["stable"], "default": "stable" }
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         },
         "creator_content": {
           "subtopics": {
-            "current": { "allowed": ["volatile"], "default": "volatile" },
-            "preference": { "allowed": ["stable"], "default": "stable" }
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "acg": {
+          "subtopics": {
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "hardware": {
+          "subtopics": {
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "audio": {
+          "subtopics": {
+            "current": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "writing": {
+          "subtopics": {
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "life": {
+          "subtopics": {
+            "preference": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         }
       }
@@ -34,12 +142,71 @@
       "topics": {
         "active_work": {
           "subtopics": {
-            "ongoing": { "allowed": ["volatile"], "default": "volatile" }
+            "ongoing": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            }
           }
         },
         "delegated": {
           "subtopics": {
-            "promise": { "allowed": ["stable", "volatile"], "default": "stable" }
+            "promise": {
+              "allowed": [
+                "stable",
+                "volatile"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "heartbeat": {
+          "subtopics": {
+            "ongoing": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "decided": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "dsh": {
+          "subtopics": {
+            "ongoing": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "decided": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "zcode": {
+          "subtopics": {
+            "ongoing": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            },
+            "decided": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         }
       }
@@ -48,8 +215,48 @@
       "topics": {
         "expression": {
           "subtopics": {
-            "style": { "allowed": ["stable"], "default": "stable" },
-            "boundaries": { "allowed": ["stable"], "default": "stable" }
+            "style": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            },
+            "boundaries": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "interaction": {
+          "subtopics": {
+            "style": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "boundary": {
+          "subtopics": {
+            "rules": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "preference": {
+          "subtopics": {
+            "style": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         }
       }
@@ -58,8 +265,39 @@
       "topics": {
         "baseline": {
           "subtopics": {
-            "rhythm": { "allowed": ["stable", "volatile"], "default": "stable" },
-            "stress": { "allowed": ["volatile"], "default": "volatile" }
+            "rhythm": {
+              "allowed": [
+                "stable",
+                "volatile"
+              ],
+              "default": "stable"
+            },
+            "stress": {
+              "allowed": [
+                "volatile"
+              ],
+              "default": "volatile"
+            }
+          }
+        },
+        "background": {
+          "subtopics": {
+            "traits": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
+          }
+        },
+        "social": {
+          "subtopics": {
+            "habits": {
+              "allowed": [
+                "stable"
+              ],
+              "default": "stable"
+            }
           }
         }
       }

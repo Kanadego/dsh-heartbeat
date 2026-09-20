@@ -24,7 +24,7 @@ import {
   inboxFilePath,
 } from './inbox.js';
 import { loadProfile, applyOpsToDoc, runDeterministicAging, persistWithJournal } from './store.js';
-import { loadProfileSchema } from './schema.js';
+import { loadProfileSchema, type ProfileSchema } from './schema.js';
 import { readText, writeText } from '../vault/vault.js';
 import type { InboxItem, ProfileOp } from './types.js';
 
@@ -100,13 +100,22 @@ const CHAT_SEED_RULE =
 export function buildConsolidationPrompt(
   entriesView: string,
   observations: InboxItem[],
+  schema?: ProfileSchema,
 ): string {
   const notes = observations.map((o) => `- [${o.kind} ${o.at}] ${o.note} (ref=${o.kind}#${o.ref})`).join('\n');
+  const whitelist = schema ? renderSchemaWhitelist(schema) : '';
   return [
     '你是用户画像的合并裁决器。下面是当前画像条目与新观察。请产出结构化操作。',
     '裁决规则：',
     RULES,
     CHAT_SEED_RULE,
+    '',
+    '## 分区白名单（必须严格遵守）',
+    'partition/topic/subTopic 只能从下面这份清单里选，逐字匹配，禁止自创、禁止改写成别的名字：',
+    whitelist || '(无 schema 白名单——但分区必须属于 interest/projects/comm/psy 四者之一)',
+    '',
+    '## temporal 取值',
+    'temporal 只能填 stable 或 volatile（每个 sub_topic 有自己的允许集，见上面括号标注；没标注的默认 stable）。',
     '',
     '## 当前条目（仅非 psy 分区；字段：id/partition/topic/subTopic/content/confidence）',
     entriesView || '(空)',
@@ -115,8 +124,25 @@ export function buildConsolidationPrompt(
     notes || '(空)',
     '',
     '输出：一个 JSON 数组的 ops。ADD 需含 partition/topic/subTopic/content/temporal/evidence[{kind,at,ref}]；',
-    'UPDATE 需含 id/changes；INVALIDATE 需含 id/why。不要输出数组以外的任何内容。',
+    'UPDATE 需含 id/changes；INVALIDATE 需含 id/why。',
+    'evidence[].ref 必须是能解析的数据文件定位符，格式为 "<data下的文件>#<定位>"，例如 "cursors.json#2026-09-06T08:32:51.185Z"。',
+    '不要在 ref 前面加 "chat#" 等多余前缀——那会导致证据无法解析而被拒。',
+    '不要输出数组以外的任何内容。',
   ].join('\n');
+}
+
+/** Render the schema whitelist as a compact, LLM-consumable block. */
+function renderSchemaWhitelist(schema: ProfileSchema): string {
+  const rows: string[] = [];
+  for (const [partition, p] of Object.entries(schema.partitions ?? {})) {
+    for (const [topic, t] of Object.entries(p?.topics ?? {})) {
+      for (const [subTopic, st] of Object.entries(t?.subtopics ?? {})) {
+        const allowed = (st?.allowed && st.allowed.length ? st.allowed : ['stable']).join('|');
+        rows.push(`- ${partition}/${topic}/${subTopic}  (temporal: ${allowed})`);
+      }
+    }
+  }
+  return rows.join('\n');
 }
 
 /** Chat-seed rows in the model output (spec ⑧). Validated leniently: a row
@@ -185,7 +211,7 @@ export async function runConsolidation(
         .map((e) => `${e.id} [${e.partition}/${e.topic}/${e.subTopic}] conf=${e.confidence} (${e.temporal}): ${e.content}`))
       .filter(Boolean)
       .join('\n');
-    const prompt = buildConsolidationPrompt(entriesView, all);
+    const prompt = buildConsolidationPrompt(entriesView, all, schema);
 
     // LLM output invalid -> retry once -> still invalid: skip, inbox preserved.
     let ops: unknown[] | null = null;

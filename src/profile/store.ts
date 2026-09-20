@@ -374,12 +374,9 @@ export function rebuildProfile(
 ): RebuildReport & { diffSummary?: string } {
   const replayed = replayJournal(guard, dataDir);
   const target = profileFilePath(dataDir);
-  const tmp = path.join(dataDir, `.profile.rebuild.${Date.now()}.tmp`);
-  atomicWriteFileSync(tmp, JSON.stringify(replayed.doc, null, 2));
   if (opts.check) {
     const onDisk = loadProfile(guard, target);
     const same = JSON.stringify(onDisk) === JSON.stringify(replayed.doc);
-    fs.rmSync(tmp, { force: true });
     return {
       ok: same,
       truncatedTail: replayed.truncatedTail,
@@ -388,7 +385,7 @@ export function rebuildProfile(
       diffSummary: same ? 'no diff' : 'materialized view differs from journal replay',
     };
   }
-  fs.renameSync(tmp, target);
+  saveJson(guard, target, replayed.doc);
   if (replayed.truncatedTail > 0) {
     // explicit audit: never silently rebuild a view that lost its tail
     writeText(

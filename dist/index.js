@@ -22,7 +22,7 @@ import {
   scanPending,
   sendNewMessageHint,
   userPresetRoot
-} from "./chunk-5TNGUHIR.js";
+} from "./chunk-QAJ2D445.js";
 import {
   getRuntime,
   setRuntime
@@ -1500,13 +1500,21 @@ var RULES = [
   '\u53EA\u8F93\u51FA\u4E00\u4E2A JSON \u6570\u7EC4\uFF0C\u5143\u7D20\u5F62\u5982 {"op":"ADD"|"UPDATE"|"INVALIDATE"|"NOOP"|...,..}\u3002'
 ].join("\n");
 var CHAT_SEED_RULE = '\u804A\u5929\u79CD\u5B50\uFF08spec \u2467\uFF09\uFF1A\u4ECE\u89C2\u5BDF\u91CC\u6311"\u503C\u5F97\u4E3B\u52A8\u804A\u7684\u8BDD\u9898"\u2014\u2014\u53EA\u6311\u4ED6\u771F\u6B63\u8868\u73B0\u51FA\u5174\u8DA3\u7684\u3001\u65B0\u51FA\u73B0\u7684\u4E8B\u7269\u6216\u4ED6\u60F3\u6DF1\u5165\u7684\u8BDD\u9898\uFF1B\u666E\u901A\u5BD2\u6684\u3001\u5BA2\u5957\u3001\u5DF2\u5B8C\u7ED3\u7684\u5C0F\u4E8B\u4E0D\u8BB0\u3002\u6BCF\u6761\u8F93\u51FA\u4E3A {"op":"CHAT_SEED","text":"\u4E00\u53E5\u8BDD\u7D20\u6750(<=60\u5B57)"}\uFF08topic \u53EF\u9009\uFF09\u3002\u6CA1\u6709\u5408\u9002\u7684\u5C31\u4E0D\u6311\u3002';
-function buildConsolidationPrompt(entriesView, observations) {
+function buildConsolidationPrompt(entriesView, observations, schema) {
   const notes = observations.map((o) => `- [${o.kind} ${o.at}] ${o.note} (ref=${o.kind}#${o.ref})`).join("\n");
+  const whitelist = schema ? renderSchemaWhitelist(schema) : "";
   return [
     "\u4F60\u662F\u7528\u6237\u753B\u50CF\u7684\u5408\u5E76\u88C1\u51B3\u5668\u3002\u4E0B\u9762\u662F\u5F53\u524D\u753B\u50CF\u6761\u76EE\u4E0E\u65B0\u89C2\u5BDF\u3002\u8BF7\u4EA7\u51FA\u7ED3\u6784\u5316\u64CD\u4F5C\u3002",
     "\u88C1\u51B3\u89C4\u5219\uFF1A",
     RULES,
     CHAT_SEED_RULE,
+    "",
+    "## \u5206\u533A\u767D\u540D\u5355\uFF08\u5FC5\u987B\u4E25\u683C\u9075\u5B88\uFF09",
+    "partition/topic/subTopic \u53EA\u80FD\u4ECE\u4E0B\u9762\u8FD9\u4EFD\u6E05\u5355\u91CC\u9009\uFF0C\u9010\u5B57\u5339\u914D\uFF0C\u7981\u6B62\u81EA\u521B\u3001\u7981\u6B62\u6539\u5199\u6210\u522B\u7684\u540D\u5B57\uFF1A",
+    whitelist || "(\u65E0 schema \u767D\u540D\u5355\u2014\u2014\u4F46\u5206\u533A\u5FC5\u987B\u5C5E\u4E8E interest/projects/comm/psy \u56DB\u8005\u4E4B\u4E00)",
+    "",
+    "## temporal \u53D6\u503C",
+    "temporal \u53EA\u80FD\u586B stable \u6216 volatile\uFF08\u6BCF\u4E2A sub_topic \u6709\u81EA\u5DF1\u7684\u5141\u8BB8\u96C6\uFF0C\u89C1\u4E0A\u9762\u62EC\u53F7\u6807\u6CE8\uFF1B\u6CA1\u6807\u6CE8\u7684\u9ED8\u8BA4 stable\uFF09\u3002",
     "",
     "## \u5F53\u524D\u6761\u76EE\uFF08\u4EC5\u975E psy \u5206\u533A\uFF1B\u5B57\u6BB5\uFF1Aid/partition/topic/subTopic/content/confidence\uFF09",
     entriesView || "(\u7A7A)",
@@ -1515,8 +1523,23 @@ function buildConsolidationPrompt(entriesView, observations) {
     notes || "(\u7A7A)",
     "",
     "\u8F93\u51FA\uFF1A\u4E00\u4E2A JSON \u6570\u7EC4\u7684 ops\u3002ADD \u9700\u542B partition/topic/subTopic/content/temporal/evidence[{kind,at,ref}]\uFF1B",
-    "UPDATE \u9700\u542B id/changes\uFF1BINVALIDATE \u9700\u542B id/why\u3002\u4E0D\u8981\u8F93\u51FA\u6570\u7EC4\u4EE5\u5916\u7684\u4EFB\u4F55\u5185\u5BB9\u3002"
+    "UPDATE \u9700\u542B id/changes\uFF1BINVALIDATE \u9700\u542B id/why\u3002",
+    'evidence[].ref \u5FC5\u987B\u662F\u80FD\u89E3\u6790\u7684\u6570\u636E\u6587\u4EF6\u5B9A\u4F4D\u7B26\uFF0C\u683C\u5F0F\u4E3A "<data\u4E0B\u7684\u6587\u4EF6>#<\u5B9A\u4F4D>"\uFF0C\u4F8B\u5982 "cursors.json#2026-09-06T08:32:51.185Z"\u3002',
+    '\u4E0D\u8981\u5728 ref \u524D\u9762\u52A0 "chat#" \u7B49\u591A\u4F59\u524D\u7F00\u2014\u2014\u90A3\u4F1A\u5BFC\u81F4\u8BC1\u636E\u65E0\u6CD5\u89E3\u6790\u800C\u88AB\u62D2\u3002',
+    "\u4E0D\u8981\u8F93\u51FA\u6570\u7EC4\u4EE5\u5916\u7684\u4EFB\u4F55\u5185\u5BB9\u3002"
   ].join("\n");
+}
+function renderSchemaWhitelist(schema) {
+  const rows = [];
+  for (const [partition, p] of Object.entries(schema.partitions ?? {})) {
+    for (const [topic, t] of Object.entries(p?.topics ?? {})) {
+      for (const [subTopic, st] of Object.entries(t?.subtopics ?? {})) {
+        const allowed = (st?.allowed && st.allowed.length ? st.allowed : ["stable"]).join("|");
+        rows.push(`- ${partition}/${topic}/${subTopic}  (temporal: ${allowed})`);
+      }
+    }
+  }
+  return rows.join("\n");
 }
 var MAX_CHAT_SEEDS_PER_RUN = 3;
 function splitChatSeedOps(raw) {
@@ -1547,7 +1570,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
     const doc = loadProfile(guard, paths.dataDir + "/profile.json");
     const all = dedupeItems(inboxDrain(guard, inboxFilePath(paths.dataDir)));
     const entriesView = ["interest", "projects", "comm"].flatMap((p) => doc.partitions[p].entries.filter((e) => e.validTo === null).map((e) => `${e.id} [${e.partition}/${e.topic}/${e.subTopic}] conf=${e.confidence} (${e.temporal}): ${e.content}`)).filter(Boolean).join("\n");
-    const prompt = buildConsolidationPrompt(entriesView, all);
+    const prompt = buildConsolidationPrompt(entriesView, all, schema);
     let ops = null;
     let lastError = "";
     for (let attempt = 0; attempt < 2 && ops === null; attempt++) {

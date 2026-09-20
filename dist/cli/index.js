@@ -26,7 +26,7 @@ import {
   sendNewMessageHint,
   shredFileSync,
   verifyProfile
-} from "../chunk-5TNGUHIR.js";
+} from "../chunk-QAJ2D445.js";
 import {
   activeSeeds,
   addSeed,

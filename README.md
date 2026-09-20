@@ -140,7 +140,8 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 
 | 插件版本 | 适配的 DSH | 备注 |
 |---|---|---|
-| **v1.6.1**（当前） | ≥ `0.1.2-rc.1` | v1.6.0 + 决策轮超时降级（反刍轮超时不再整跳报错，素材留到下一跳） |
+| **v1.6.2**（当前） | ≥ `0.1.2-rc.1` | v1.6.1 + consolidation 白名单修复（画像合并遵守 profile-schema，不再自创分区/错误 ref 被拒；rebuild 改加密写） |
+| v1.6.1 | ≥ `0.1.2-rc.1` | v1.6.0 + 决策轮超时降级（反刍轮超时不再整跳报错，素材留到下一跳） |
 | v1.6.0 | ≥ `0.1.2-rc.1` | 素材闭环 + 视觉识别；修复 `0.1.5` 下节律配置保存不生效（v1.5.x 在 0.1.5 上有此问题，务必升级） |
 | v1.5.x | ≥ `0.1.2-rc.1` | 反刍投递改版；v1.5.1 元数据补全 |
 | v1.4 | ≥ `0.1.2-rc.1` | M7 全部能力在 `0.1.5-rc.2` 验收；旧宿主上状态栏自动走 pre-step 轨道 |
@@ -151,6 +152,15 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 > ⚠️ **升级宿主到 0.1.5 会触发会话格式 v3 自动迁移**（所有旧会话首次访问时被转换）——动用户数据，升级前先备份 `~/.dsh/sessions`。
 
 ## 版本更新
+
+### v1.6.2 · 2026-09-20
+
+**补丁：画像合并（consolidation）白名单修复**——画像从出生就空的问题根因在 `buildConsolidationPrompt` 从没把 `profile-schema.json` 的分区白名单传给裁决模型：引擎室凭直觉自创分区（如 `background`/`relation`/`preference`）全被 `partition not in schema` 拒绝，导致增量几乎 100% 被拒、画像长期为空。本次：
+
+- 提示词注入完整白名单（partition/topic/subTopic + 各格 temporal 允许集），并明确禁止自创分区、evidence ref 必须写成 `cursors.json#<时间戳>` 而非带 `chat#` 前缀。
+- 扩充 schema 槽位（新增 `acg`/`hardware`/`audio`/`writing`/`life`、`heartbeat`/`dsh`/`zcode`、`interaction`/`boundary`、`background`/`social` 等 topic）。
+- 修复 `profile rebuild` 写明文 profile.json 的问题（改回 DPAPI 加密写）。
+- 把历史被拒但有效的高价值观察回填进画像。
 
 ### v1.6.1 · 2026-09-20
 

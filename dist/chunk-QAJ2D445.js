@@ -799,12 +799,9 @@ function verifyProfile(guard, dataDir) {
 function rebuildProfile(guard, dataDir, opts = {}) {
   const replayed = replayJournal(guard, dataDir);
   const target = profileFilePath(dataDir);
-  const tmp = path8.join(dataDir, `.profile.rebuild.${Date.now()}.tmp`);
-  atomicWriteFileSync(tmp, JSON.stringify(replayed.doc, null, 2));
   if (opts.check) {
     const onDisk = loadProfile(guard, target);
     const same = JSON.stringify(onDisk) === JSON.stringify(replayed.doc);
-    fs7.rmSync(tmp, { force: true });
     return {
       ok: same,
       truncatedTail: replayed.truncatedTail,
@@ -813,7 +810,7 @@ function rebuildProfile(guard, dataDir, opts = {}) {
       diffSummary: same ? "no diff" : "materialized view differs from journal replay"
     };
   }
-  fs7.renameSync(tmp, target);
+  saveJson(guard, target, replayed.doc);
   if (replayed.truncatedTail > 0) {
     writeText(
       guard,
@@ -1015,4 +1012,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-5TNGUHIR.js.map
+//# sourceMappingURL=chunk-QAJ2D445.js.map
