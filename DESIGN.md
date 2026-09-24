@@ -380,6 +380,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 - 宿主：settings 块三代探测（0.1.5 installSection / 0.1.7 SettingsForms.describe→跳过注册 + sectionSource=()=>config / 0.1.1 自由函数兜底）；修掉旧代码在 0.1.7 宿主上误触 0.1.1 遗留函数的隐患。
 - 客户端：inject 去 settingsScope（0.1.7 已删，声明即卡死 bundle）；卡照常挂载（settings.section 槽位在 0.1.7 存续）。
 - 节律配置脱离宿主设置体系：新增 src/config/ui-config.ts（data/settings/ui.json 用户层，卡片五项：间隔/每日上限/时间注入/状态栏/闲着模式），RPC 新增 config.get / config.set（ui_config_set 审计行），编辑器三代宿主统一走 RPC、保存即时生效；启动优先级 = policy 层 < ui.json < Config 宿主覆盖。0.1.7 的 SettingsForms 路径保留为 Config 承载（表单自动生成），但不再是节律配置的入口。
+- 心跳预设声明式化（v1.7.1）：0.1.7 移除 agentPresets 的文件系统用户根（~/.dsh/.agent-presets 不再被加载，审计 preset_install skipped-no-root），预设改为组合声明行（@deepseek-ai/dsh-agent-preset，官方 preset-standard 同机制）。包 cordis.patch.yml 内置 preset-heartbeat 行（id=heartbeat，compaction 组 + tool-web fetch:false，无 persona 行——人格红线照旧）；≤0.1.5 宿主文件系统自装路径保留（installPreset）。
 - 节省 token 模式（v1.7.0）：beat() 最前端闸（maintenance 之前），envpulse 新增 probeWorkstationLocked（LogonUI 进程探测，故障放行）+ probeIdleSeconds 导出；阈值 TOKEN_SAVER_IDLE_SECONDS=1800；审计走 silent reason='token-saver'；开关经 ui.json（Config 同名字段可作宿主覆盖）。
 - psy 卡片开关（v1.7.0）：psyEnabled 本就是 policy.profile 字段（store.ts 收口），卡片经 config.set → updateUserPolicy 写用户 policy 层 + 运行时热更；默认关（出厂值）。
 - 会话 V4 消息源：0.1.7 拒绝已退役的通用包装 kind:'plugin'（要求 producer-owned kind）。心跳注入消息（hostUserMessage / time-inject）source.kind 改为 'heartbeat'（plugin/form/sections 附带字段保留）；观察过滤同步认 'heartbeat' / 旧 'plugin' / plugin==='heartbeat' 三种，老日志行不被误观察。
