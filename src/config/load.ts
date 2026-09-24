@@ -32,3 +32,24 @@ export function loadPolicy(guard: PathGuard, configDir: string, settingsDir: str
   assertPolicy(merged);
   return merged;
 }
+
+/**
+ * Merge `patch` into the user policy layer (data/settings/policy.json) without
+ * touching the factory file. Used by the settings card for policy-backed
+ * toggles (psyEnabled, v1.7.0). No full-Policy validation here: the layer is
+ * merged over the factory and validated together at the next loadPolicy.
+ */
+export function updateUserPolicy(guard: PathGuard, settingsDir: string, patch: Record<string, unknown>): Record<string, unknown> {
+  const userPath = guard.assert(path.join(settingsDir, USER_POLICY_FILE));
+  let user: Record<string, unknown> = {};
+  try {
+    user = JSON.parse(fs.readFileSync(userPath, 'utf8')) as Record<string, unknown>;
+    if (!user || typeof user !== 'object' || Array.isArray(user)) user = {};
+  } catch {
+    user = {}; // fresh layer
+  }
+  const merged = deepMerge(user, patch) as Record<string, unknown>;
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  return merged;
+}

@@ -13,6 +13,8 @@ export interface HeartbeatRuntime {
     statusbarEnabled(): boolean;
     timeInjectMin(): number;
     idleMode(): boolean;
+    /** Token-saver (v1.7.0): pause the whole beat while the user is away. */
+    tokenSaver(): boolean;
   };
 }
 

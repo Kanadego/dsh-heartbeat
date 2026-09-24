@@ -208,7 +208,8 @@ export function registerTimeInjection(
       }
       const message = createUserMessage({
         content: [{ type: 'text', text }],
-        source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat-time', text }] },
+        // 0.1.7 V4: producer-owned kind (retired generic 'plugin' is refused).
+        source: { kind: 'heartbeat', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat-time', text }] },
       });
       state[sessionId] = now;
       saveTimeInjectState(guard, dataDir, state);
