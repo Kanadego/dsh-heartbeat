@@ -21,12 +21,13 @@ import {
   runDeterministicAging,
   scanPending,
   sendNewMessageHint,
+  updateUserPolicy,
   userPresetRoot
-} from "./chunk-TFMQKETS.js";
+} from "./chunk-ON4MSU6E.js";
 import {
   getRuntime,
   setRuntime
-} from "./chunk-SJUNS2BE.js";
+} from "./chunk-3QJJRXIR.js";
 import {
   activeSeeds,
   addSeed,
@@ -851,14 +852,57 @@ defineMethod("transform", [
   "preserve"
 ], ({ inner }, isInner) => inner.toString(isInner));
 
+// src/config/ui-config.ts
+import fs from "fs";
+import path from "path";
+var USER_UI_FILE = "ui.json";
+var RANGES = {
+  intervalMin: { min: 1, max: 1440 },
+  maxDailySend: { min: 1, max: 50 },
+  timeInjectMin: { min: 0, max: 1440 }
+};
+function sanitize(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const r = raw;
+  const out = {};
+  for (const key of ["intervalMin", "maxDailySend", "timeInjectMin"]) {
+    const v = r[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= RANGES[key].min && v <= RANGES[key].max) {
+      out[key] = Math.floor(v);
+    }
+  }
+  if (typeof r.statusbar === "boolean") out.statusbar = r.statusbar;
+  if (typeof r.idleMode === "boolean") out.idleMode = r.idleMode;
+  if (typeof r.tokenSaver === "boolean") out.tokenSaver = r.tokenSaver;
+  return out;
+}
+function uiConfigPath(settingsDir) {
+  return path.join(settingsDir, USER_UI_FILE);
+}
+function loadUiConfig(guard, settingsDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(guard.assert(uiConfigPath(settingsDir)), "utf8"));
+    return sanitize(raw);
+  } catch {
+    return {};
+  }
+}
+function saveUiConfig(guard, settingsDir, patch) {
+  const merged = sanitize({ ...loadUiConfig(guard, settingsDir), ...patch });
+  const file = guard.assert(uiConfigPath(settingsDir));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  return merged;
+}
+
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import fs8 from "fs";
-import path8 from "path";
+import fs9 from "fs";
+import path9 from "path";
 
 // src/env/envpulse.ts
-import fs2 from "fs";
-import path2 from "path";
+import fs3 from "fs";
+import path3 from "path";
 import { spawnSync } from "child_process";
 
 // src/env/timeflow.ts
@@ -896,8 +940,8 @@ function timeContext(now = /* @__PURE__ */ new Date()) {
 }
 
 // src/gate/busy-rules.ts
-import fs from "fs";
-import path from "path";
+import fs2 from "fs";
+import path2 from "path";
 var own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 var FALLBACK_RULES = {
   busy: {},
@@ -906,7 +950,7 @@ var FALLBACK_RULES = {
 };
 function loadBusyRules(configDir) {
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(configDir, "busy-rules.json"), "utf8"));
+    const raw = JSON.parse(fs2.readFileSync(path2.join(configDir, "busy-rules.json"), "utf8"));
     if (!raw.busy || !raw.idle) return FALLBACK_RULES;
     return raw;
   } catch {
@@ -946,21 +990,36 @@ function presenceOf(idleSec, windowClass) {
   return windowClass === "busy" ? "active" : "present";
 }
 function probeIdle(guard, paths) {
-  const tmp = path2.join(paths.tmpDir, `idle-${Date.now()}.txt`);
+  const tmp = path3.join(paths.tmpDir, `idle-${Date.now()}.txt`);
   try {
     const out = guard.assert(tmp);
     const r = spawnSync(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path2.join(paths.assetsDir, "idle.ps1"), "-out", out],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path3.join(paths.assetsDir, "idle.ps1"), "-out", out],
       { timeout: 2e4, encoding: "utf8" }
     );
-    if (r.status !== 0 || !fs2.existsSync(out)) return -1;
-    const v = Number.parseInt(fs2.readFileSync(out, "utf8").trim(), 10);
+    if (r.status !== 0 || !fs3.existsSync(out)) return -1;
+    const v = Number.parseInt(fs3.readFileSync(out, "utf8").trim(), 10);
     return Number.isNaN(v) ? -1 : v;
   } catch {
     return -1;
   } finally {
-    fs2.rmSync(tmp, { force: true });
+    fs3.rmSync(tmp, { force: true });
+  }
+}
+function probeIdleSeconds(guard, paths) {
+  return probeIdle(guard, paths);
+}
+function probeWorkstationLocked() {
+  try {
+    const r = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command", 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
+      { timeout: 1e4, encoding: "utf8" }
+    );
+    return r.status === 0 && String(r.stdout || "").includes("locked");
+  } catch {
+    return false;
   }
 }
 function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ */ new Date()) {
@@ -978,7 +1037,7 @@ function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ 
     festival: t.festival
   };
   try {
-    fs2.writeFileSync(path2.join(paths.dataDir, "envpulse.json"), JSON.stringify(snapshot, null, 1), "utf8");
+    fs3.writeFileSync(path3.join(paths.dataDir, "envpulse.json"), JSON.stringify(snapshot, null, 1), "utf8");
   } catch {
   }
   writePulseStream(paths, snapshot);
@@ -986,7 +1045,7 @@ function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ 
 }
 function writePulseStream(paths, snapshot) {
   try {
-    appendAuditLine(path2.join(paths.logsDir, "envpulse.jsonl"), {
+    appendAuditLine(path3.join(paths.logsDir, "envpulse.jsonl"), {
       event: "pulse",
       takenAt: snapshot.takenAt,
       idleSeconds: snapshot.idleSeconds,
@@ -1002,7 +1061,7 @@ function writePulseStream(paths, snapshot) {
 }
 function readPulse(guard, paths) {
   try {
-    const raw = fs2.readFileSync(path2.join(paths.dataDir, "envpulse.json"), "utf8");
+    const raw = fs3.readFileSync(path3.join(paths.dataDir, "envpulse.json"), "utf8");
     return JSON.parse(raw);
   } catch {
     return null;
@@ -1010,33 +1069,33 @@ function readPulse(guard, paths) {
 }
 
 // src/screen/screenpulse.ts
-import fs3 from "fs";
-import path3 from "path";
+import fs4 from "fs";
+import path4 from "path";
 import { spawnSync as spawnSync2 } from "child_process";
 var SCREEN_JSON = "screen.json";
 var SCREEN_JPG = "screen.jpg";
 function screenJsonPath(paths) {
-  return path3.join(paths.dataDir, SCREEN_JSON);
+  return path4.join(paths.dataDir, SCREEN_JSON);
 }
 function screenJpgPath(paths) {
-  return path3.join(paths.dataDir, SCREEN_JPG);
+  return path4.join(paths.dataDir, SCREEN_JPG);
 }
 function collectScreen(guard, paths, now = Date.now()) {
-  const rawJson = path3.join(paths.tmpDir, "screen.raw.json");
-  const rawJpg = path3.join(paths.tmpDir, "screen.raw.jpg");
+  const rawJson = path4.join(paths.tmpDir, "screen.raw.json");
+  const rawJpg = path4.join(paths.tmpDir, "screen.raw.jpg");
   let encJson = "";
   try {
     const r = spawnSync2(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path3.join(paths.assetsDir, "screenpulse.ps1"), "-outdir", paths.tmpDir],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path4.join(paths.assetsDir, "screenpulse.ps1"), "-outdir", paths.tmpDir],
       { timeout: 45e3, encoding: "utf8" }
     );
     if (r.status !== 0) {
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }
-    const raw = fs3.readFileSync(rawJson, "utf8");
+    const raw = fs4.readFileSync(rawJson, "utf8");
     const meta = JSON.parse(raw);
-    if (meta.shot_path && fs3.existsSync(meta.shot_path)) {
+    if (meta.shot_path && fs4.existsSync(meta.shot_path)) {
       try {
         encryptFile(guard, meta.shot_path, screenJpgPath(paths));
       } catch {
@@ -1044,51 +1103,51 @@ function collectScreen(guard, paths, now = Date.now()) {
     }
     const { shot_path: _drop, ...clean } = meta;
     void _drop;
-    encJson = path3.join(paths.tmpDir, `screen.enc.${now}.json`);
-    fs3.writeFileSync(encJson, JSON.stringify(clean, null, 1), "utf8");
+    encJson = path4.join(paths.tmpDir, `screen.enc.${now}.json`);
+    fs4.writeFileSync(encJson, JSON.stringify(clean, null, 1), "utf8");
     encryptFile(guard, encJson, screenJsonPath(paths));
     return {
       ok: true,
       capturedAt: meta.captured_at ?? null,
-      hasShot: fs3.existsSync(screenJpgPath(paths)),
+      hasShot: fs4.existsSync(screenJpgPath(paths)),
       visibleCount: Array.isArray(meta.windows) ? meta.windows.length : 0
     };
   } catch (e) {
     return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: String(e) };
   } finally {
     for (const leftover of [rawJson, rawJpg, encJson]) {
-      fs3.rmSync(leftover, { force: true });
+      fs4.rmSync(leftover, { force: true });
     }
   }
 }
 function readScreenJson(guard, paths) {
   const f = screenJsonPath(paths);
-  if (!fs3.existsSync(guard.assert(f))) return null;
-  const tmp = path3.join(paths.tmpDir, `screen.read.${Date.now()}.json`);
+  if (!fs4.existsSync(guard.assert(f))) return null;
+  const tmp = path4.join(paths.tmpDir, `screen.read.${Date.now()}.json`);
   try {
     decryptFile(guard, f, guard.assert(tmp));
-    return JSON.parse(fs3.readFileSync(tmp, "utf8"));
+    return JSON.parse(fs4.readFileSync(tmp, "utf8"));
   } catch {
     return null;
   } finally {
-    fs3.rmSync(tmp, { force: true });
+    fs4.rmSync(tmp, { force: true });
   }
 }
 function unlockShot(guard, paths) {
   const f = screenJpgPath(paths);
-  if (!fs3.existsSync(guard.assert(f))) return null;
-  const tmp = path3.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
+  if (!fs4.existsSync(guard.assert(f))) return null;
+  const tmp = path4.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
   decryptFile(guard, f, guard.assert(tmp));
   return tmp;
 }
 function burnUnlocked(guard, tmpPath) {
-  fs3.rmSync(guard.assert(tmpPath), { force: true });
+  fs4.rmSync(guard.assert(tmpPath), { force: true });
 }
 
 // src/screen/vision.ts
 import { createRequire } from "module";
-import fs4 from "fs";
-import path4 from "path";
+import fs5 from "fs";
+import path5 from "path";
 import { spawn } from "child_process";
 var VISION_TIMEOUT_MS = 12e4;
 var VISION_MAX_SUMMARY = 300;
@@ -1096,8 +1155,8 @@ function resolveModlensMain(fromUrl) {
   try {
     const req = createRequire(fromUrl);
     const pkgJson = req.resolve("@liustack/modlens/package.json");
-    const main = path4.join(path4.dirname(pkgJson), "dist", "main.js");
-    return fs4.existsSync(main) ? main : null;
+    const main = path5.join(path5.dirname(pkgJson), "dist", "main.js");
+    return fs5.existsSync(main) ? main : null;
   } catch {
     return null;
   }
@@ -1135,7 +1194,7 @@ function extractSummary(raw) {
 var DEFAULT_VISION_PROVIDER = "openai";
 function readVisionSettings(guard, paths) {
   try {
-    const raw = fs4.readFileSync(guard.assert(path4.join(paths.settingsDir, "vision.json")), "utf8");
+    const raw = fs5.readFileSync(guard.assert(path5.join(paths.settingsDir, "vision.json")), "utf8");
     const obj = JSON.parse(raw);
     return {
       ...typeof obj.provider === "string" && obj.provider.trim() ? { provider: obj.provider.trim() } : {},
@@ -1150,7 +1209,7 @@ async function describeScreenShot(guard, paths, opts) {
   if (!mainJs) return { ok: false, summary: null, error: "modlens not installed" };
   const shot = unlockShot(guard, paths);
   if (!shot) return { ok: false, summary: null, error: "no screenshot this beat" };
-  const outJson = path4.join(paths.tmpDir, `screen.vision.${Date.now()}.json`);
+  const outJson = path5.join(paths.tmpDir, `screen.vision.${Date.now()}.json`);
   const spawnCli = opts.spawnCli ?? defaultSpawn;
   const timeoutMs = opts.timeoutMs ?? VISION_TIMEOUT_MS;
   const settings = opts.settings ?? readVisionSettings(guard, paths);
@@ -1175,7 +1234,7 @@ async function describeScreenShot(guard, paths, opts) {
     if (code !== 0) {
       return { ok: false, summary: null, error: `modlens exit ${code}${stderr ? `: ${stderr.slice(0, 140)}` : ""}` };
     }
-    const raw = fs4.existsSync(outJson) ? fs4.readFileSync(outJson, "utf8") : "";
+    const raw = fs5.existsSync(outJson) ? fs5.readFileSync(outJson, "utf8") : "";
     const summary = extractSummary(raw);
     if (!summary) return { ok: false, summary: null, error: "modlens produced no summary" };
     return { ok: true, summary };
@@ -1183,17 +1242,17 @@ async function describeScreenShot(guard, paths, opts) {
     return { ok: false, summary: null, error: String(e).slice(0, 160) };
   } finally {
     burnUnlocked(guard, shot);
-    fs4.rmSync(outJson, { force: true });
+    fs5.rmSync(outJson, { force: true });
   }
 }
 
 // src/gate/gate.ts
-import path5 from "path";
+import path6 from "path";
 import { spawnSync as spawnSync3 } from "child_process";
-import fs5 from "fs";
+import fs6 from "fs";
 var STABLE_WINDOW_MS = 15e3;
 function sentFilePath(paths) {
-  return path5.join(paths.dataDir, "sent.json");
+  return path6.join(paths.dataDir, "sent.json");
 }
 function localDay(now) {
   const d = new Date(now);
@@ -1242,20 +1301,20 @@ function evaluateGate(input) {
   };
 }
 function probeFrontWindowLive(guard, paths) {
-  const tmp = path5.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
+  const tmp = path6.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
   try {
     const out = guard.assert(tmp);
     const r = spawnSync3(
       "powershell.exe",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path5.join(paths.assetsDir, "frontwin.ps1"), "-out", out],
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path6.join(paths.assetsDir, "frontwin.ps1"), "-out", out],
       { timeout: 1e4, encoding: "utf8" }
     );
-    if (r.status !== 0 || !fs5.existsSync(out)) return null;
-    return JSON.parse(fs5.readFileSync(out, "utf8"));
+    if (r.status !== 0 || !fs6.existsSync(out)) return null;
+    return JSON.parse(fs6.readFileSync(out, "utf8"));
   } catch {
     return null;
   } finally {
-    fs5.rmSync(tmp, { force: true });
+    fs6.rmSync(tmp, { force: true });
   }
 }
 function probeFrontWindowSnapshot(guard, paths) {
@@ -1405,8 +1464,8 @@ function buildRuminationPrompt(input) {
 }
 
 // src/statusbar/store.ts
-import fs6 from "fs";
-import path6 from "path";
+import fs7 from "fs";
+import path7 from "path";
 function deriveScene(input) {
   if (input.quietHours) return "quiet-hours";
   if (input.spokeThisBeat) return "just-spoke";
@@ -1421,14 +1480,14 @@ function clampNote(note) {
   return t.length <= 30 ? t : t.slice(0, 30);
 }
 function statusFilePath(dataDir) {
-  return path6.join(dataDir, "settings", "status.json");
+  return path7.join(dataDir, "settings", "status.json");
 }
 function writeStatus(guard, paths, state) {
   atomicWriteJsonSync(guard.assert(statusFilePath(paths.dataDir)), state);
 }
 function readStatus(guard, paths) {
   try {
-    const raw = fs6.readFileSync(guard.assert(statusFilePath(paths.dataDir)), "utf8");
+    const raw = fs7.readFileSync(guard.assert(statusFilePath(paths.dataDir)), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed?.at !== "string" || typeof parsed?.scene !== "string") return null;
     return parsed;
@@ -1444,7 +1503,7 @@ var StatusReader = class {
     const file = statusFilePath(paths.dataDir);
     let st;
     try {
-      st = fs6.statSync(guard.assert(file));
+      st = fs7.statSync(guard.assert(file));
     } catch {
       this.mtimeMs = -1;
       this.cached = null;
@@ -1684,16 +1743,16 @@ function buildDigest(guard, paths, policy, input = {}) {
 }
 
 // src/rhythm/rhythm.ts
-import fs7 from "fs";
-import path7 from "path";
+import fs8 from "fs";
+import path8 from "path";
 var DAY_MS = 864e5;
 var TAU_DAYS = 10;
 function rhythmFilePath(paths) {
-  return path7.join(paths.dataDir, "profile_rhythm.json");
+  return path8.join(paths.dataDir, "profile_rhythm.json");
 }
 function loadRhythm(paths) {
   try {
-    return JSON.parse(fs7.readFileSync(rhythmFilePath(paths), "utf8"));
+    return JSON.parse(fs8.readFileSync(rhythmFilePath(paths), "utf8"));
   } catch {
     return { histogram: {}, days: [], lastDecayAt: (/* @__PURE__ */ new Date()).toISOString() };
   }
@@ -1764,7 +1823,7 @@ function noteBeat(verdict, detail) {
   lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
 }
 function stateFile(paths) {
-  return path8.join(paths.dataDir, "gate.json");
+  return path9.join(paths.dataDir, "gate.json");
 }
 function readBeatState(guard, paths) {
   try {
@@ -1947,7 +2006,9 @@ async function hostUserMessage(text, label) {
   const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
   return createUserMessage({
     content: [{ type: "text", text }],
-    source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
+    // 0.1.7 V4: kind:'plugin' is a retired generic wrapper, refused on write
+    // ("producer-owned source kind") — the producer names its own kind.
+    source: { kind: "heartbeat", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
   });
 }
 async function agentTurn(deps, agent, prompt, label, idleWaitMs = IDLE_WAIT_TIMEOUT_MS) {
@@ -2038,10 +2099,10 @@ async function observeBoundSessions(bc) {
   const data = loadBindings2(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
-  const cursorFile = path8.join(paths.dataDir, "cursors.json");
+  const cursorFile = path9.join(paths.dataDir, "cursors.json");
   let cursors = {};
   try {
-    cursors = JSON.parse(fs8.readFileSync(cursorFile, "utf8"));
+    cursors = JSON.parse(fs9.readFileSync(cursorFile, "utf8"));
   } catch {
   }
   const inboxFile = inboxFilePath2(paths.dataDir);
@@ -2057,7 +2118,7 @@ async function observeBoundSessions(bc) {
         const e = events[i];
         if (e.type !== "user/message") continue;
         const d = e.data;
-        if (d?.source?.kind === "plugin") continue;
+        if (d?.source && (d.source.kind === "heartbeat" || d.source.kind === "plugin" || d.source.plugin === "heartbeat")) continue;
         const text = (d?.content ?? []).filter((c) => c.type === "text").map((c) => c.text ?? "").join("").trim();
         if (!text) continue;
         inboxAppend(guard, inboxFile, {
@@ -2391,6 +2452,13 @@ function scheduleDeferredRetry(deps) {
     void beat(deps);
   }, delayMs);
 }
+var TOKEN_SAVER_IDLE_SECONDS = 1800;
+function tokenSaverActive(deps) {
+  if (!getRuntime().flags.tokenSaver()) return false;
+  if (probeWorkstationLocked()) return true;
+  const idle = probeIdleSeconds(deps.guard, deps.paths);
+  return idle >= TOKEN_SAVER_IDLE_SECONDS;
+}
 async function beat(deps) {
   if (beating) return;
   beating = true;
@@ -2404,18 +2472,23 @@ async function beat(deps) {
     if (agent) {
       deferredRetries = 0;
       const bc = { deps, agent, now };
-      await maintenancePhase(bc);
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
-      await collectPhase(bc);
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "collect" });
-      wandered = await wanderPhase(bc);
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "wander" });
-      const refilled = await refillWanderPhase(bc);
-      if (refilled) {
-        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "refill_wander" });
+      if (tokenSaverActive(deps)) {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "token-saver" });
+        noteBeat("silent", { reason: "token-saver\uFF08\u4F60\u4E0D\u5728\uFF0C\u5FC3\u8DF3\u6302\u8D77\uFF09" });
+      } else {
+        await maintenancePhase(bc);
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
+        await collectPhase(bc);
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "collect" });
+        wandered = await wanderPhase(bc);
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "wander" });
+        const refilled = await refillWanderPhase(bc);
+        if (refilled) {
+          appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "refill_wander" });
+        }
+        wandered = wandered || refilled;
+        await expressionPhases(bc);
       }
-      wandered = wandered || refilled;
-      await expressionPhases(bc);
     } else {
       const bc = { deps, agent: null, now };
       await maintenancePhase(bc);
@@ -2477,26 +2550,26 @@ function startOrchestrator(deps) {
 
 // src/rpc.ts
 import { spawn as spawn2 } from "child_process";
-import fs11 from "fs";
+import fs12 from "fs";
 import os from "os";
-import path11 from "path";
+import path12 from "path";
 
 // src/browse/interests-edit.ts
-import fs9 from "fs";
-import path9 from "path";
+import fs10 from "fs";
+import path10 from "path";
 var MAX_INTERESTS = 32;
 var MAX_INTEREST_LEN = 60;
 var MAX_WINDOWS = 6;
 var HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 function userInterestsPath(paths) {
-  return path9.join(paths.settingsDir, "interests.json");
+  return path10.join(paths.settingsDir, "interests.json");
 }
 function factoryInterestsPath(paths) {
-  return path9.join(paths.configDir, "interests.json");
+  return path10.join(paths.configDir, "interests.json");
 }
 function readDoc(file) {
   try {
-    const raw = JSON.parse(fs9.readFileSync(file, "utf8"));
+    const raw = JSON.parse(fs10.readFileSync(file, "utf8"));
     if (!Array.isArray(raw.interests)) return null;
     return { ...raw, interests: raw.interests.map(String) };
   } catch {
@@ -2514,8 +2587,8 @@ function ensureUserLayer(guard, paths) {
   return doc;
 }
 function saveDoc(guard, file, doc) {
-  fs9.mkdirSync(path9.dirname(file), { recursive: true });
-  fs9.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
+  fs10.mkdirSync(path10.dirname(file), { recursive: true });
+  fs10.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
 }
 function normalizeInterest(text) {
   return text.trim().replace(/\s+/g, " ");
@@ -2581,8 +2654,8 @@ function setWanderWindows(guard, paths, rawWindows) {
 }
 
 // src/statusbar/time-inject.ts
-import fs10 from "fs";
-import path10 from "path";
+import fs11 from "fs";
+import path11 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
   if (!input.originIsInboxSplice) return false;
@@ -2644,11 +2717,11 @@ function lastMessageTime(session) {
   return void 0;
 }
 function timeInjectStatePath(dataDir) {
-  return path10.join(dataDir, "time-inject-state.json");
+  return path11.join(dataDir, "time-inject-state.json");
 }
 function loadTimeInjectState(guard, dataDir) {
   try {
-    const parsed = JSON.parse(fs10.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
+    const parsed = JSON.parse(fs11.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -2687,7 +2760,8 @@ ${statusLine}`;
       }
       const message = createUserMessage({
         content: [{ type: "text", text }],
-        source: { kind: "plugin", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat-time", text }] }
+        // 0.1.7 V4: producer-owned kind (retired generic 'plugin' is refused).
+        source: { kind: "heartbeat", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat-time", text }] }
       });
       state[sessionId] = now;
       saveTimeInjectState(guard, dataDir, state);
@@ -2712,7 +2786,7 @@ var cachedVersion = null;
 function pluginVersion(paths) {
   if (cachedVersion) return cachedVersion;
   try {
-    const pkg = JSON.parse(fs11.readFileSync(path11.join(paths.packageRoot, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs12.readFileSync(path12.join(paths.packageRoot, "package.json"), "utf8"));
     cachedVersion = typeof pkg.version === "string" ? pkg.version : "unknown";
   } catch {
     cachedVersion = "unknown";
@@ -2721,7 +2795,7 @@ function pluginVersion(paths) {
 }
 function homeSessionId(paths, guard) {
   try {
-    const raw = loadEncryptedText(guard, path11.join(paths.dataDir, "gate.json"));
+    const raw = loadEncryptedText(guard, path12.join(paths.dataDir, "gate.json"));
     return JSON.parse(raw ?? "{}").sessionId ?? null;
   } catch {
     return null;
@@ -2743,13 +2817,13 @@ function loadSessionTitles() {
     if (row && typeof row.val === "string" && row.val && !titles[id]) titles[id] = row.val;
   };
   try {
-    const dir = path11.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
-    for (const file of fs11.readdirSync(dir)) {
+    const dir = path12.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
+    for (const file of fs12.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
       if (!id.startsWith("session-")) continue;
       try {
-        const record = JSON.parse(fs11.readFileSync(path11.join(dir, file), "utf8"));
+        const record = JSON.parse(fs12.readFileSync(path12.join(dir, file), "utf8"));
         take(id, record.record);
       } catch {
       }
@@ -2757,7 +2831,7 @@ function loadSessionTitles() {
   } catch {
   }
   try {
-    const raw = JSON.parse(fs11.readFileSync(path11.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const raw = JSON.parse(fs12.readFileSync(path12.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       for (const [key, value] of Object.entries(node)) {
@@ -2802,7 +2876,7 @@ function installHeartbeatRpc(ctx, deps) {
             }
             let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
             try {
-              const { getRuntime: getRuntime2 } = await import("./runtime-YHJT6TXF.js");
+              const { getRuntime: getRuntime2 } = await import("./runtime-W2OWJIHY.js");
               const f = getRuntime2().flags;
               flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
             } catch {
@@ -2826,14 +2900,14 @@ function installHeartbeatRpc(ctx, deps) {
             });
           }
           case "sessions.list": {
-            const root = path11.join(os.homedir(), ".dsh", "sessions");
+            const root = path12.join(os.homedir(), ".dsh", "sessions");
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
             const out = [];
-            if (fs11.existsSync(root)) {
-              for (const slug of fs11.readdirSync(root)) {
-                for (const id of fs11.readdirSync(path11.join(root, slug))) {
+            if (fs12.existsSync(root)) {
+              for (const slug of fs12.readdirSync(root)) {
+                for (const id of fs12.readdirSync(path12.join(root, slug))) {
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
                     id,
@@ -2868,7 +2942,7 @@ function installHeartbeatRpc(ctx, deps) {
             let homeReset = false;
             if (id === homeSessionId(paths, guard)) {
               try {
-                fs11.rmSync(guard.assert(path11.join(paths.dataDir, "gate.json")), { force: true });
+                fs12.rmSync(guard.assert(path12.join(paths.dataDir, "gate.json")), { force: true });
                 homeReset = true;
               } catch {
               }
@@ -2912,6 +2986,25 @@ function installHeartbeatRpc(ctx, deps) {
             auditInterests(paths, "set-windows", r, JSON.stringify(p.windows ?? null));
             return r.ok ? ok(r.doc) : err("bad-request", r.reason ?? "setWindows failed");
           }
+          case "config.get":
+            return ok(deps.ui.get());
+          case "config.set": {
+            const patch = p;
+            if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+              return err("bad-request", "config.set needs a patch object");
+            }
+            const keys = Object.keys(patch).filter(
+              (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "psyEnabled"].includes(k)
+            );
+            if (keys.length === 0) return err("bad-request", "config.set has no recognized field");
+            try {
+              deps.ui.set(patch);
+            } catch (e) {
+              return err("bad-request", String(e).slice(0, 120));
+            }
+            appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), { event: "ui_config_set", keys });
+            return ok(deps.ui.get());
+          }
           case "profile.digest": {
             const d = buildDigest(guard, paths, policy, {});
             return ok({
@@ -2931,13 +3024,13 @@ function installHeartbeatRpc(ctx, deps) {
                 lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
               }
             }
-            const out = path11.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+            const out = path12.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
             writeText(guard, out, lines.join("\n") + "\n");
             return ok({ path: out });
           }
           case "ledger.open": {
             const f = ledgerFilePath(paths.dataDir);
-            if (!fs11.existsSync(guard.assert(f))) fs11.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+            if (!fs12.existsSync(guard.assert(f))) fs12.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
             spawn2("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
             return ok({ path: f });
           }
@@ -3100,12 +3193,21 @@ var Config = Schema.object({
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
   statusbar: Schema.boolean().default(true),
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
-  idleMode: Schema.boolean().default(false)
+  idleMode: Schema.boolean().default(false),
+  /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
+  tokenSaver: Schema.boolean().default(false)
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
   const guard = createPathGuard(paths.dataDir);
   let policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
+  const ui = loadUiConfig(guard, paths.settingsDir);
+  if (ui.intervalMin && ui.intervalMin >= 1) {
+    policy = { ...policy, heartbeat: { ...policy.heartbeat, intervalMin: ui.intervalMin } };
+  }
+  if (ui.maxDailySend && ui.maxDailySend >= 1) {
+    policy = { ...policy, gate: { ...policy.gate, maxDailySend: ui.maxDailySend } };
+  }
   if (config.intervalMin && config.intervalMin >= 1) {
     policy = { ...policy, heartbeat: { ...policy.heartbeat, intervalMin: config.intervalMin } };
   }
@@ -3120,7 +3222,8 @@ function apply(ctx, config = {}) {
     flags: {
       statusbarEnabled: () => statusbarEnabledRef,
       timeInjectMin: () => timeInjectMinRef,
-      idleMode: () => idleModeRef
+      idleMode: () => idleModeRef,
+      tokenSaver: () => tokenSaverRef
     }
   });
   ctx.inject(["agentPresets"], (presetCtx) => {
@@ -3148,9 +3251,10 @@ function apply(ctx, config = {}) {
     }
   });
   let sectionSource = null;
-  let timeInjectMinRef = config.timeInjectMin ?? 25;
-  let statusbarEnabledRef = config.statusbar !== false;
-  let idleModeRef = config.idleMode === true;
+  let timeInjectMinRef = ui.timeInjectMin ?? (config.timeInjectMin ?? 25);
+  let statusbarEnabledRef = ui.statusbar ?? config.statusbar !== false;
+  let idleModeRef = ui.idleMode ?? config.idleMode === true;
+  let tokenSaverRef = ui.tokenSaver ?? config.tokenSaver === true;
   const applySettingsOverrides = () => {
     try {
       const v = sectionSource?.();
@@ -3171,7 +3275,6 @@ function apply(ctx, config = {}) {
   void (async () => {
     try {
       const settingsService = ctx.get("settings");
-      const legacy = await import("@deepseek-ai/dsh-settings");
       if (settingsService && typeof settingsService.installSection === "function") {
         settingsService.installSection(ctx, "heartbeat", Config, config, {
           setSource: (current) => {
@@ -3181,7 +3284,18 @@ function apply(ctx, config = {}) {
             applySettingsOverrides();
           }
         });
-      } else if (typeof legacy.installSettingsSection === "function" && typeof legacy.settingsNamespace === "function") {
+        applySettingsOverrides();
+        ctx.logger.info("heartbeat: settings section registered (0.1.5 settings service)");
+        return;
+      }
+      if (settingsService && typeof settingsService.describe === "function") {
+        sectionSource = () => config;
+        applySettingsOverrides();
+        ctx.logger.info("heartbeat: config served by the 0.1.7 profile form (edits reload the plugin)");
+        return;
+      }
+      const legacy = await import("@deepseek-ai/dsh-settings");
+      if (typeof legacy.installSettingsSection === "function" && typeof legacy.settingsNamespace === "function") {
         legacy.installSettingsSection(ctx, legacy.settingsNamespace("heartbeat"), Config, config, {
           setSource: (current) => {
             sectionSource = current;
@@ -3190,11 +3304,11 @@ function apply(ctx, config = {}) {
             applySettingsOverrides();
           }
         });
-      } else {
-        throw new Error("no installSection method on the settings service and no legacy export");
+        applySettingsOverrides();
+        ctx.logger.info("heartbeat: settings section registered (legacy 0.1.1 settings)");
+        return;
       }
-      applySettingsOverrides();
-      ctx.logger.info("heartbeat: settings section registered");
+      ctx.logger.warn("heartbeat: no settings integration found; policy file values only");
     } catch (e) {
       ctx.logger.warn("heartbeat: settings section unavailable (%s)", String(e).slice(0, 120));
     }
@@ -3203,7 +3317,32 @@ function apply(ctx, config = {}) {
     guard.assert(paths.logsDir + "/heartbeat.jsonl"),
     { event: "plugin_init", dataDir: paths.dataDir }
   );
-  installHeartbeatRpc(ctx, { paths, guard, policy });
+  const uiGet = () => ({
+    intervalMin: getRuntime().policy.heartbeat.intervalMin,
+    maxDailySend: getRuntime().policy.gate.maxDailySend,
+    timeInjectMin: timeInjectMinRef,
+    statusbar: statusbarEnabledRef,
+    idleMode: idleModeRef,
+    tokenSaver: tokenSaverRef,
+    psyEnabled: getRuntime().policy.profile.psyEnabled
+  });
+  const uiSet = (patch) => {
+    if (typeof patch.psyEnabled === "boolean") {
+      updateUserPolicy(guard, paths.settingsDir, { profile: { psyEnabled: patch.psyEnabled } });
+      getRuntime().policy.profile.psyEnabled = patch.psyEnabled;
+    }
+    const merged = saveUiConfig(guard, paths.settingsDir, patch);
+    if (merged.intervalMin && merged.intervalMin >= 1) applyHeartbeatInterval(deps, merged.intervalMin);
+    if (merged.maxDailySend && merged.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = merged.maxDailySend;
+    if (typeof merged.timeInjectMin === "number") timeInjectMinRef = merged.timeInjectMin;
+    if (typeof merged.statusbar === "boolean") statusbarEnabledRef = merged.statusbar;
+    if (typeof merged.idleMode === "boolean") {
+      idleModeRef = merged.idleMode;
+      getRuntime().policy.heartbeat.idleMode = merged.idleMode;
+    }
+    if (typeof merged.tokenSaver === "boolean") tokenSaverRef = merged.tokenSaver;
+  };
+  installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
   startOrchestrator(deps);
   const statusReader = new StatusReader();
   registerStatusbarSection(ctx, guard, paths, {

@@ -18,6 +18,7 @@ import path from 'node:path';
 import type { OrchestratorDeps } from './core/orchestrator.js';
 import { getLastBeat } from './core/orchestrator.js';
 import { appendAuditLine } from './core/audit-log.js';
+import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
 import type { WorkspacePaths } from './core/paths.js';
 import { inQuietHours, readSentState } from './gate/gate.js';
@@ -51,6 +52,19 @@ interface RpcDeps {
   paths: WorkspacePaths;
   guard: PathGuard;
   policy: Policy;
+  /** Card-edited rhythm values (v1.7.0): live view getter + persist-and-apply setter. */
+  ui: {
+    get(): {
+      intervalMin: number;
+      maxDailySend: number;
+      timeInjectMin: number;
+      statusbar: boolean;
+      idleMode: boolean;
+      tokenSaver: boolean;
+      psyEnabled: boolean;
+    };
+    set(patch: UiConfig & { psyEnabled?: boolean }): void;
+  };
 }
 
 type RpcResult = { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: Record<string, never> } };
@@ -323,6 +337,27 @@ export function installHeartbeatRpc(
             const r = setWanderWindows(guard, paths, p.windows);
             auditInterests(paths, 'set-windows', r, JSON.stringify(p.windows ?? null));
             return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'setWindows failed');
+          }
+
+          case 'config.get':
+            return ok(deps.ui.get());
+
+          case 'config.set': {
+            const patch = p as UiConfig;
+            if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+              return err('bad-request', 'config.set needs a patch object');
+            }
+            const keys = Object.keys(patch).filter((k) =>
+              ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'psyEnabled'].includes(k),
+            );
+            if (keys.length === 0) return err('bad-request', 'config.set has no recognized field');
+            try {
+              deps.ui.set(patch);
+            } catch (e) {
+              return err('bad-request', String(e).slice(0, 120));
+            }
+            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'ui_config_set', keys });
+            return ok(deps.ui.get());
           }
 
           case 'profile.digest': {

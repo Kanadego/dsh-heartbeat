@@ -78,7 +78,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | C5 | 模型轮次 | `agent.followup(createUserMessage({content, source:{kind:'plugin', plugin, form:'snapshot', sections}}))` + `await agent.whenIdle()`；助手文本扫描事件流里 `type含'assistant'` 的事件提取（content 可能是字符串/数组/嵌套，见 orchestrator.assistantText；**必须排除 reasoning 块，见 C14**）。**0.1.2-rc.1 移除了 `Session.events`**：改读 `snapshotEvents(fromSeq?, toSeqExclusive?)` + `seq`，插件侧封装 `sessionEvents()` / `sessionEventCount()` 做兼容回退 |
 | C6 | 工具限制 | `agentCtx.get('tools').restrict({allow:['web_search']})` —— 在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效（需求 8 的模型侧硬保险）。**只能点名"继承层"里的工具**：`dsh-tools` 的 `view(scope)` 把 agent 自身层的注册只加进 `knownNames`、**不加进 `restrictableNames`**，所以没有预设的裸 agent 连 `web_search` 都点不了名（`tools.restrict() names unknown global tool "web_search"`）——见 C13。另：`tools.schemas()` 不传 scope 拿的是**全局视图**，不能拿来判断预设是否挂上，判据是同行的 `restrict=ok` |
 | C7 | pre-step 注入 | `ctx.on('agent/pre-step', async ({agent,turn,step,signal}, next) => {...}, {prepend:true})`；waterfall：`await next()` 后返回 `{kind:'enter', messages:[...]}` 追加式注入（不碰前缀）。**step===1 且末事件 `agent/inbox/spliced` = 用户发起轮次；step>1 且 `step/end` = 任务中途**（日常会话时间注入/状态栏的门控信号） |
-| C8 | settings | **两代 API（v1.6.0 起特性探测并存）**。0.1.5-rc.2（dsh-settings 0.1.5）：旧自由函数 `installSettingsSection` **已删除**，改为宿主 `settings` 服务（cordis Service 名 `"settings"`）的实例方法 `provider.installSection(ctx, 'heartbeat', Config, entry, {setSource, onChange})`，且插件模块 `inject` **必须声明 `'settings'`**（严格解析，未声明即拒——与 C21 同族）；0.1.1/0.1.2 时代包内仍是自由函数 `installSettingsSection(ctx, settingsNamespace(ns), …)`。**此包是插件运行时真依赖，必须放 dependencies**（v1.5.1 误挪 peer 后 profile 里的实体包被清掉，节律配置"保存不生效 + 重启回默认"——2026-09-18 修）。client：`ctx.settingsScope.bind({namespace})` → `getSnapshot()/subscribe()/set(field, value)`，落宿主 settings 服务的 user 层持久化 |
+| C8 | settings | **两代 API（v1.6.0 起特性探测并存）**。0.1.5-rc.2（dsh-settings 0.1.5）：旧自由函数 `installSettingsSection` **已删除**，改为宿主 `settings` 服务（cordis Service 名 `"settings"`）的实例方法 `provider.installSection(ctx, 'heartbeat', Config, entry, {setSource, onChange})`，且插件模块 `inject` **必须声明 `'settings'`**（严格解析，未声明即拒——与 C21 同族）；0.1.1/0.1.2 时代包内仍是自由函数 `installSettingsSection(ctx, settingsNamespace(ns), …)`。**此包是插件运行时真依赖，必须放 dependencies**（v1.5.1 误挪 peer 后 profile 里的实体包被清掉，节律配置"保存不生效 + 重启回默认"——2026-09-18 修）。client：`ctx.settingsScope.bind({namespace})` → `getSnapshot()/subscribe()/set(field, value)`，落宿主 settings 服务的 user 层持久化。**第三代（v1.7.0）**：0.1.7 起 `installSection` 方法与客户端 `settingsScope` 服务一并删除，设置改由 profile 的插件配置承载（SettingsForms describe/update/mutate + 插件页自动表单，编辑→插件重载；定时器 ctx.effect 清理故重载安全）。心跳三代特性探测：0.1.5 服务法 → 0.1.7（`describe` 存在即跳过注册，`sectionSource=()=>config`）→ 0.1.1 自由函数（仅宿主无 settings 服务时）。**client inject 不得声明 settingsScope**（0.1.7 下整个客户端 bundle 卡 pending，web 报 Failed to load plugins——2026-09-24 现场） |
 | C9 | client 契约 | `dsh.client:{platform:'web'}` + exports `"./client"`；client 模块 = `window.__ModuleLoader__.load({id, factory})`，**factory 必须返回带 `apply` 的对象**（client 侧也跑 cordis，同样校验）；设置卡片 = `ctx.slots.inject('settings.section', function*(){ yield ctx.slots.register({name:'settings.section', id, order, label, inject}, ReactComponent) })`；client inject 服务：`settingsScope / slots / locale / sessions / remote` |
 | C10 | 安装是复制 | `file:` 协议安装 = 目录拷贝，**改源码后必须重拷 dist 到 node_modules 副本或重跑 `dsh plugin add`**，否则跑的是旧代码 |
 | C11 | 持久化布局 | `~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 node:zlib 解）；会话 flush 是惰性的，活跃内容可能只在内存 |
@@ -373,7 +373,17 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 
 ## 15. 变更日志
 
-> 版本口径：v1.6 是**当前版本**（DSH ≥ 0.1.2-rc.1；状态栏/时间注入/视觉识别在 0.1.5-rc.2 上验收，0.1.2 上状态栏走 Track B、视觉静默降级）。旧宿主（≤ 0.1.1-rc.2）请用 v1.0。
+> 版本口径：v1.7 是**当前版本**（DSH ≥ 0.1.2-rc.1；0.1.7-rc.2 验收，0.1.5-rc.2 兼容，≤0.1.1-rc.2 请用 v1.0）。
+
+### v1.7.0 · 2026-09-24（0.1.7 设置体系适配）
+
+- 宿主：settings 块三代探测（0.1.5 installSection / 0.1.7 SettingsForms.describe→跳过注册 + sectionSource=()=>config / 0.1.1 自由函数兜底）；修掉旧代码在 0.1.7 宿主上误触 0.1.1 遗留函数的隐患。
+- 客户端：inject 去 settingsScope（0.1.7 已删，声明即卡死 bundle）；卡照常挂载（settings.section 槽位在 0.1.7 存续）。
+- 节律配置脱离宿主设置体系：新增 src/config/ui-config.ts（data/settings/ui.json 用户层，卡片五项：间隔/每日上限/时间注入/状态栏/闲着模式），RPC 新增 config.get / config.set（ui_config_set 审计行），编辑器三代宿主统一走 RPC、保存即时生效；启动优先级 = policy 层 < ui.json < Config 宿主覆盖。0.1.7 的 SettingsForms 路径保留为 Config 承载（表单自动生成），但不再是节律配置的入口。
+- 节省 token 模式（v1.7.0）：beat() 最前端闸（maintenance 之前），envpulse 新增 probeWorkstationLocked（LogonUI 进程探测，故障放行）+ probeIdleSeconds 导出；阈值 TOKEN_SAVER_IDLE_SECONDS=1800；审计走 silent reason='token-saver'；开关经 ui.json（Config 同名字段可作宿主覆盖）。
+- psy 卡片开关（v1.7.0）：psyEnabled 本就是 policy.profile 字段（store.ts 收口），卡片经 config.set → updateUserPolicy 写用户 policy 层 + 运行时热更；默认关（出厂值）。
+- 会话 V4 消息源：0.1.7 拒绝已退役的通用包装 kind:'plugin'（要求 producer-owned kind）。心跳注入消息（hostUserMessage / time-inject）source.kind 改为 'heartbeat'（plugin/form/sections 附带字段保留）；观察过滤同步认 'heartbeat' / 旧 'plugin' / plugin==='heartbeat' 三种，老日志行不被误观察。
+- 验收：167/167 单测（+4 ui-config）；0.1.7-rc.2 实机（宿主活、卡挂载、审计正常）。
 
 ### v1.6.0 · 2026-09-19（素材闭环 + 视觉识别 + 0.1.5 settings 适配）
 

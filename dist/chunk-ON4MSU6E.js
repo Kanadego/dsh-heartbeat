@@ -248,6 +248,20 @@ function loadPolicy(guard, configDir, settingsDir) {
   assertPolicy(merged);
   return merged;
 }
+function updateUserPolicy(guard, settingsDir, patch) {
+  const userPath = guard.assert(path4.join(settingsDir, USER_POLICY_FILE));
+  let user = {};
+  try {
+    user = JSON.parse(fs4.readFileSync(userPath, "utf8"));
+    if (!user || typeof user !== "object" || Array.isArray(user)) user = {};
+  } catch {
+    user = {};
+  }
+  const merged = deepMerge(user, patch);
+  fs4.mkdirSync(path4.dirname(userPath), { recursive: true });
+  fs4.writeFileSync(userPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  return merged;
+}
 
 // src/ledger/ledger.ts
 import path5 from "path";
@@ -983,6 +997,7 @@ export {
   pruneAuditFile,
   deepMerge,
   loadPolicy,
+  updateUserPolicy,
   ledgerFilePath,
   readLedger,
   appendEntry,
@@ -1013,4 +1028,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-TFMQKETS.js.map
+//# sourceMappingURL=chunk-ON4MSU6E.js.map

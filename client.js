@@ -1,14 +1,14 @@
 // dsh-heartbeat client half (M6): settings-page card.
 //
 // Contract notes (verified against dsh-vision-router + dsh-client-ui-settings
-// types on 0.1.1-rc.2):
+// types on 0.1.1-rc.2; reworked for 0.1.7-rc.2 in v1.7.0):
 //   - the client module is applied as a CLIENT-SIDE cordis plugin; the
 //     ModuleLoader factory must return an object with an "apply" method;
 //   - the settings page renders entries contributed to the 'settings.section'
-//     slot; each entry = {name, id, order, label, inject} + a React component;
-//   - ctx.settingsScope.bind({namespace}) yields a scope with getSnapshot /
-//     subscribe / set(field, value) — writes go through the host settings
-//     service (loopback-only, process-local persistence);
+//     slot; each entry = {name, id, order, label} + a React component (the
+//     slot survives 0.1.7; the per-namespace settingsScope service does not);
+//   - the rhythm editor rides the /api RPC channel (host persists to
+//     data/settings/ui.json and applies live) — no host settings API needed;
 //   - custom host data flows through an exact Fetch route under /api:
 //     ctx.get('connection').rpc.call('/api', 'heartbeat', { endpoint, ...payload }).
 window.__ModuleLoader__.load({
@@ -31,13 +31,9 @@ window.__ModuleLoader__.load({
 		const rowList = { display: "flex", alignItems: "center", gap: 8, padding: "3px 0" };
 
 		function apply(ctx) {
-			let scope;
-			try {
-				scope = ctx.settingsScope.bind({ namespace: "heartbeat" });
-			} catch (e) {
-				console.warn("[dsh-heartbeat] settingsScope unavailable", e);
-				return;
-			}
+			// settingsScope was removed in DSH 0.1.7 — never bound here again.
+			// The rhythm editor rides the RPC channel (data/settings/ui.json on
+			// the host), so the card works identically on every host generation.
 			const getConnection = () => {
 				try { return ctx.get("connection"); } catch { return undefined; }
 			};
@@ -334,36 +330,53 @@ window.__ModuleLoader__.load({
 			}
 
 			// ── 配置 + 账本 ───────────────────────────────────────────────
+			// 节律配置走 RPC + 宿主侧 data/settings/ui.json（v1.7.0）：
+			// 三代宿主（0.1.1 scope / 0.1.5 installSection / 0.1.7 profile
+			// 表单）行为统一，保存即时生效、无需重载。
 			function ConfigSection() {
-				const snap = scope.getSnapshot();
-				const value = (snap && (snap.value ?? snap.section ?? snap)) || {};
-				const interval = Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 20;
-				const cap = Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 3;
-				const timeInject = value.timeInjectMin === 0 ? 0 : (Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
-				const statusbar = value.statusbar !== false;
-				const idleMode = value.idleMode === true;
+				const [value, setValue] = React.useState(null);
+				const [loadErr, setLoadErr] = React.useState(null);
+				React.useEffect(() => {
+					rpc("config.get").then(setValue, (e) => setLoadErr(String(e).slice(0, 100)));
+				}, []);
+				const interval = value && Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 20;
+				const cap = value && Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 3;
+				const timeInject = value && value.timeInjectMin === 0 ? 0 : (value && Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
+				const statusbar = !value || value.statusbar !== false;
+				const idleMode = !!value && value.idleMode === true;
+				const tokenSaver = !!value && value.tokenSaver === true;
+				const psyEnabled = !!value && value.psyEnabled === true;
 				const [draftInterval, setDraftInterval] = React.useState(interval);
 				const [draftCap, setDraftCap] = React.useState(cap);
 				const [draftTimeInject, setDraftTimeInject] = React.useState(timeInject);
 				const [draftStatusbar, setDraftStatusbar] = React.useState(statusbar);
 				const [draftIdle, setDraftIdle] = React.useState(idleMode);
+				const [draftTokenSaver, setDraftTokenSaver] = React.useState(tokenSaver);
+				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); }, [interval, cap, timeInject, statusbar, idleMode]);
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled]);
 				const save = async () => {
 					try {
 						const di = Math.max(1, Math.min(1440, Math.floor(Number(draftInterval) || 0)));
 						const dc = Math.max(1, Math.min(50, Math.floor(Number(draftCap) || 0)));
 						const dt = Math.max(0, Math.min(1440, Math.floor(Number(draftTimeInject) || 0)));
-						await scope.set("intervalMin", di);
-						await scope.set("maxDailySend", dc);
-						await scope.set("timeInjectMin", dt);
-						await scope.set("statusbar", !!draftStatusbar);
-						await scope.set("idleMode", !!draftIdle);
-						setStatus("已保存（全部即时生效，无需重启）");
+						const v = await rpc("config.set", {
+							intervalMin: di,
+							maxDailySend: dc,
+							timeInjectMin: dt,
+							statusbar: !!draftStatusbar,
+							idleMode: !!draftIdle,
+							tokenSaver: !!draftTokenSaver,
+							psyEnabled: !!draftPsy,
+						});
+						setValue(v);
+						setStatus("已保存（即时生效，无需重启）");
 					} catch (e) {
 						setStatus("保存失败：" + String(e).slice(0, 80));
 					}
 				};
+				if (loadErr && !value) return React.createElement("div", { style: hintStyle }, "加载失败：" + loadErr);
+				if (!value) return React.createElement("div", { style: hintStyle }, "加载中…");
 				return React.createElement(
 					"div",
 					null,
@@ -380,11 +393,19 @@ window.__ModuleLoader__.load({
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, "状态栏"),
 						React.createElement("button", { style: draftStatusbar ? buttonStyle : buttonGhost, onClick: () => setDraftStatusbar(!draftStatusbar) }, draftStatusbar ? "☑ 开启" : "☐ 关闭"),
-						React.createElement("span", { style: hintStyle }, "日常会话中的心跳状态感知")),
+						React.createElement("span", { style: hintStyle }, "日常会话中的心跳状态感知（会额外消耗token）")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, "闲着模式"),
 						React.createElement("button", { style: draftIdle ? buttonStyle : buttonGhost, onClick: () => setDraftIdle(!draftIdle) }, draftIdle ? "☑ 开启" : "☐ 关闭"),
 						React.createElement("span", { style: hintStyle }, "素材池空时用画像话题兜底主动搭话（闸门仍生效）")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, "节省 token 模式"),
+						React.createElement("button", { style: draftTokenSaver ? buttonStyle : buttonGhost, onClick: () => setDraftTokenSaver(!draftTokenSaver) }, draftTokenSaver ? "☑ 开启" : "☐ 关闭"),
+						React.createElement("span", { style: hintStyle }, "你离开（闲置 ≥30 分钟）或锁屏时整跳暂停，回来自动恢复")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, "psy 分区"),
+						React.createElement("button", { style: draftPsy ? buttonStyle : buttonGhost, onClick: () => setDraftPsy(!draftPsy) }, draftPsy ? "☑ 开启" : "☐ 关闭"),
+						React.createElement("span", { style: hintStyle }, "允许画像记录 psy 分区（警告，开启后模型会主动猜测用户心理并计入用户画像，关闭时画像内容计入内容较少）")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, "保存"),
 						React.createElement("span", { style: hintStyle }, status || "全部参数保存后即时生效，无需重启")),
@@ -429,7 +450,10 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		exports.inject = ["settingsScope", "slots", "sessions"];
+		// settingsScope deliberately absent: removed in DSH 0.1.7 (its client
+		// service no longer exists; declaring it stalls the whole client bundle
+		// on a "waiting for service" and blocks the web UI from booting).
+		exports.inject = ["slots", "sessions"];
 		exports.apply = apply;
 		return module.exports;
 	},

@@ -22,7 +22,8 @@ import type { Policy } from '../config/schema.js';
 import { appendAuditLine } from './audit-log.js';
 import { gcPool, activeSeeds, addSeed, surfaceSeed, seedsFilePath, loadPool } from '../seeds/pool.js';
 import { scanPending, ledgerFilePath } from '../ledger/ledger.js';
-import { collectPulse, readPulse } from '../env/envpulse.js';
+import { collectPulse, readPulse, probeIdleSeconds, probeWorkstationLocked } from '../env/envpulse.js';
+import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
@@ -423,7 +424,9 @@ async function hostUserMessage(text: string, label: string): Promise<unknown> {
   const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
+    // 0.1.7 V4: kind:'plugin' is a retired generic wrapper, refused on write
+    // ("producer-owned source kind") — the producer names its own kind.
+    source: { kind: 'heartbeat', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
   });
 }
 
@@ -563,8 +566,11 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
       for (let i = cursor; i < events.length && added < 10; i++) {
         const e = events[i]!;
         if (e.type !== 'user/message') continue;
-        const d = e.data as { source?: { kind?: string }; content?: { type?: string; text?: string }[] } | undefined;
-        if (d?.source?.kind === 'plugin') continue; // never observe our own injections
+        const d = e.data as { source?: { kind?: string; plugin?: string }; content?: { type?: string; text?: string }[] } | undefined;
+        // never observe our own injections — 'heartbeat' = v1.7.0 producer
+        // kind (0.1.7 V4 refuses the retired generic 'plugin' wrapper);
+        // 'plugin'/plugin:'heartbeat' still match rows written by older builds.
+        if (d?.source && (d.source.kind === 'heartbeat' || d.source.kind === 'plugin' || d.source.plugin === 'heartbeat')) continue;
         const text = (d?.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('').trim();
         if (!text) continue;
         inboxAppend(guard, inboxFile, {
@@ -996,6 +1002,23 @@ function scheduleDeferredRetry(deps: OrchestratorDeps): void {
   }, delayMs);
 }
 
+/** Token-saver (v1.7.0, UI toggle): idle seconds beyond which the whole beat
+ * pauses. Sleep needs no probe — it freezes timers, and on wake the idle clock
+ * covers the sleep, so the same threshold holds. */
+export const TOKEN_SAVER_IDLE_SECONDS = 1800;
+
+/**
+ * Token-saver gate: when enabled (UI card), pause the ENTIRE beat before any
+ * model contact while the user is away (idle ≥ 30 min) or the workstation is
+ * locked. Probe failure fails open (never pauses on a broken probe).
+ */
+function tokenSaverActive(deps: OrchestratorDeps): boolean {
+  if (!getRuntime().flags.tokenSaver()) return false;
+  if (probeWorkstationLocked()) return true;
+  const idle = probeIdleSeconds(deps.guard, deps.paths);
+  return idle >= TOKEN_SAVER_IDLE_SECONDS; // idle < 0 (probe failed) fails open
+}
+
 export async function beat(deps: OrchestratorDeps): Promise<void> {
   if (beating) return; // single-flight per beat
   beating = true;
@@ -1009,20 +1032,27 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
       const bc: BeatContext = { deps, agent, now };
-      await maintenancePhase(bc);
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
-      await collectPhase(bc);
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'collect' });
-      wandered = await wanderPhase(bc);
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'wander' });
-      // spec ⑥: refill wander is independent and may stack with a normal
-      // wander in the same beat (user decision 2026-09-18).
-      const refilled = await refillWanderPhase(bc);
-      if (refilled) {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'refill_wander' });
+      if (tokenSaverActive(deps)) {
+        // Pause before maintenance/collect: a token saver that still paid for
+        // consolidation would defeat its purpose. Status stays "silent".
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'token-saver' });
+        noteBeat('silent', { reason: 'token-saver（你不在，心跳挂起）' });
+      } else {
+        await maintenancePhase(bc);
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
+        await collectPhase(bc);
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'collect' });
+        wandered = await wanderPhase(bc);
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'wander' });
+        // spec ⑥: refill wander is independent and may stack with a normal
+        // wander in the same beat (user decision 2026-09-18).
+        const refilled = await refillWanderPhase(bc);
+        if (refilled) {
+          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'refill_wander' });
+        }
+        wandered = wandered || refilled;
+        await expressionPhases(bc);
       }
-      wandered = wandered || refilled;
-      await expressionPhases(bc);
     } else {
       // Agentless beat (deferred acquisition): data-side phases still run so
       // collection/retention never stall; expression needs the agent and skips.

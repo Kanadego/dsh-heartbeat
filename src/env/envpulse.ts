@@ -55,6 +55,27 @@ function probeIdle(guard: PathGuard, paths: WorkspacePaths): number {
   }
 }
 
+/** Exported for the token-saver gate (v1.7.0): fresh idle seconds on demand. */
+export function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths): number {
+  return probeIdle(guard, paths);
+}
+
+/**
+ * Workstation lock probe (token-saver, v1.7.0): LogonUI.exe only runs while
+ * the Windows session is locked. Probe failure fails OPEN (false = unlocked)
+ * so a broken probe never pauses the heartbeat by itself.
+ */
+export function probeWorkstationLocked(): boolean {
+  try {
+    const r = spawnSync('powershell.exe',
+      ['-NoProfile', '-Command', 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
+      { timeout: 10_000, encoding: 'utf8' });
+    return r.status === 0 && String(r.stdout || '').includes('locked');
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Refresh the thermometer snapshot. `fgProcess` comes from the same beat's
  * screen pulse when available (orchestrator order: screen first, then env).
