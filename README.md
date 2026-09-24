@@ -195,6 +195,9 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 
 ## 版本更新
 
+<details open>
+<summary><b>v1.7.x</b></summary>
+
 ### v1.7.1 · 2026-09-25（修复「心跳模式」预设丢失）
 
 **修掉升级 0.1.7 后心跳预设静默失效的问题**：0.1.7 起宿主不再从文件系统用户目录加载 agent 预设，旧的安装方式失效，症状是审计出现 `preset_install skipped-no-root`、界面报 `Unknown agent preset: heartbeat`、闲逛轮报 `tools.restrict unknown web_search`——预设没挂上，心跳 agent 成了"裸 agent"，连 `web_search` 都看不见。
@@ -203,6 +206,7 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 
 - 预设内容与原先一致：上下文折叠组 + 唯一模型工具 `web_search`（不抓正文）；**无 persona 行**——部署人格与心跳提示词已足够，不能被 "You are a coding agent" 盖掉。
 - 升级后重启 DSH 即可，无需手动操作；本版读取的是内置声明，若 `~/.dsh/.agent-presets` 下那份是你手改过的，它不再生效。
+
 ### v1.7.0 · 2026-09-24
 
 - **现已适配 `0.1.7-rc.2`**（实机验收通过）
@@ -213,8 +217,10 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **psy 分区开关**：设置卡新增 psy 开关（默认关）。开启后画像合并才收 psy 分区条目；关闭时相关 ADD 一律拒收。值写在用户 policy 层（data/settings/policy.json），即时生效。
 - **节省 token 模式**：设置卡新增开关（默认关）。开启后，你离开（键盘/鼠标闲置 ≥30 分钟）或 Windows 锁屏时整跳暂停——不采维护、不闲逛、不反刍、不投递，一个 token 都不花；回来自动恢复。睡眠无需检测：睡眠中定时器本来不走，唤醒后闲置时长已覆盖睡眠期。探测失败一律放行（绝不因探测故障误暂停）。
 
+</details>
+
 <details>
-<summary><b>历史版本更新（v1.6.4 及更早）</b></summary>
+<summary><b>v1.6.x</b></summary>
 
 ### v1.6.4 · 2026-09-20
 
@@ -252,6 +258,11 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **UI**：心跳状态卡新增「插件版本」一行。
 - 测试 163 条全绿。
 
+</details>
+
+<details>
+<summary><b>v1.5.x</b></summary>
+
 ### v1.5.1 · 2026-09-16
 
 **元数据补全，无行为改动**——只影响安装与生态对接：
@@ -268,6 +279,11 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **素材包三段式投递**：①「这是心跳插件素材投递…」声明 ②素材清单 ③（3 条里 ≥2 条用过头时）「也可以说一句真心话」。目标会话里的 agent 按当下处境自己判断说不说、说哪条，话落到你读的会话，素材自动归账。
 - **表达提取健壮化**：修复素材投递偶发 `non-Chinese output discarded`——目标会话 agent 收到素材包后爱调工具时，末行落在收尾标签上被误拦。v1.5 起跳过工具收尾标签、取最后一个含中文的行，整段无中文才拒。
 
+</details>
+
+<details>
+<summary><b>v1.4.x</b></summary>
+
 ### v1.4.0 · 2026-09-13
 
 **兴趣范围 / 浏览时段卡片管理**（决策 D22）：
@@ -275,6 +291,11 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - 卡片新增「兴趣范围」分区：闲逛焦点清单逐条增删（删除二次确认）+ 浏览时段窗口可视化编辑（起止时间选择器、加/移除行、全量保存），全部即时生效；
 - **首编继承出厂**：第一次成功编辑时，出厂兴趣与排程被完整复制进用户层再应用改动——出厂条目零丢失，此后卡片即唯一管理入口；只打开卡片或校验失败不会创建用户层；
 - 校验护栏：兴趣 ≤60 字 / 去重 / ≤32 条；窗口同日起始<结束 / 1–6 个 / 两两不重叠。
+
+</details>
+
+<details>
+<summary><b>v1.3.x</b></summary>
 
 ### v1.3.x · 2026-09-13
 
@@ -285,23 +306,41 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **状态文本零时间词（D21）**：时间感知归时间注入，状态栏只承载场景，把 KV-cache 成本钉在"场景变化"粒度；
 - UI：节律配置新增时间注入间隔与状态栏开关；v1.3.1 按评审修正了能力探测性能与轮次起源判定。
 
+</details>
+
+<details>
+<summary><b>v1.2.x</b></summary>
+
 ### v1.2.x · 2026-09-11/12
 
 适配 DSH `0.1.5-rc.2`：诊断兼容 `assistant/attempt` 事件形态（C19）、会话格式 v3 迁移适配（C20）、新增旧会话修复工具 `repair-v0-members.mjs`；v1.2.1 修复 0.1.5 下卡片 RPC 整体报 405（自定义通道在严格服务解析下不可用，迁移为 `/api` 精确路由，C21）。
+
+</details>
+
+<details>
+<summary><b>v1.1.x</b></summary>
 
 ### v1.1 · 2026-09-10
 
 适配 DSH `0.1.2-rc.1`：`Session.events` 移除、模型路由需显式传参、client 注册 id 强校验、会话标题投影迁移等六项宿主契约变化全数适配；**心跳预设改为首次启动自动安装**（一条 `dsh plugin add` 完成部署）；表达从"沉默是常态"改为**分寸优先**（默认倾向开口）；投递目标自动拉活；会话绑定投递/观察双开。
 
+</details>
+
+<details>
+<summary><b>v1.0.x</b></summary>
+
 ### v1.0.0 · 2026-09-05
 
 首个正式版：七相主循环、素材池 / 画像 / 闸门、DPAPI 加密与焚毁、审计留痕、设置页卡片。
 
+</details>
+
 <details>
-<summary>更早的开发阶段（v0.x 脚本外挂时代）</summary>
+<summary><b>v0.x（脚本外挂时代）</b></summary>
+
+### v0.x · 脚本外挂时代
 
 - 前身为 [kohaku-heartbeat](https://github.com/Kanadego/kohaku-heartbeat)——v1 脚本外挂形态，跑通"定时唤醒 + 采集 + 分寸表达"闭环后推倒重来为本插件形态。
-</details>
 
 </details>
 
