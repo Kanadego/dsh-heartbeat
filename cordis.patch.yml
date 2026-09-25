@@ -13,7 +13,7 @@
     - id: heartbeat
       name: '@kanadego/dsh-heartbeat'
 
-# ── Agent preset heartbeat（0.1.7 声明式预设，v1.7.0）─────────────────
+# ── Agent preset heartbeat（0.1.7 声明式预设，v1.7.1）─────────────────
 # 0.1.7 起 agentPresets 名册不再挂载文件系统用户根（~/.dsh/.agent-presets），
 # 预设改为组合里的 @deepseek-ai/dsh-agent-preset 声明行（与官方 preset-standard
 # 同款机制）。内容 = assets/presets/heartbeat/agent.cordis.yml 的移植：
