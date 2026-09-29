@@ -2,6 +2,8 @@
 
 **声明适配 DSH `0.2.0-rc.1`，无行为改动**
 
+**附带修复**：宿主关闭（含桌面端更新）时取消进行中的一跳——此前更新若恰逢一跳在跑，会因宿主等不到优雅收尾而中止（"Host did not complete graceful task teardown"）。
+
 `0.2.0-rc.1` 发布后，宿主按插件声明的 peerDependencies 做兼容性检查时会把本插件**整包跳过**：`^0.1.x` 的 caret 范围上限是 `<0.2.0-0`，把 `0.2.0` 的预发布版也排除了。本版把版本范围加入 `^0.2.0-rc.1`：
 
 - `@deepseek-ai/dsh-llm`（peerDependencies）
