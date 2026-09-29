@@ -201,10 +201,7 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 
 ### v1.7.2 · 2026-09-29（适配 DSH `0.2.0-rc.1`）
 
-**声明适配 `0.2.0-rc.1`，无行为改动**：`0.2.0-rc.1` 发布后，宿主按 peerDependencies 做兼容性检查时会把本插件**整包跳过**（`^0.1.x` 的 caret 上限排除了 `0.2.0` 的预发布版）。本版把 `dsh-llm`（peer）与 `dsh-settings`（依赖）的范围加入 `^0.2.0-rc.1`——老宿主不受影响，`0.2.0` 正式版也在覆盖内。
-
-- 适配依据：对 `0.1.7-rc.2` ↔ `0.2.0-rc.1` 逐包源码比对，心跳依赖的全部宿主接口**运行时代码零变化**（`createUserMessage` 与自有消息来源标记、`agent/inbox/spliced` / `turn/end` 事件、profile 加载与 patch 校验、client-modules 投递、`dsh-settings` API）。
-- ⚠️ `0.2.0` 生态提示：dshmarket、soul-md 等多数第三方插件在 `0.2.0-rc.1` 上会被同机制跳过，升级宿主前先确认插件已发适配版。
+声明适配 `0.2.0-rc.1`，无行为改动。
 
 ### v1.7.1 · 2026-09-25（修复「心跳模式」预设丢失）
 
