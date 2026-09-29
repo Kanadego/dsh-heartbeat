@@ -129,6 +129,12 @@ const EXPRESSION_IDLE_WAIT_MS = 600_000;
 // persisted singletons across beats and boots
 let agentPromise: Promise<HostAgent | null> | null = null;
 let beating = false;
+/** Cancel hook for the in-flight beat's agent turn (set while a beat runs).
+ * Wired into the orchestrator disposer so host shutdown doesn't stall in
+ * graceful task teardown waiting out a 240s model call (2026-09-29: desktop
+ * update aborted with "Host did not complete graceful task teardown" while a
+ * beat was mid-flight). */
+let beatCancel: (() => void) | undefined;
 
 /** Latest beat outcome for the settings status card (RPC served). */
 export interface LastBeat {
@@ -1028,6 +1034,13 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_start' });
     const beatStart = new Date(now).toISOString();
     const agent = await ensureAgent(deps);
+    if (agent) {
+      beatCancel = () => {
+        try {
+          (agent as { cancel?: () => unknown }).cancel?.();
+        } catch { /* best effort — same semantics as the orphan-turn cancel */ }
+      };
+    }
     let wandered = false;
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
@@ -1071,6 +1084,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     } catch { /* never rethrow from the heartbeat */ }
   } finally {
     beating = false;
+    beatCancel = undefined;
   }
 }
 
@@ -1104,7 +1118,14 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
     return () => {
       if (timer) clearInterval(timer);
       if (first) clearTimeout(first);
-      appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'orchestrator_disposed' });
+      // Cancel an in-flight beat's agent turn: clearing the timers alone leaves
+      // the current turn running, and the host waits for graceful task teardown
+      // before it can exit (desktop update once stalled on exactly this).
+      const cancelledInFlight = beating && beatCancel !== undefined;
+      try {
+        beatCancel?.();
+      } catch { /* never rethrow from the disposer */ }
+      appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'orchestrator_disposed', beatCancelled: cancelledInFlight });
       deps.ctx.logger.info('heartbeat: orchestrator timer disposed');
     };
   }, 'heartbeat: timer');
