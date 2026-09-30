@@ -3008,6 +3008,27 @@ function loadSessionTitles() {
     return titles;
   }
 }
+function loadVisibleSessionIds(registryFile) {
+  try {
+    const file = registryFile ?? path12.join(os.homedir(), ".dsh", "storages", "workspace.json");
+    const j = JSON.parse(fs12.readFileSync(file, "utf8"));
+    const archived = new Set(
+      (Array.isArray(j.global?.archivedSessionIds) ? j.global.archivedSessionIds : []).map((s) => String(s))
+    );
+    const isArchived = (id) => archived.has(id) || archived.has(id.replace(/^session-/, ""));
+    const visible = /* @__PURE__ */ new Set();
+    for (const ws of Object.values(j.tables?.workspaces ?? {})) {
+      const ids = Array.isArray(ws?.sessionIds) ? ws.sessionIds : [];
+      for (const raw of ids) {
+        const id = String(raw);
+        if (!isArchived(id)) visible.add(id);
+      }
+    }
+    return { visible, registryFound: true };
+  } catch {
+    return { visible: /* @__PURE__ */ new Set(), registryFound: false };
+  }
+}
 function installHeartbeatRpc(ctx, deps) {
   ctx.inject(["connection"], (scoped) => {
     const remoteCtx = scoped;
@@ -3065,10 +3086,12 @@ function installHeartbeatRpc(ctx, deps) {
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
+            const { visible, registryFound } = loadVisibleSessionIds();
             const out = [];
             if (fs12.existsSync(root)) {
               for (const slug of fs12.readdirSync(root)) {
                 for (const id of fs12.readdirSync(path12.join(root, slug))) {
+                  if (registryFound && id !== home && !visible.has(id)) continue;
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
                     id,
