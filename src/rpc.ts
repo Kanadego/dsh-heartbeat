@@ -118,8 +118,7 @@ function auditInterests(
  * before is the older aggregate layout and goes stale: a session created after
  * the upgrade is simply absent from it, so `title` came back null and the card
  * printed the raw session id. Read the per-record layout FIRST, keep the
- * aggregate only as a legacy fallback. */
-function loadSessionTitles(): Record<string, string> {
+ * aggregate only as a legacy fallback. */function loadSessionTitles(): Record<string, string> {
   const titles: Record<string, string> = {};
   const take = (id: string, value: unknown): void => {
     const t = value as { rows?: { title?: { val?: unknown } }; title?: { val?: unknown } } | undefined;
@@ -157,6 +156,48 @@ function loadSessionTitles(): Record<string, string> {
     return titles;
   } catch {
     return titles;
+  }
+}
+
+/** Host-side session registry (`~/.dsh/storages/workspace.json`) → the set of
+ * session ids the USER actually sees in the sidebar.
+ *
+ * A persisted session is user-visible iff it belongs to some workspace's
+ * `sessionIds` and is not in `archivedSessionIds`. Two exclusions fall out of
+ * this for the bind picker (2026-09-30 user request):
+ * - **archived** sessions (explicit `archivedSessionIds`, prefix formats are
+ *   mixed on disk — some entries carry `session-`, some don't — so match
+ *   both forms);
+ * - **subagent child sessions**, which never join any workspace's
+ *   `sessionIds` (observed: they only ever land in the archive list).
+ *
+ * Fail-open: a missing/corrupt registry returns `registryFound: false` and
+ * the caller shows everything — an unreadable registry must not blank the
+ * picker. The heartbeat home is always shown regardless (caller-side). */
+export function loadVisibleSessionIds(registryFile?: string): { visible: Set<string>; registryFound: boolean } {
+  try {
+    const file = registryFile ?? path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+    const j = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+      global?: { archivedSessionIds?: unknown };
+      tables?: { workspaces?: Record<string, { sessionIds?: unknown }> };
+    };
+    const archived = new Set(
+      (Array.isArray(j.global?.archivedSessionIds) ? (j.global!.archivedSessionIds as unknown[]) : [])
+        .map((s) => String(s)),
+    );
+    const isArchived = (id: string): boolean =>
+      archived.has(id) || archived.has(id.replace(/^session-/, ''));
+    const visible = new Set<string>();
+    for (const ws of Object.values(j.tables?.workspaces ?? {})) {
+      const ids = Array.isArray(ws?.sessionIds) ? (ws.sessionIds as unknown[]) : [];
+      for (const raw of ids) {
+        const id = String(raw);
+        if (!isArchived(id)) visible.add(id);
+      }
+    }
+    return { visible, registryFound: true };
+  } catch {
+    return { visible: new Set(), registryFound: false };
   }
 }
 
@@ -244,10 +285,15 @@ export function installHeartbeatRpc(
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
+            // Bind picker visibility: hide archived and subagent sessions
+            // (2026-09-30 user request). Fail-open when the registry is
+            // unreadable; the home is always listed.
+            const { visible, registryFound } = loadVisibleSessionIds();
             const out: Record<string, unknown>[] = [];
             if (fs.existsSync(root)) {
               for (const slug of fs.readdirSync(root)) {
                 for (const id of fs.readdirSync(path.join(root, slug))) {
+                  if (registryFound && id !== home && !visible.has(id)) continue;
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
                     id,
