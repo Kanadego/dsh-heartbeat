@@ -1889,11 +1889,24 @@ function sessionEventCount(session) {
   if (typeof session.seq === "number") return session.seq;
   return sessionEvents(session).length;
 }
+var HOME_ROTATE_EVENT_COUNT = 3e3;
+function isContextOverflowError(msg) {
+  return /CONTEXT_WINDOW_EXCEEDED|context overflow/i.test(msg);
+}
+function shouldRotateHome(input) {
+  return input.eventCount >= (input.threshold ?? HOME_ROTATE_EVENT_COUNT);
+}
 var IDLE_WAIT_TIMEOUT_MS = 24e4;
 var EXPRESSION_IDLE_WAIT_MS = 6e5;
 var agentPromise = null;
 var beating = false;
 var beatCancel;
+var homeRotatePending = null;
+function markHomeRotateIfOverflow(error) {
+  if (homeRotatePending === null && isContextOverflowError(String(error))) {
+    homeRotatePending = `context overflow: ${String(error).slice(0, 120)}`;
+  }
+}
 var lastBeat = null;
 function getLastBeat() {
   return lastBeat;
@@ -1938,49 +1951,88 @@ function defaultAgentOptions(ctx) {
   }
   return void 0;
 }
+function makeHomeSetup(deps) {
+  const { ctx, paths } = deps;
+  return async (agentCtx) => {
+    const notes = [];
+    const presetId = deps.agentPreset ?? "heartbeat";
+    try {
+      const presets = agentCtx.get("agentPresets");
+      if (typeof presets?.mount !== "function") {
+        notes.push("preset=no-api");
+      } else {
+        const preset = await presets.mount(agentCtx, presetId);
+        const joined = preset?.id;
+        notes.push(`preset=mounted(${joined ?? presetId})`);
+      }
+    } catch (e) {
+      notes.push(`preset=threw(${String(e).slice(0, 200)})`);
+    }
+    const tools = agentCtx.get("tools");
+    if (typeof tools?.restrict !== "function") {
+      notes.push("restrict=no-api");
+    } else {
+      const allow = ["web_search"];
+      try {
+        tools.restrict({ allow });
+        notes.push(`restrict=ok allow=${allow.join("|")}`);
+      } catch (e) {
+        notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
+      }
+      try {
+        const visible = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? "?")).sort();
+        notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(",") : "(empty)"}`);
+      } catch (e) {
+        notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
+      }
+    }
+    ctx.logger.info("heartbeat: tool policy %s", notes.join(" "));
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "tool_policy", policy: notes.join(" ") });
+  };
+}
+async function rotateHome(deps, reason) {
+  const { ctx, guard, paths } = deps;
+  const old = readBeatState(guard, paths).sessionId;
+  const freshId = `session-${randomUUID2()}`;
+  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+    event: "home_rotate_start",
+    from: old,
+    to: freshId,
+    reason
+  });
+  const handle = await withTimeout(
+    Promise.resolve(ctx.agents.create({
+      sessionId: freshId,
+      meta: { cwd: paths.dataDir },
+      ...defaultAgentOptions(ctx) ? { agentOptions: defaultAgentOptions(ctx) } : {},
+      setup: makeHomeSetup(deps)
+    })),
+    3e4,
+    "home rotate create timeout (30s)"
+  );
+  const agent = unwrapHomeHandle(handle);
+  const realId = agent.session?.id ?? freshId;
+  writeBeatState(guard, paths, { sessionId: realId });
+  agentPromise = null;
+  appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+    event: "home_rotate_done",
+    from: old,
+    to: realId,
+    reason
+  });
+  ctx.logger.info("heartbeat: home rotated %s -> %s (%s)", old ?? "(none)", realId, reason);
+}
+function unwrapHomeHandle(handle) {
+  return handle.agent ?? handle;
+}
 async function ensureAgent(deps) {
   if (agentPromise) return agentPromise;
   const { ctx, paths, guard } = deps;
   const agentOptions = defaultAgentOptions(ctx);
+  const setup = makeHomeSetup(deps);
   agentPromise = (async () => {
     const saved = readBeatState(guard, paths);
     const savedId = saved.sessionId;
-    const setup = async (agentCtx) => {
-      const notes = [];
-      const presetId = deps.agentPreset ?? "heartbeat";
-      try {
-        const presets = agentCtx.get("agentPresets");
-        if (typeof presets?.mount !== "function") {
-          notes.push("preset=no-api");
-        } else {
-          const preset = await presets.mount(agentCtx, presetId);
-          const joined = preset?.id;
-          notes.push(`preset=mounted(${joined ?? presetId})`);
-        }
-      } catch (e) {
-        notes.push(`preset=threw(${String(e).slice(0, 200)})`);
-      }
-      const tools = agentCtx.get("tools");
-      if (typeof tools?.restrict !== "function") {
-        notes.push("restrict=no-api");
-      } else {
-        const allow = ["web_search"];
-        try {
-          tools.restrict({ allow });
-          notes.push(`restrict=ok allow=${allow.join("|")}`);
-        } catch (e) {
-          notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
-        }
-        try {
-          const visible = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? "?")).sort();
-          notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(",") : "(empty)"}`);
-        } catch (e) {
-          notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
-        }
-      }
-      ctx.logger.info("heartbeat: tool policy %s", notes.join(" "));
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "tool_policy", policy: notes.join(" ") });
-    };
     const unwrap = (handle) => handle.agent ?? handle;
     try {
       let agent;
@@ -2112,6 +2164,7 @@ async function agentTurn(deps, agent, prompt, label, idleWaitMs = IDLE_WAIT_TIME
     ...turnError ? { turnError } : {},
     window: shapes.slice(0, 12)
   });
+  if (turnError) markHomeRotateIfOverflow(turnError);
   return "";
 }
 async function withTimeout(p, ms, label) {
@@ -2555,6 +2608,20 @@ async function beat(deps) {
         }
       };
     }
+    if (agent && homeRotatePending === null && shouldRotateHome({ eventCount: sessionEventCount(agent.session) })) {
+      homeRotatePending = `size threshold (${sessionEventCount(agent.session)} events \u2265 ${HOME_ROTATE_EVENT_COUNT})`;
+    }
+    if (agent && homeRotatePending !== null) {
+      try {
+        await rotateHome(deps, homeRotatePending);
+        homeRotatePending = null;
+      } catch (e) {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "home_rotate_failed", error: String(e).slice(0, 160) });
+      }
+      writeBeatStatus(deps, { beatStart, wandered: false });
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "home rotated, next beat starts fresh" });
+      return;
+    }
     let wandered = false;
     if (agent) {
       deferredRetries = 0;
@@ -2586,6 +2653,7 @@ async function beat(deps) {
     writeBeatStatus(deps, { beatStart, wandered });
   } catch (e) {
     deps.ctx.logger.error("heartbeat: beat failed: %s", String(e).slice(0, 200));
+    markHomeRotateIfOverflow(e);
     try {
       appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "beat_error", error: String(e).slice(0, 200) });
       noteBeat("error", { reason: String(e).slice(0, 120) });
