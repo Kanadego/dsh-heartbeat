@@ -116,6 +116,29 @@ export function sessionEventCount(session: HostSession | undefined): number {
   return sessionEvents(session).length;
 }
 
+// ── home-session rotation (2026-09-30 context-overflow death spiral) ─────
+// The home session grows unboundedly (every beat appends time injections,
+// observation summaries and consolidation prompts that carry the whole
+// profile). Past the model's window, EVERY turn fails
+// (CONTEXT_WINDOW_EXCEEDED) and the host's auto-compaction cannot save it —
+// the summarization request itself no longer fits. The engine room goes
+// permanently mute while observations keep piling up. Rotation: abandon the
+// fat home, create a fresh one. Nothing in-session needs carrying — profile,
+// ledger and seeds all live in data/ files.
+
+/** Proactive threshold: rotate the home once its event count reaches this. */
+export const HOME_ROTATE_EVENT_COUNT = 3000;
+
+/** Context-overflow marker for the reactive trigger (provider wording varies). */
+export function isContextOverflowError(msg: string): boolean {
+  return /CONTEXT_WINDOW_EXCEEDED|context overflow/i.test(msg);
+}
+
+/** Proactive decision (pure): rotate once the home reaches the threshold. */
+export function shouldRotateHome(input: { eventCount: number; threshold?: number }): boolean {
+  return input.eventCount >= (input.threshold ?? HOME_ROTATE_EVENT_COUNT);
+}
+
 const TURN_TIMEOUT_MS = 180_000;
 const IDLE_WAIT_TIMEOUT_MS = 240_000;
 /**
@@ -135,6 +158,16 @@ let beating = false;
  * update aborted with "Host did not complete graceful task teardown" while a
  * beat was mid-flight). */
 let beatCancel: (() => void) | undefined;
+/** Reactive rotation request: set when an engine-room turn dies of context
+ * overflow; consumed (home rotated) at the next beat start. */
+let homeRotatePending: string | null = null;
+
+/** Mark a reactive rotation if the error is a context overflow. */
+export function markHomeRotateIfOverflow(error: unknown): void {
+  if (homeRotatePending === null && isContextOverflowError(String(error))) {
+    homeRotatePending = `context overflow: ${String(error).slice(0, 120)}`;
+  }
+}
 
 /** Latest beat outcome for the settings status card (RPC served). */
 export interface LastBeat {
@@ -213,45 +246,44 @@ function defaultAgentOptions(ctx: OrchestratorDeps['ctx']): Record<string, unkno
   return undefined;
 }
 
-async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
-  if (agentPromise) return agentPromise;
-  const { ctx, paths, guard } = deps;
-  const agentOptions = defaultAgentOptions(ctx);
-  agentPromise = (async () => {
-    const saved = readBeatState(guard, paths);
-    const savedId = saved.sessionId;
-    const setup = async (agentCtx: { get(name: string): unknown }) => {
-      // ── Composition FIRST (root cause of the 2026-09-10 empty wander) ────
-      // `agents.create` / `agents.resume` publish a BARE agent: it joins no
-      // preset, so its tools, prompt sections and skill catalog resolve
-      // against the EMPTY global layer. `web_search` is not registered
-      // globally — it comes from the deployment's preset rows — so the
-      // heartbeat agent could not search at all, and `tools.restrict()` could
-      // not name it either ("names unknown global tool"), because only
-      // INHERITED tools are restrictable (dsh-tools `view()` adds agent-local
-      // registrations to `knownNames` but not to `restrictableNames`).
-      // dsh-agent-presets states the consequence verbatim: "agent was
-      // published without joining an agent preset; its tools, prompt sections,
-      // and skill catalog resolve against the empty global layer".
-      // Mounting here parents the agent's scope under the preset's standing
-      // subtree; the setup hook is awaited by the factory, and a rejection
-      // rolls the creation back.
-      const notes: string[] = [];
-      const presetId = deps.agentPreset ?? 'heartbeat';
-      try {
-        const presets = agentCtx.get('agentPresets') as
-          | { mount?(ctx: unknown, id?: string): Promise<unknown> }
-          | undefined;
-        if (typeof presets?.mount !== 'function') {
-          notes.push('preset=no-api');
-        } else {
-          const preset = await presets.mount(agentCtx, presetId);
-          const joined = (preset as { id?: string } | undefined)?.id;
-          notes.push(`preset=mounted(${joined ?? presetId})`);
-        }
-      } catch (e) {
-        notes.push(`preset=threw(${String(e).slice(0, 200)})`);
+/** Setup hook shared by initial acquisition and home rotation: mounts the
+ * heartbeat preset and pins the tool allow-list on every freshly created
+ * engine-room agent. Extracted from ensureAgent so rotateHome provisions
+ * identically-configured homes (2026-09-30). */
+function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): unknown }) => Promise<void> {
+  const { ctx, paths } = deps;
+  return async (agentCtx: { get(name: string): unknown }) => {
+    // ── Composition FIRST (root cause of the 2026-09-10 empty wander) ────
+    // `agents.create` / `agents.resume` publish a BARE agent: it joins no
+    // preset, so its tools, prompt sections and skill catalog resolve
+    // against the EMPTY global layer. `web_search` is not registered
+    // globally — it comes from the deployment's preset rows — so the
+    // heartbeat agent could not search at all, and `tools.restrict()` could
+    // not name it either ("names unknown global tool"), because only
+    // INHERITED tools are restrictable (dsh-tools `view()` adds agent-local
+    // registrations to `knownNames` but not to `restrictableNames`).
+    // dsh-agent-presets states the consequence verbatim: "agent was
+    // published without joining an agent preset; its tools, prompt sections,
+    // and skill catalog resolve against the empty global layer".
+    // Mounting here parents the agent's scope under the preset's standing
+    // subtree; the setup hook is awaited by the factory, and a rejection
+    // rolls the creation back.
+    const notes: string[] = [];
+    const presetId = deps.agentPreset ?? 'heartbeat';
+    try {
+      const presets = agentCtx.get('agentPresets') as
+        | { mount?(ctx: unknown, id?: string): Promise<unknown> }
+        | undefined;
+      if (typeof presets?.mount !== 'function') {
+        notes.push('preset=no-api');
+      } else {
+        const preset = await presets.mount(agentCtx, presetId);
+        const joined = (preset as { id?: string } | undefined)?.id;
+        notes.push(`preset=mounted(${joined ?? presetId})`);
       }
+    } catch (e) {
+      notes.push(`preset=threw(${String(e).slice(0, 200)})`);
+    }
       // ── Runtime belt-and-braces (requirement 8, model side) ──────────────
       // The preset is structural; this is the explicit allow-list. bash / fs /
       // edit / subagent rows are absent from the preset already, so a failure
@@ -288,7 +320,53 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
       }
       ctx.logger.info('heartbeat: tool policy %s', notes.join(' '));
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'tool_policy', policy: notes.join(' ') });
-    };
+  };
+}
+
+/** Rotate the engine-room home: provision a fresh session with the standard
+ * setup, persist it as the saved home, and drop the cached agent so the next
+ * acquisition picks the new home up. The fat home is simply abandoned — its
+ * file stays on disk as an ordinary conversation; nothing in-session needs
+ * carrying (profile / ledger / seeds live in data/ files). */
+async function rotateHome(deps: OrchestratorDeps, reason: string): Promise<void> {
+  const { ctx, guard, paths } = deps;
+  const old = readBeatState(guard, paths).sessionId;
+  const freshId = `session-${randomUUID()}`;
+  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+    event: 'home_rotate_start', from: old, to: freshId, reason,
+  });
+  const handle = await withTimeout(
+    Promise.resolve(ctx.agents.create({
+      sessionId: freshId,
+      meta: { cwd: paths.dataDir },
+      ...(defaultAgentOptions(ctx) ? { agentOptions: defaultAgentOptions(ctx) } : {}),
+      setup: makeHomeSetup(deps),
+    })),
+    30_000,
+    'home rotate create timeout (30s)',
+  );
+  const agent = unwrapHomeHandle(handle);
+  const realId = agent.session?.id ?? freshId;
+  writeBeatState(guard, paths, { sessionId: realId });
+  agentPromise = null; // next ensureAgent run acquires the new home
+  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+    event: 'home_rotate_done', from: old, to: realId, reason,
+  });
+  ctx.logger.info('heartbeat: home rotated %s -> %s (%s)', old ?? '(none)', realId, reason);
+}
+
+function unwrapHomeHandle(handle: unknown): HostAgent {
+  return (handle as { agent?: HostAgent }).agent ?? (handle as HostAgent);
+}
+
+async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
+  if (agentPromise) return agentPromise;
+  const { ctx, paths, guard } = deps;
+  const agentOptions = defaultAgentOptions(ctx);
+  const setup = makeHomeSetup(deps);
+  agentPromise = (async () => {
+    const saved = readBeatState(guard, paths);
+    const savedId = saved.sessionId;
     // Handles wrap the bare agent: {agent, dispose} (r2 §14 verified shape).
     const unwrap = (handle: unknown): HostAgent => (handle as { agent?: HostAgent }).agent ?? (handle as HostAgent);
     try {
@@ -468,6 +546,10 @@ async function agentTurn(
   appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
     event: 'turn_extraction_empty', label, ...(turnError ? { turnError } : {}), window: shapes.slice(0, 12),
   });
+  // Reactive home-rotation trigger: a turn that died of context overflow means
+  // the home can no longer fit its own history — compaction cannot save it
+  // (the summarization request overflows too). Rotate at the next beat.
+  if (turnError) markHomeRotateIfOverflow(turnError);
   return '';
 }
 
@@ -1041,6 +1123,25 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
         } catch { /* best effort — same semantics as the orphan-turn cancel */ }
       };
     }
+    // Home rotation: reactive flag (context overflow marked by agentTurn) takes
+    // precedence; the proactive size threshold runs only when no flag is set.
+    // Rotation sits the beat out — the next beat runs on the fresh home.
+    if (agent && homeRotatePending === null && shouldRotateHome({ eventCount: sessionEventCount(agent.session) })) {
+      homeRotatePending = `size threshold (${sessionEventCount(agent.session)} events ≥ ${HOME_ROTATE_EVENT_COUNT})`;
+    }
+    if (agent && homeRotatePending !== null) {
+      try {
+        await rotateHome(deps, homeRotatePending);
+        homeRotatePending = null;
+      } catch (e) {
+        // Keep the flag: retry next beat. A beat on the fat home would only
+        // re-fail with overflow anyway.
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'home_rotate_failed', error: String(e).slice(0, 160) });
+      }
+      writeBeatStatus(deps, { beatStart, wandered: false });
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'home rotated, next beat starts fresh' });
+      return;
+    }
     let wandered = false;
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
@@ -1078,6 +1179,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     writeBeatStatus(deps, { beatStart, wandered });
   } catch (e) {
     deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
+    markHomeRotateIfOverflow(e);
     try {
       appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'beat_error', error: String(e).slice(0, 200) });
     noteBeat('error', { reason: String(e).slice(0, 120) });
