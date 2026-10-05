@@ -190,6 +190,7 @@ function decryptFile(guard, inFile, outFile) {
 
 export {
   initWorkspace,
+  isEncrypted,
   loadJson,
   saveJson,
   readText,
@@ -199,4 +200,4 @@ export {
   encryptFile,
   decryptFile
 };
-//# sourceMappingURL=chunk-LLD7LUNN.js.map
+//# sourceMappingURL=chunk-IFTFDHZX.js.map
