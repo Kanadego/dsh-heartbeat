@@ -1,9 +1,8 @@
 import {
   adviseRefillWander,
   adviseWander,
-  appendAuditLine,
-  applyOpsToDoc,
-  atomicWriteJsonSync,
+  appendEntry,
+  buildWeeklyPrompt,
   completeWander,
   createPathGuard,
   deepMerge,
@@ -11,19 +10,21 @@ import {
   ensureRegistered,
   installBundledPreset,
   ledgerFilePath,
+  listWeeklyReports,
   loadPolicy,
-  loadProfile,
-  loadProfileSchema,
+  markDone,
   pendingOlderThan,
-  persistWithJournal,
-  profileFilePath,
-  pruneAuditFile,
-  runDeterministicAging,
+  readLedger,
+  readWeeklyReport,
+  renderTemplateReport,
+  saveWeeklyReport,
   scanPending,
   sendNewMessageHint,
+  sendWeeklyReadyHint,
   updateUserPolicy,
-  userPresetRoot
-} from "./chunk-ON4MSU6E.js";
+  userPresetRoot,
+  weeklyDue
+} from "./chunk-SQJLKP7L.js";
 import {
   getRuntime,
   setRuntime
@@ -39,14 +40,35 @@ import {
   restoreSeed,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-SVP2NDRF.js";
+} from "./chunk-MXJPX3FM.js";
 import {
   dedupeItems,
   inboxClear,
   inboxCount,
   inboxDrain,
   inboxFilePath
-} from "./chunk-4UE74TUB.js";
+} from "./chunk-63FUJLIF.js";
+import {
+  snapshotIfDue
+} from "./chunk-RB3NLLGF.js";
+import {
+  appendAuditLine,
+  applyOpsToDoc,
+  atomicWriteJsonSync,
+  journalFilePath,
+  loadProfile,
+  loadProfileSchema,
+  persistWithJournal,
+  profileFilePath,
+  pruneAuditFile,
+  readAuditLines,
+  runDeterministicAging
+} from "./chunk-VIZNIQLK.js";
+import {
+  addBinding,
+  loadBindings,
+  removeBinding
+} from "./chunk-J6ZTRFFW.js";
 import {
   decryptFile,
   encryptFile,
@@ -57,12 +79,7 @@ import {
   saveEncryptedText,
   saveJson,
   writeText
-} from "./chunk-LLD7LUNN.js";
-import {
-  addBinding,
-  loadBindings,
-  removeBinding
-} from "./chunk-J6ZTRFFW.js";
+} from "./chunk-IFTFDHZX.js";
 
 // node_modules/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
@@ -975,7 +992,7 @@ function saveUiConfig(guard, settingsDir, patch) {
 
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import fs9 from "fs";
+import fs10 from "fs";
 import path9 from "path";
 
 // src/env/envpulse.ts
@@ -1179,10 +1196,10 @@ function collectScreen(guard, paths, now = Date.now()) {
       } catch {
       }
     }
-    const { shot_path: _drop, ...clean } = meta;
+    const { shot_path: _drop, ...clean2 } = meta;
     void _drop;
     encJson = path4.join(paths.tmpDir, `screen.enc.${now}.json`);
-    fs4.writeFileSync(encJson, JSON.stringify(clean, null, 1), "utf8");
+    fs4.writeFileSync(encJson, JSON.stringify(clean2, null, 1), "utf8");
     encryptFile(guard, encJson, screenJsonPath(paths));
     return {
       ok: true,
@@ -1733,7 +1750,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
     const report = applyOpsToDoc(guard, paths.dataDir, doc, profileOpsCast, schema, policy, now);
     const aged = runDeterministicAging(doc, policy, now);
     persistWithJournal(guard, paths.dataDir, doc, { runId, applied: report.applied, rejected: report.rejected });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-YAIBE2L5.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-JQC5JWIZ.js");
     let chatSeedsAdded = 0;
     for (const cs of chatSeeds) {
       try {
@@ -1863,6 +1880,125 @@ function recordPresence(paths, env, now = Date.now()) {
   if (state.days.length > 30) state.days.shift();
   saveRhythm(paths, state);
 }
+function summarizeRhythm(paths) {
+  const state = loadRhythm(paths);
+  const score = [];
+  for (const wd of Object.keys(state.histogram)) {
+    for (const h of Object.keys(state.histogram[wd])) {
+      const cell = state.histogram[wd][h];
+      score.push({ key: `${h}\u65F6(\u5468${"\u65E5\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D"[Number(wd)]})`, active: cell.active });
+    }
+  }
+  score.sort((a, b) => b.active - a.active);
+  return {
+    daysSampled: state.days.length,
+    peakHours: score.filter((s) => s.active > 0).slice(0, 6).map((s) => s.key)
+  };
+}
+
+// src/weekly/collect.ts
+import fs9 from "fs";
+var DAY_MS2 = 864e5;
+var WINDOW_DAYS = 7;
+function inWindow(ts, start, end) {
+  const t = Date.parse(ts);
+  return Number.isFinite(t) && t >= start && t <= end;
+}
+function trim(text, max) {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 1) + "\u2026" : t;
+}
+function collectWeeklyFacts(guard, paths, policy, now = Date.now()) {
+  const start = now - WINDOW_DAYS * DAY_MS2;
+  const end = now;
+  let spoken = 0;
+  let silent = 0;
+  let observedItems = 0;
+  const reasons = /* @__PURE__ */ new Map();
+  try {
+    for (const e of readAuditLines(paths.logsDir + "/heartbeat.jsonl")) {
+      const ts = e.ts ?? "";
+      if (!inWindow(ts, start, end)) continue;
+      const ev = e.event;
+      if (ev === "spoke") spoken += 1;
+      else if (ev === "silent") {
+        silent += 1;
+        const reason = String(e.reason ?? "unknown").slice(0, 60);
+        reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+      } else if (ev === "observed") {
+        observedItems += Number(e.added ?? 0);
+      }
+    }
+  } catch {
+  }
+  const profileAdds = [];
+  try {
+    const raw = fs9.readFileSync(journalFilePath(paths.dataDir), "utf8");
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line);
+        if (!inWindow(rec.ts ?? "", start, end)) continue;
+        for (const op of rec.applied ?? []) {
+          if (op.op !== "ADD" || !op.content) continue;
+          profileAdds.push({
+            partition: String(op.partition ?? "?"),
+            topic: String(op.subTopic ? `${op.topic}/${op.subTopic}` : op.topic ?? "?"),
+            content: trim(op.content, 60)
+          });
+        }
+      } catch {
+      }
+    }
+  } catch {
+  }
+  const ledger = { added: [], done: [], stale: [] };
+  try {
+    const { entries } = readLedger(guard, ledgerFilePath(paths.dataDir));
+    for (const e of entries) {
+      const t = Date.parse(`${e.date}T${e.time}:00`);
+      if (Number.isFinite(t) && t >= start && t <= end) {
+        (e.status === "done" ? ledger.done : ledger.added).push(trim(e.text, 40));
+      }
+    }
+    const staleCutoffDays = 12;
+    for (const e of pendingOlderThan(guard, ledgerFilePath(paths.dataDir), staleCutoffDays, now)) {
+      const days = Math.max(1, Math.round((now - Date.parse(`${e.date}T${e.time}:00`)) / DAY_MS2));
+      ledger.stale.push({ text: trim(e.text, 40), days });
+    }
+  } catch {
+  }
+  const seeds = { added: [], consumed: [], waiting: [], poolActive: 0 };
+  try {
+    const db = loadPool(guard, seedsFilePath(paths.dataDir));
+    seeds.poolActive = activeSeeds(db).length;
+    for (const s of db.seeds) {
+      if (inWindow(s.bornAt, start, end)) seeds.added.push(trim(s.text, 40));
+      if (s.status === "archived" && s.retireReason === "consumed" && s.retiredAt && inWindow(s.retiredAt, start, end)) {
+        seeds.consumed.push(trim(s.text, 40));
+      }
+    }
+    seeds.waiting = activeSeeds(db).filter((s) => s.used === 0 && s.category === "topic").sort((a, b) => a.bornAt < b.bornAt ? 1 : -1).slice(0, 5).map((s) => trim(s.text, 40));
+  } catch {
+  }
+  let peakHours = [];
+  try {
+    peakHours = summarizeRhythm(paths).peakHours;
+  } catch {
+  }
+  return {
+    windowStart: new Date(start).toISOString(),
+    windowEnd: new Date(end).toISOString(),
+    spoken,
+    silent,
+    silentTopReasons: [...reasons.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count).slice(0, 3),
+    observedItems,
+    profileAdds,
+    ledger,
+    seeds,
+    peakHours
+  };
+}
 
 // src/core/orchestrator.ts
 var reschedule = null;
@@ -1951,6 +2087,15 @@ function defaultAgentOptions(ctx) {
   }
   return void 0;
 }
+var ENGINE_ROOM_EXTRA_TOOLS = ["compress", "decompress", "acp_status"];
+function buildEngineRoomAllowList(globalNames, configExtras = []) {
+  const global = new Set(globalNames);
+  const allow = ["web_search"];
+  for (const name2 of [...ENGINE_ROOM_EXTRA_TOOLS, ...configExtras.map((t) => t.trim()).filter(Boolean)]) {
+    if (global.has(name2) && !allow.includes(name2)) allow.push(name2);
+  }
+  return allow;
+}
 function makeHomeSetup(deps) {
   const { ctx, paths } = deps;
   return async (agentCtx) => {
@@ -1972,7 +2117,12 @@ function makeHomeSetup(deps) {
     if (typeof tools?.restrict !== "function") {
       notes.push("restrict=no-api");
     } else {
-      const allow = ["web_search"];
+      let globalNames = [];
+      try {
+        globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ""));
+      } catch {
+      }
+      const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
       try {
         tools.restrict({ allow });
         notes.push(`restrict=ok allow=${allow.join("|")}`);
@@ -1980,7 +2130,7 @@ function makeHomeSetup(deps) {
         notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
       }
       try {
-        const visible = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? "?")).sort();
+        const visible = globalNames.sort();
         notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(",") : "(empty)"}`);
       } catch (e) {
         notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
@@ -2021,6 +2171,36 @@ async function rotateHome(deps, reason) {
     reason
   });
   ctx.logger.info("heartbeat: home rotated %s -> %s (%s)", old ?? "(none)", realId, reason);
+  if (shouldArchiveRotatedHome({ old, realId, enabled: deps.policy.heartbeat.archiveRotatedHome !== false })) {
+    archiveSessionBestEffort(deps, old, reason);
+  }
+}
+function shouldArchiveRotatedHome(input) {
+  return Boolean(input.old) && input.old !== input.realId && input.enabled;
+}
+function archiveSessionBestEffort(deps, sessionId, why) {
+  const audit = (entry) => {
+    try {
+      appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", entry);
+    } catch {
+    }
+  };
+  try {
+    const injectable = deps.ctx;
+    injectable.inject(["workspaceRegistry"], (scoped) => {
+      const registry = scoped.workspaceRegistry;
+      if (!registry || typeof registry.archiveSession !== "function") {
+        audit({ event: "home_rotate_archive", ok: false, sessionId, why, error: "workspaceRegistry unavailable" });
+        return;
+      }
+      void Promise.resolve(registry.archiveSession(sessionId, { stopActivity: true })).then(
+        () => audit({ event: "home_rotate_archive", ok: true, sessionId, why }),
+        (e) => audit({ event: "home_rotate_archive", ok: false, sessionId, why, error: String(e).slice(0, 160) })
+      );
+    });
+  } catch (e) {
+    audit({ event: "home_rotate_archive", ok: false, sessionId, why, error: String(e).slice(0, 160) });
+  }
 }
 function unwrapHomeHandle(handle) {
   return handle.agent ?? handle;
@@ -2196,6 +2376,7 @@ async function maintenancePhase(bc) {
   gcPool(guard, seedsFilePath(paths.dataDir), policy, now);
   pruneAuditFile(paths.logsDir + "/envpulse.jsonl", policy.retention.envPulseHours * 36e5, now);
   pruneAuditFile(paths.logsDir + "/heartbeat.jsonl", policy.retention.decisionLogDays * 864e5, now);
+  snapshotIfDue(guard, paths.dataDir, paths.logsDir + "/heartbeat.jsonl", "maintenance-threshold", now);
   const cons = shouldConsolidate(guard, paths, policy, now);
   if (cons.due) {
     const llm = async (prompt) => {
@@ -2227,14 +2408,14 @@ async function observeBoundSessions(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const { loadBindings: loadBindings2, observeTargets } = await import("./bindings-XPPSKILN.js");
-  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-MMLHISQV.js");
+  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-57NHQHY3.js");
   const data = loadBindings2(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
   const cursorFile = path9.join(paths.dataDir, "cursors.json");
   let cursors = {};
   try {
-    cursors = JSON.parse(fs9.readFileSync(cursorFile, "utf8"));
+    cursors = JSON.parse(fs10.readFileSync(cursorFile, "utf8"));
   } catch {
   }
   const inboxFile = inboxFilePath2(paths.dataDir);
@@ -2246,7 +2427,8 @@ async function observeBoundSessions(bc) {
       const cursor = cursors[b.sessionId] ?? 0;
       let last = cursor;
       let added = 0;
-      for (let i = cursor; i < events.length && added < 10; i++) {
+      const { maxChars, perBeat } = deps.policy.observe;
+      for (let i = cursor; i < events.length && added < perBeat; i++) {
         const e = events[i];
         if (e.type !== "user/message") continue;
         const d = e.data;
@@ -2257,7 +2439,7 @@ async function observeBoundSessions(bc) {
           kind: "chat",
           at: new Date(now).toISOString(),
           ref: `cursors.json#${b.sessionId}:${i}`,
-          note: text.split(/[。！？\n]/)[0].slice(0, 80)
+          note: text.split(/[。！？\n]/)[0].slice(0, maxChars)
         });
         added += 1;
         last = i + 1;
@@ -2270,6 +2452,50 @@ async function observeBoundSessions(bc) {
     } catch (e) {
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "observe_error", sessionId: b.sessionId, error: String(e).slice(0, 120) });
     }
+  }
+}
+async function weeklyPhase(bc) {
+  const { deps, agent, now } = bc;
+  const { guard, paths, policy } = deps;
+  if (policy.weekly.enabled === false) return;
+  if (!weeklyDue(guard, paths.dataDir, now)) return;
+  const audit = (entry) => {
+    try {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", entry);
+    } catch {
+    }
+  };
+  if (!agent) {
+    audit({ event: "weekly_skipped", reason: "agentless beat" });
+    return;
+  }
+  try {
+    const facts = collectWeeklyFacts(guard, paths, policy, now);
+    let text = "";
+    let source = "template";
+    try {
+      text = (await agentTurn(deps, agent, buildWeeklyPrompt(facts), "weekly", IDLE_WAIT_TIMEOUT_MS)).trim();
+      if (text) source = "llm";
+    } catch (e) {
+      audit({ event: "weekly_llm_failed", error: String(e).slice(0, 160) });
+    }
+    if (!text) text = renderTemplateReport(facts);
+    saveWeeklyReport(guard, paths.dataDir, {
+      start: facts.windowStart,
+      end: facts.windowEnd,
+      generatedAt: new Date(now).toISOString(),
+      source,
+      text
+    });
+    audit({ event: "weekly_generated", source, chars: text.length });
+    if (!inQuietHours(policy, now)) {
+      try {
+        sendWeeklyReadyHint(paths);
+      } catch {
+      }
+    }
+  } catch (e) {
+    audit({ event: "weekly_failed", error: String(e).slice(0, 160) });
   }
 }
 function ctx_getAgent(deps, sessionId) {
@@ -2632,6 +2858,7 @@ async function beat(deps) {
       } else {
         await maintenancePhase(bc);
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
+        await weeklyPhase(bc);
         await collectPhase(bc);
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "collect" });
         wandered = await wanderPhase(bc);
@@ -2711,12 +2938,12 @@ function startOrchestrator(deps) {
 
 // src/rpc.ts
 import { spawn as spawn2 } from "child_process";
-import fs12 from "fs";
+import fs13 from "fs";
 import os from "os";
 import path12 from "path";
 
 // src/browse/interests-edit.ts
-import fs10 from "fs";
+import fs11 from "fs";
 import path10 from "path";
 var MAX_INTERESTS = 32;
 var MAX_INTEREST_LEN = 60;
@@ -2730,7 +2957,7 @@ function factoryInterestsPath(paths) {
 }
 function readDoc(file) {
   try {
-    const raw = JSON.parse(fs10.readFileSync(file, "utf8"));
+    const raw = JSON.parse(fs11.readFileSync(file, "utf8"));
     if (!Array.isArray(raw.interests)) return null;
     return { ...raw, interests: raw.interests.map(String) };
   } catch {
@@ -2748,8 +2975,8 @@ function ensureUserLayer(guard, paths) {
   return doc;
 }
 function saveDoc(guard, file, doc) {
-  fs10.mkdirSync(path10.dirname(file), { recursive: true });
-  fs10.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
+  fs11.mkdirSync(path10.dirname(file), { recursive: true });
+  fs11.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
 }
 function normalizeInterest(text) {
   return text.trim().replace(/\s+/g, " ");
@@ -2815,7 +3042,7 @@ function setWanderWindows(guard, paths, rawWindows) {
 }
 
 // src/statusbar/time-inject.ts
-import fs11 from "fs";
+import fs12 from "fs";
 import path11 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
@@ -2882,7 +3109,7 @@ function timeInjectStatePath(dataDir) {
 }
 function loadTimeInjectState(guard, dataDir) {
   try {
-    const parsed = JSON.parse(fs11.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
+    const parsed = JSON.parse(fs12.readFileSync(guard.assert(timeInjectStatePath(dataDir)), "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -2947,7 +3174,7 @@ var cachedVersion = null;
 function pluginVersion(paths) {
   if (cachedVersion) return cachedVersion;
   try {
-    const pkg = JSON.parse(fs12.readFileSync(path12.join(paths.packageRoot, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs13.readFileSync(path12.join(paths.packageRoot, "package.json"), "utf8"));
     cachedVersion = typeof pkg.version === "string" ? pkg.version : "unknown";
   } catch {
     cachedVersion = "unknown";
@@ -2979,12 +3206,12 @@ function loadSessionTitles() {
   };
   try {
     const dir = path12.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
-    for (const file of fs12.readdirSync(dir)) {
+    for (const file of fs13.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
       if (!id.startsWith("session-")) continue;
       try {
-        const record = JSON.parse(fs12.readFileSync(path12.join(dir, file), "utf8"));
+        const record = JSON.parse(fs13.readFileSync(path12.join(dir, file), "utf8"));
         take(id, record.record);
       } catch {
       }
@@ -2992,7 +3219,7 @@ function loadSessionTitles() {
   } catch {
   }
   try {
-    const raw = JSON.parse(fs12.readFileSync(path12.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const raw = JSON.parse(fs13.readFileSync(path12.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       for (const [key, value] of Object.entries(node)) {
@@ -3011,7 +3238,7 @@ function loadSessionTitles() {
 function loadVisibleSessionIds(registryFile) {
   try {
     const file = registryFile ?? path12.join(os.homedir(), ".dsh", "storages", "workspace.json");
-    const j = JSON.parse(fs12.readFileSync(file, "utf8"));
+    const j = JSON.parse(fs13.readFileSync(file, "utf8"));
     const archived = new Set(
       (Array.isArray(j.global?.archivedSessionIds) ? j.global.archivedSessionIds : []).map((s) => String(s))
     );
@@ -3088,9 +3315,9 @@ function installHeartbeatRpc(ctx, deps) {
             const titles = loadSessionTitles();
             const { visible, registryFound } = loadVisibleSessionIds();
             const out = [];
-            if (fs12.existsSync(root)) {
-              for (const slug of fs12.readdirSync(root)) {
-                for (const id of fs12.readdirSync(path12.join(root, slug))) {
+            if (fs13.existsSync(root)) {
+              for (const slug of fs13.readdirSync(root)) {
+                for (const id of fs13.readdirSync(path12.join(root, slug))) {
                   if (registryFound && id !== home && !visible.has(id)) continue;
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
@@ -3126,7 +3353,7 @@ function installHeartbeatRpc(ctx, deps) {
             let homeReset = false;
             if (id === homeSessionId(paths, guard)) {
               try {
-                fs12.rmSync(guard.assert(path12.join(paths.dataDir, "gate.json")), { force: true });
+                fs13.rmSync(guard.assert(path12.join(paths.dataDir, "gate.json")), { force: true });
                 homeReset = true;
               } catch {
               }
@@ -3214,9 +3441,54 @@ function installHeartbeatRpc(ctx, deps) {
           }
           case "ledger.open": {
             const f = ledgerFilePath(paths.dataDir);
-            if (!fs12.existsSync(guard.assert(f))) fs12.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+            if (!fs13.existsSync(guard.assert(f))) fs13.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
             spawn2("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
             return ok({ path: f });
+          }
+          case "weekly.list":
+            return ok({ reports: listWeeklyReports(guard, paths.dataDir) });
+          case "weekly.get": {
+            const file = String(p.file ?? "");
+            const rep = readWeeklyReport(guard, paths.dataDir, file);
+            if (!rep) return err("bad-request", `no such report: ${file}`);
+            return ok(rep);
+          }
+          case "migrate.export": {
+            const passphrase = String(p.passphrase ?? "");
+            if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
+            const { collectMigrationEntries, encryptContainer } = await import("./migrate-43PUK25G.js");
+            const { entries } = collectMigrationEntries(guard, paths);
+            if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
+            const out = path12.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+            writeText(guard, out, encryptContainer(entries, passphrase));
+            appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), { event: "migrate_export", files: entries.length });
+            return ok({ path: out, count: entries.length });
+          }
+          case "migrate.import": {
+            const passphrase = String(p.passphrase ?? "");
+            const file = String(p.file ?? "");
+            if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
+            const { decryptContainer, applyMigrationEntries } = await import("./migrate-43PUK25G.js");
+            let text;
+            try {
+              text = fs13.readFileSync(file, "utf8");
+            } catch {
+              return err("bad-request", `\u8BFB\u4E0D\u5230\u8FC1\u79FB\u5305\uFF1A${file}`);
+            }
+            let container;
+            try {
+              container = decryptContainer(text, passphrase);
+            } catch (e) {
+              return err("bad-request", String(e instanceof Error ? e.message : e));
+            }
+            const result = applyMigrationEntries(guard, paths, container.files);
+            appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), {
+              event: "migrate_import",
+              restored: result.restored.length,
+              backedUp: result.backedUp.length,
+              skipped: result.skipped.length
+            });
+            return ok(result);
           }
           default:
             return err("bad-request", `unknown endpoint ${JSON.stringify(endpoint)}`);
@@ -3348,6 +3620,73 @@ function registerStatusbarSection(ctx, guard, paths, opts) {
   });
 }
 
+// src/ledger/tool.ts
+var MAX_TEXT = 120;
+function clean(v) {
+  return String(v ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
+}
+function fmtEntry2(e) {
+  return `#${e.id} [${e.status}] ${e.date} ${e.text}`;
+}
+function buildLedgerTool(guard, file) {
+  return {
+    name: "ledger",
+    description: '\u5171\u4EAB\u8D26\u672C\u5DE5\u5177\uFF08\u5FC3\u8DF3\u63D2\u4EF6\u7684\u5F85\u529E\u4E0E\u4E8B\u9879\u8BB0\u5F55\uFF09\u3002\u5F53\u7528\u6237\u63D0\u5230\u8BA1\u5212\u3001\u5F85\u529E\u3001\u627F\u8BFA\u3001\u60F3\u505A\u7684\u4E8B\uFF0C\u6216\u8005\u67D0\u4EF6\u4E8B\u5DF2\u7ECF\u5B8C\u6210\u65F6\uFF0C\u4E3B\u52A8\u8C03\u7528\u672C\u5DE5\u5177\u767B\u8BB0\u6216\u52FE\u6389\u2014\u2014\u4E0D\u9700\u8981\u7B49\u7528\u6237\u660E\u786E\u8BF4"\u8BB0\u4E00\u4E0B"\u3002action=add \u767B\u8BB0\u65B0\u4E8B\u9879\uFF08text \u5FC5\u586B\uFF09\uFF1Baction=list \u67E5\u770B\u5F53\u524D\u672A\u5B8C\u6210\u4E8B\u9879\uFF1Baction=done \u52FE\u6389\u4E00\u6761\uFF08key \u4E3A #id \u6216\u6587\u672C\u5B50\u4E32\uFF09\u3002',
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "list", "done"], description: "add=\u767B\u8BB0\uFF0Clist=\u67E5\u672A\u5B8C\u6210\uFF0Cdone=\u52FE\u6389" },
+        text: { type: "string", description: "action=add \u65F6\u5FC5\u586B\uFF1A\u4E8B\u9879\u5185\u5BB9\uFF08\u4E00\u53E5\u8BDD\uFF09" },
+        key: { type: "string", description: "action=done \u65F6\u5FC5\u586B\uFF1A#id \u6216\u4E8B\u9879\u6587\u672C\u7684\u552F\u4E00\u5B50\u4E32" }
+      },
+      required: ["action"],
+      additionalProperties: false
+    },
+    output: {
+      schema: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          message: { type: "string" }
+        },
+        required: ["ok", "message"],
+        additionalProperties: false
+      },
+      render: (_args, value) => {
+        const v = value;
+        return [{ type: "text", text: String(v.message ?? "") }];
+      }
+    },
+    timeoutMs: 5e3,
+    // Ledger writes go through read-modify-write on one file; never parallel.
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const a = args ?? {};
+      const action = String(a.action ?? "");
+      if (action === "add") {
+        const text = clean(a.text);
+        if (!text) return { ok: false, message: "add \u9700\u8981\u975E\u7A7A text" };
+        const e = appendEntry(guard, file, text);
+        return { ok: true, message: `\u5DF2\u767B\u8BB0 ${fmtEntry2(e)}` };
+      }
+      if (action === "done") {
+        const key = clean(a.key);
+        if (!key) return { ok: false, message: "done \u9700\u8981 key\uFF08#id \u6216\u6587\u672C\u5B50\u4E32\uFF09" };
+        const e = markDone(guard, file, key);
+        if (!e) return { ok: false, message: `\u6CA1\u6709\u627E\u5230\u5339\u914D\u300C${key}\u300D\u7684\u672A\u5B8C\u6210\u4E8B\u9879\uFF08\u5148\u7528 list \u67E5\uFF09` };
+        return { ok: true, message: `\u5DF2\u5B8C\u6210 ${fmtEntry2(e)}` };
+      }
+      if (action === "list") {
+        const items = scanPending(guard, file).map(fmtEntry2);
+        return { ok: true, message: items.length > 0 ? `\u5F53\u524D\u672A\u5B8C\u6210 ${items.length} \u9879\uFF1A
+${items.join("\n")}` : "\u8D26\u672C\u91CC\u6CA1\u6709\u672A\u5B8C\u6210\u4E8B\u9879" };
+      }
+      const total = readLedger(guard, file).entries.length;
+      return { ok: false, message: `\u672A\u77E5 action\uFF0C\u8D26\u672C\u5171 ${total} \u6761` };
+    }
+  };
+}
+
 // src/index.ts
 var name = "heartbeat";
 var inject = ["agents", "settings"];
@@ -3379,7 +3718,11 @@ var Config = Schema.object({
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
   idleMode: Schema.boolean().default(false),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
-  tokenSaver: Schema.boolean().default(false)
+  tokenSaver: Schema.boolean().default(false),
+  /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
+  ledgerTool: Schema.boolean().default(true),
+  /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
+  extraTools: Schema.string().default("")
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
@@ -3398,7 +3741,14 @@ function apply(ctx, config = {}) {
   if (config.maxDailySend && config.maxDailySend >= 1) {
     policy = { ...policy, gate: { ...policy.gate, maxDailySend: config.maxDailySend } };
   }
-  const deps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || "heartbeat" };
+  const deps = {
+    ctx,
+    paths,
+    guard,
+    policy,
+    agentPreset: config.agentPreset || "heartbeat",
+    extraTools: (config.extraTools ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+  };
   setRuntime({
     paths,
     guard,
@@ -3527,6 +3877,24 @@ function apply(ctx, config = {}) {
     if (typeof merged.tokenSaver === "boolean") tokenSaverRef = merged.tokenSaver;
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
+  if (config.ledgerTool !== false) {
+    ctx.inject(["tools"], (scoped) => {
+      const audit = (entry) => {
+        try {
+          appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+        } catch {
+        }
+      };
+      try {
+        const tools = scoped.tools;
+        if (!tools || typeof tools.register !== "function") throw new Error("ToolRuntime.register unavailable on this host");
+        tools.register(buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
+        audit({ event: "ledger_tool_registered" });
+      } catch (e) {
+        audit({ event: "ledger_tool_register_failed", error: String(e).slice(0, 160) });
+      }
+    });
+  }
   startOrchestrator(deps);
   const statusReader = new StatusReader();
   registerStatusbarSection(ctx, guard, paths, {

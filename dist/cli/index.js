@@ -1,7 +1,6 @@
 import {
   BUNDLED_PRESET_ID,
   adviseWander,
-  appendAuditLine,
   appendEntry,
   browseStatus,
   checkWatchlist,
@@ -12,21 +11,18 @@ import {
   ensureRegistered,
   installBundledPreset,
   ledgerFilePath,
+  listWeeklyReports,
   loadInterests,
   loadPolicy,
-  loadProfile,
   loadWatchlist,
   markDone,
   presetStatus,
-  profileFilePath,
-  pruneAuditFile,
   readLedger,
-  rebuildProfile,
+  readWeeklyReport,
   scanPending,
   sendNewMessageHint,
-  shredFileSync,
-  verifyProfile
-} from "../chunk-ON4MSU6E.js";
+  weeklyDirPath
+} from "../chunk-SQJLKP7L.js";
 import {
   activeSeeds,
   addSeed,
@@ -36,12 +32,27 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-SVP2NDRF.js";
+} from "../chunk-MXJPX3FM.js";
+import {
+  appendAuditLine,
+  loadProfile,
+  profileFilePath,
+  pruneAuditFile,
+  rebuildProfile,
+  shredFileSync,
+  verifyProfile
+} from "../chunk-VIZNIQLK.js";
+import {
+  applyMigrationEntries,
+  collectMigrationEntries,
+  decryptContainer,
+  encryptContainer
+} from "../chunk-UCJR6TC7.js";
 import {
   initWorkspace,
   loadEncryptedText,
   writeText
-} from "../chunk-LLD7LUNN.js";
+} from "../chunk-IFTFDHZX.js";
 
 // src/cli/index.ts
 import { spawn } from "child_process";
@@ -161,7 +172,12 @@ function usage() {
     "  profile export                    decrypted Markdown export to data/exports/",
     "  profile verify                    journal replay vs disk (report only)",
     "  profile rebuild [--check]         rebuild materialized view from journal",
+    "  profile snapshot [--force]        fold the journal into a snapshot + archive shard",
     "  profile wipe                      wipe profile data (asks --yes)",
+    "  weekly list                       list generated weekly reports",
+    "  weekly show [file]                print a report (default: newest)",
+    "  migrate export [file]             pack memory files into a passphrase container (passphrase: 2 stdin lines)",
+    "  migrate import <file>             restore a container into this workspace (passphrase: 1 stdin line)",
     "  burn [--yes] [--all]              shred runtime data (settings kept unless --all)",
     "  preset status                     bundled agent preset: target dir + installed?",
     "  preset install [--force]          install the bundled preset (never overwrites unless --force)"
@@ -177,6 +193,14 @@ function readStdinText() {
 function flag(argv, name) {
   const i = argv.indexOf(name);
   return i > -1 ? argv[i + 1] : void 0;
+}
+async function readLines(prompts) {
+  const readline = await import("readline/promises");
+  const it = readline.createInterface({ input: process.stdin });
+  const out = [];
+  for (const p of prompts) out.push((await it.question(p)).trim());
+  it.close();
+  return out;
 }
 async function main(argv) {
   const [cmd, sub, ...rest] = argv;
@@ -320,6 +344,31 @@ async function main(argv) {
           return 1;
       }
     }
+    case "weekly": {
+      const reports = listWeeklyReports(guard, paths.dataDir);
+      if (sub === "list" || sub === void 0) {
+        if (reports.length === 0) console.log("(no reports yet \u2014 heartbeat generates one every 7 days)");
+        for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
+        return 0;
+      }
+      if (sub === "show") {
+        const file = rest[0] ?? reports[0]?.file;
+        if (!file) {
+          console.log("(no reports yet)");
+          return 1;
+        }
+        const rep = readWeeklyReport(guard, paths.dataDir, file);
+        if (!rep) {
+          console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
+          return 1;
+        }
+        console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
+        console.log(rep.text);
+        return 0;
+      }
+      console.error(`unknown weekly subcommand: ${sub}`);
+      return 1;
+    }
     case "logs": {
       if (sub !== "cleanup") {
         console.error("usage: logs cleanup [--dry-run]");
@@ -450,6 +499,23 @@ async function main(argv) {
           console.log("WIPED (settings preserved; use burn for full shredding)");
           return 0;
         }
+        case "snapshot": {
+          const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-ZBCSX67Y.js");
+          const { needed, lines } = snapshotDue(guard, paths.dataDir);
+          console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
+          if (!needed && !rest.includes("--force")) {
+            console.log("\u672A\u5230\u9608\u503C\uFF0C\u672A\u6267\u884C\uFF08\u52A0 --force \u5F3A\u5236\u6298\u53E0\uFF09\u3002");
+            return 0;
+          }
+          const report = snapshotProfile(guard, paths.dataDir);
+          if (!report.ok) {
+            console.log(`\u672A\u6267\u884C\uFF1A${report.reason}`);
+            return 0;
+          }
+          console.log(`\u5DF2\u6298\u53E0 ${report.folded} \u6761 \u2192 \u5FEB\u7167\uFF08baseline ${report.baselineTs}\uFF09\uFF0C\u5F52\u6863 ${report.archiveFile}\uFF0Clive journal \u5DF2\u6E05\u7A7A\u3002`);
+          console.log("verify/rebuild \u81EA\u52A8\u4ECE\u5FEB\u7167\u57FA\u70B9\u91CD\u653E\uFF0C\u65E0\u9700\u989D\u5916\u64CD\u4F5C\u3002");
+          return 0;
+        }
         default:
           console.error(`unknown profile subcommand: ${sub}`);
           return 1;
@@ -468,6 +534,68 @@ async function main(argv) {
       const result = executeBurn(guard, paths, { all });
       console.log(`BURNED: ${result.burned.length} \u9879\uFF1BMISSING: ${result.missing.length} \u9879`);
       return 0;
+    }
+    case "migrate": {
+      if (sub === "export") {
+        const defaultOut = path2.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+        const outfile = rest[0] ?? defaultOut;
+        let outCanon;
+        try {
+          outCanon = guard.assert(outfile);
+        } catch {
+          console.error(`\u5BFC\u51FA\u6587\u4EF6\u5FC5\u987B\u843D\u5728\u63D2\u4EF6 data/ \u76EE\u5F55\u5185\uFF08\u8DEF\u5F84\u5B88\u536B\u62D2\u7EDD\uFF09\uFF1A${outfile}
+\u9ED8\u8BA4\u4F4D\u7F6E\uFF1A${defaultOut}`);
+          return 1;
+        }
+        const [pw1, pw2] = await readLines(["\u8BBE\u7F6E\u53E3\u4EE4\uFF08\u7528\u4E8E\u52A0\u5BC6\u8FC1\u79FB\u5305\uFF09: ", "\u518D\u8F93\u5165\u4E00\u6B21\u786E\u8BA4: "]);
+        if (!pw1 || pw1 !== pw2) {
+          console.error("\u4E24\u6B21\u8F93\u5165\u4E0D\u4E00\u81F4\u6216\u4E3A\u7A7A\uFF0C\u5DF2\u53D6\u6D88\u3002");
+          return 1;
+        }
+        const { entries, progress } = collectMigrationEntries(guard, paths);
+        if (entries.length === 0) {
+          console.log("\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09\u3002");
+          return 1;
+        }
+        fs2.mkdirSync(path2.dirname(outCanon), { recursive: true });
+        fs2.writeFileSync(outCanon, encryptContainer(entries, pw1), "utf8");
+        console.log(`\u5DF2\u6253\u5305 ${entries.length} \u4E2A\u6587\u4EF6 \u2192 ${outCanon}`);
+        console.log(`  \u6253\u5305\uFF1A${progress.packed.join(", ")}`);
+        if (progress.missing.length > 0) console.log(`  \u8DF3\u8FC7\uFF08\u4E0D\u5B58\u5728\uFF09\uFF1A${progress.missing.join(", ")}`);
+        console.log("\u5BB9\u5668\u662F\u53E3\u4EE4\u52A0\u5BC6\u7684\uFF0C\u53EF\u5B89\u5168\u62F7\u8D1D\u5230\u65B0\u673A\u5668\uFF1BDPAPI \u4F1A\u5728\u5BFC\u5165\u65F6\u7528\u65B0\u673A\u5668\u91CD\u65B0\u52A0\u5BC6\u3002");
+        return 0;
+      }
+      if (sub === "import") {
+        const infile = rest[0];
+        if (!infile) {
+          console.error("usage: migrate import <container-file>");
+          return 1;
+        }
+        const [pw] = await readLines(["\u8F93\u5165\u8FC1\u79FB\u5305\u53E3\u4EE4: "]);
+        let text;
+        try {
+          text = fs2.readFileSync(infile, "utf8");
+        } catch {
+          console.error(`\u8BFB\u4E0D\u5230\u8FC1\u79FB\u5305\uFF1A${infile}`);
+          return 1;
+        }
+        let files;
+        try {
+          files = decryptContainer(text, pw ?? "");
+        } catch (e) {
+          console.error(String(e instanceof Error ? e.message : e));
+          return 1;
+        }
+        const result = applyMigrationEntries(guard, paths, files.files);
+        console.log(`\u6062\u590D ${result.restored.length} \u4E2A\u6587\u4EF6\uFF1B\u5907\u4EFD ${result.backedUp.length} \u4E2A\u88AB\u8986\u76D6\u6587\u4EF6\uFF1B\u8DF3\u8FC7 ${result.skipped.length} \u4E2A\u3002`);
+        for (const r of result.restored) console.log(`  \u6062\u590D: ${r}`);
+        for (const b of result.backedUp) console.log(`  \u5907\u4EFD: ${b}.bak-migrate-*`);
+        if (result.skipped.length > 0) console.log(`  \u8DF3\u8FC7: ${result.skipped.join(", ")}`);
+        console.log("\u91CD\u542F DSH \u540E\u751F\u6548\u3002");
+        return 0;
+      }
+      console.error(`unknown migrate subcommand: ${sub}`);
+      return 1;
     }
     case "sessions": {
       const root = path2.join(os.homedir(), ".dsh", "sessions");

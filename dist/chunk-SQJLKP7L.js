@@ -3,13 +3,18 @@ import {
   loadPool,
   normalizeCategory,
   seedsFilePath
-} from "./chunk-SVP2NDRF.js";
+} from "./chunk-MXJPX3FM.js";
 import {
+  atomicWriteJsonSync
+} from "./chunk-VIZNIQLK.js";
+import {
+  loadEncryptedText,
   loadJson,
   readText,
+  saveEncryptedText,
   saveJson,
   writeText
-} from "./chunk-LLD7LUNN.js";
+} from "./chunk-IFTFDHZX.js";
 
 // src/core/path-guard.ts
 import fs from "fs";
@@ -71,80 +76,6 @@ function createPathGuard(workspaceDir) {
   return guard;
 }
 
-// src/core/audit-log.ts
-import fs3 from "fs";
-import path3 from "path";
-
-// src/core/atomic-fs.ts
-import fs2 from "fs";
-import path2 from "path";
-import { randomUUID, randomFillSync } from "crypto";
-function tmpSibling(target, tag = "w") {
-  return path2.join(
-    path2.dirname(target),
-    `.${path2.basename(target)}.${tag}-${randomUUID().slice(0, 8)}.tmp`
-  );
-}
-function atomicWriteFileSync(target, data) {
-  const tmp = tmpSibling(target);
-  try {
-    fs2.writeFileSync(tmp, data);
-    fs2.renameSync(tmp, target);
-  } finally {
-    fs2.rmSync(tmp, { force: true });
-  }
-}
-function atomicWriteJsonSync(target, value) {
-  atomicWriteFileSync(target, JSON.stringify(value, null, 2));
-}
-function shredFileSync(target, passes = 3) {
-  const stat = fs2.statSync(target);
-  if (!stat.isFile()) throw new Error(`shred: not a file: ${target}`);
-  const buf = Buffer.alloc(Math.max(stat.size, 1));
-  for (let i = 0; i < passes; i++) {
-    randomFillSync(buf);
-    fs2.writeFileSync(target, buf);
-  }
-  fs2.rmSync(target, { force: true });
-}
-
-// src/core/audit-log.ts
-function appendAuditLine(file, event) {
-  fs3.mkdirSync(path3.dirname(file), { recursive: true });
-  const line = JSON.stringify({ ts: event.ts ?? (/* @__PURE__ */ new Date()).toISOString(), ...event });
-  fs3.appendFileSync(file, line + "\n", "utf8");
-}
-function readAuditLines(file) {
-  if (!fs3.existsSync(file)) return [];
-  const out = [];
-  const raw = fs3.readFileSync(file, "utf8");
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      out.push(JSON.parse(trimmed));
-    } catch {
-      out.push({ ts: "", corrupt: true, raw: trimmed.slice(0, 200) });
-    }
-  }
-  return out;
-}
-function pruneAuditFile(file, maxAgeMs, now = Date.now()) {
-  if (!fs3.existsSync(file)) return 0;
-  const lines = readAuditLines(file);
-  const kept = lines.filter((e) => {
-    const ev = e;
-    const ts = Date.parse(ev.ts ?? "");
-    if (!Number.isFinite(ts)) return true;
-    return now - ts <= maxAgeMs;
-  });
-  const removed = lines.length - kept.length;
-  if (removed === 0) return 0;
-  const body = kept.map((e) => JSON.stringify(e)).join("\n");
-  atomicWriteFileSync(file, body ? body + "\n" : "");
-  return removed;
-}
-
 // src/config/schema.ts
 var HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 function isPlainObject(v) {
@@ -162,6 +93,7 @@ function assertPolicy(input) {
     fail("heartbeat.intervalMin must be a number in [1, 1440]");
   }
   if (typeof hb.idleMode !== "boolean") fail("heartbeat.idleMode must be boolean");
+  if (typeof hb.archiveRotatedHome !== "boolean") fail("heartbeat.archiveRotatedHome must be boolean");
   const g = p.gate;
   if (!isPlainObject(g)) fail("gate missing");
   if (typeof g.maxDailySend !== "number" || g.maxDailySend < 0) fail("gate.maxDailySend must be >= 0");
@@ -207,6 +139,12 @@ function assertPolicy(input) {
   if (typeof pr.volatileDays !== "number" || pr.volatileDays < 1) fail("profile.volatileDays must be >= 1");
   if (typeof pr.stableLowActivityDays !== "number" || pr.stableLowActivityDays < 1) fail("profile.stableLowActivityDays must be >= 1");
   if (typeof pr.psyEnabled !== "boolean") fail("profile.psyEnabled must be boolean");
+  const ob = p.observe;
+  if (!isPlainObject(ob)) fail("observe missing");
+  if (typeof ob.maxChars !== "number" || ob.maxChars < 20 || ob.maxChars > 2e3) fail("observe.maxChars must be in [20, 2000]");
+  if (typeof ob.perBeat !== "number" || ob.perBeat < 1 || ob.perBeat > 100) fail("observe.perBeat must be in [1, 100]");
+  if (!isPlainObject(p.weekly)) fail("weekly missing");
+  if (typeof p.weekly.enabled !== "boolean") fail("weekly.enabled must be boolean");
   const r = p.retention;
   if (!isPlainObject(r)) fail("retention missing");
   if (typeof r.envPulseHours !== "number" || typeof r.decisionLogDays !== "number") fail("retention fields missing");
@@ -223,23 +161,23 @@ function deepMerge(base, override) {
 }
 
 // src/config/load.ts
-import fs4 from "fs";
-import path4 from "path";
+import fs2 from "fs";
+import path2 from "path";
 var USER_POLICY_FILE = "policy.json";
 function loadPolicy(guard, configDir, settingsDir) {
-  const factoryPath = path4.join(configDir, "policy.json");
+  const factoryPath = path2.join(configDir, "policy.json");
   let factoryRaw;
   try {
-    factoryRaw = JSON.parse(fs4.readFileSync(factoryPath, "utf8"));
+    factoryRaw = JSON.parse(fs2.readFileSync(factoryPath, "utf8"));
   } catch (e) {
     throw new Error(`factory policy unreadable at ${factoryPath}: ${String(e)}`);
   }
   assertPolicy(factoryRaw);
-  const userPath = guard.assert(path4.join(settingsDir, USER_POLICY_FILE));
+  const userPath = guard.assert(path2.join(settingsDir, USER_POLICY_FILE));
   let merged = factoryRaw;
-  if (fs4.existsSync(userPath)) {
+  if (fs2.existsSync(userPath)) {
     try {
-      const userRaw = JSON.parse(fs4.readFileSync(userPath, "utf8"));
+      const userRaw = JSON.parse(fs2.readFileSync(userPath, "utf8"));
       merged = deepMerge(factoryRaw, userRaw);
     } catch (e) {
       throw new Error(`user policy layer unparseable at ${userPath}: ${String(e)}`);
@@ -249,26 +187,26 @@ function loadPolicy(guard, configDir, settingsDir) {
   return merged;
 }
 function updateUserPolicy(guard, settingsDir, patch) {
-  const userPath = guard.assert(path4.join(settingsDir, USER_POLICY_FILE));
+  const userPath = guard.assert(path2.join(settingsDir, USER_POLICY_FILE));
   let user = {};
   try {
-    user = JSON.parse(fs4.readFileSync(userPath, "utf8"));
+    user = JSON.parse(fs2.readFileSync(userPath, "utf8"));
     if (!user || typeof user !== "object" || Array.isArray(user)) user = {};
   } catch {
     user = {};
   }
   const merged = deepMerge(user, patch);
-  fs4.mkdirSync(path4.dirname(userPath), { recursive: true });
-  fs4.writeFileSync(userPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+  fs2.mkdirSync(path2.dirname(userPath), { recursive: true });
+  fs2.writeFileSync(userPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
   return merged;
 }
 
 // src/ledger/ledger.ts
-import path5 from "path";
-import { randomUUID as randomUUID2 } from "crypto";
+import path3 from "path";
+import { randomUUID } from "crypto";
 var DAY_MS = 864e5;
 function ledgerFilePath(dataDir) {
-  return path5.join(dataDir, "ledger.md");
+  return path3.join(dataDir, "ledger.md");
 }
 var LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([0-9a-f]{6})\] (.*)$/;
 function renderEntry(e) {
@@ -294,7 +232,7 @@ function appendEntry(guard, file, text, now = Date.now()) {
   const d = new Date(now);
   const pad = (n) => String(n).padStart(2, "0");
   const entry = {
-    id: randomUUID2().slice(0, 6),
+    id: randomUUID().slice(0, 6),
     date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
     time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
     status: "open",
@@ -311,9 +249,10 @@ function markDone(guard, file, key, now = Date.now()) {
   if (!target) return null;
   const d = new Date(now);
   const pad = (n) => String(n).padStart(2, "0");
+  const doneDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const out = rawLines.map((line) => {
     if (line.includes(`#${target.id}] `)) {
-      return `- [${target.date} ${pad(d.getHours())}:${pad(d.getMinutes())}][done][#${target.id}] ${target.text}`;
+      return `- [${doneDate} ${pad(d.getHours())}:${pad(d.getMinutes())}][done][#${target.id}] ${target.text}`;
     }
     return line;
   });
@@ -330,32 +269,32 @@ function pendingOlderThan(guard, file, days, now = Date.now()) {
 }
 
 // src/browse/browse.ts
-import fs5 from "fs";
-import path6 from "path";
+import fs3 from "fs";
+import path4 from "path";
 var WATCH_THROTTLE_MS = 6 * 36e5;
 var UA = { "User-Agent": "dsh-heartbeat/2.0 (+local; personal companion)" };
 function emptyBrowseState() {
   return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
 }
 function browseStatePath(paths) {
-  return path6.join(paths.dataDir, "browse.json");
+  return path4.join(paths.dataDir, "browse.json");
 }
 function readJsonFile(file, fallback) {
   try {
-    return JSON.parse(fs5.readFileSync(file, "utf8"));
+    return JSON.parse(fs3.readFileSync(file, "utf8"));
   } catch {
     return fallback;
   }
 }
 function loadInterests(paths) {
-  const userPath = path6.join(paths.settingsDir, "interests.json");
-  if (fs5.existsSync(userPath)) return readJsonFile(userPath, { interests: [], _schedule: {} });
-  return readJsonFile(path6.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
+  const userPath = path4.join(paths.settingsDir, "interests.json");
+  if (fs3.existsSync(userPath)) return readJsonFile(userPath, { interests: [], _schedule: {} });
+  return readJsonFile(path4.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
 }
 function loadWatchlist(paths) {
-  const userPath = path6.join(paths.settingsDir, "watchlist.json");
-  if (fs5.existsSync(userPath)) return readJsonFile(userPath, { targets: [] });
-  return readJsonFile(path6.join(paths.configDir, "watchlist.json"), { targets: [] });
+  const userPath = path4.join(paths.settingsDir, "watchlist.json");
+  if (fs3.existsSync(userPath)) return readJsonFile(userPath, { targets: [] });
+  return readJsonFile(path4.join(paths.configDir, "watchlist.json"), { targets: [] });
 }
 function loadState(guard, paths) {
   return loadJson(guard, browseStatePath(paths)) ?? emptyBrowseState();
@@ -493,357 +432,13 @@ function browseStatus(guard, paths) {
   return loadState(guard, paths);
 }
 
-// src/profile/store.ts
-import path8 from "path";
-import { randomUUID as randomUUID3 } from "crypto";
-import fs7 from "fs";
-
-// src/profile/types.ts
-var PARTITIONS = ["interest", "projects", "comm", "psy"];
-var CONFIDENCE_CAP = {
-  chat: 0.6,
-  screen: 0.4,
-  browse: 0.4,
-  hand: 1,
-  ledger: 0.6
-};
-function emptyProfile() {
-  return {
-    version: 1,
-    partitions: { interest: { entries: [] }, projects: { entries: [] }, comm: { entries: [] }, psy: { entries: [] } }
-  };
-}
-
-// src/profile/schema.ts
-import fs6 from "fs";
-import path7 from "path";
-function loadProfileSchema(paths) {
-  const userPath = path7.join(paths.settingsDir, "profile-schema.json");
-  const file = fs6.existsSync(userPath) ? userPath : path7.join(paths.configDir, "profile-schema.json");
-  try {
-    const raw = JSON.parse(fs6.readFileSync(file, "utf8"));
-    if (!raw.partitions) throw new Error("partitions missing");
-    return raw;
-  } catch (e) {
-    throw new Error(`profile-schema unreadable at ${file}: ${String(e)}`);
-  }
-}
-function checkAddAgainstSchema(schema, partition, topic, subTopic, nominated) {
-  const p = schema.partitions[partition];
-  if (!p) return { ok: false, reason: `partition not in schema: ${partition}`, temporal: "stable" };
-  const t = p.topics[topic];
-  if (!t) return { ok: false, reason: `topic not in schema: ${partition}/${topic}`, temporal: "stable" };
-  const st = t.subtopics[subTopic];
-  if (!st) return { ok: false, reason: `sub_topic not in schema: ${partition}/${topic}/${subTopic}`, temporal: "stable" };
-  const allowed = st.allowed && st.allowed.length > 0 ? st.allowed : ["stable"];
-  const def = st.default && allowed.includes(st.default) ? st.default : allowed[0];
-  if (!nominated) return { ok: true, temporal: def };
-  if (!allowed.includes(nominated)) {
-    return {
-      ok: false,
-      reason: `temporal "${nominated}" not allowed for ${partition}/${topic}/${subTopic} (allowed: ${allowed.join("|")})`,
-      temporal: def
-    };
-  }
-  return { ok: true, temporal: nominated };
-}
-
-// src/profile/store.ts
-var DAY_MS2 = 864e5;
-function profileFilePath(dataDir) {
-  return path8.join(dataDir, "profile.json");
-}
-function journalFilePath(dataDir) {
-  return path8.join(dataDir, "profile_journal.jsonl");
-}
-function loadProfile(guard, file) {
-  const doc = loadJson(guard, file);
-  if (!doc || !doc.partitions) return emptyProfile();
-  for (const p of PARTITIONS) {
-    if (!doc.partitions[p]) doc.partitions[p] = { entries: [] };
-  }
-  return doc;
-}
-function parseIso(v) {
-  const t = Date.parse(v);
-  return Number.isFinite(t) ? t : 0;
-}
-function refExists(guard, dataDir, ref) {
-  const base = ref.split("#")[0] ?? "";
-  if (!base) return false;
-  const target = path8.join(dataDir, base);
-  try {
-    return fs7.existsSync(guard.assert(target));
-  } catch {
-    return false;
-  }
-}
-function capForKinds(kinds) {
-  if (kinds.length === 0) return 0.4;
-  return Math.min(...kinds.map((k) => CONFIDENCE_CAP[k] ?? 0.4));
-}
-function findActive(doc, id) {
-  for (const p of PARTITIONS) {
-    const hit = doc.partitions[p].entries.find((e) => e.id === id && e.validTo === null);
-    if (hit) return hit;
-  }
-  return void 0;
-}
-function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
-  const applied = [];
-  const rejected = [];
-  const nowIso = new Date(now).toISOString();
-  for (const op of ops) {
-    if (op.op === "NOOP") {
-      applied.push(op);
-      continue;
-    }
-    if (op.op === "ADD") {
-      if (op.partition === "psy" && !policy.profile.psyEnabled) {
-        rejected.push({ op, reason: "psy partition is disabled" });
-        continue;
-      }
-      const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
-      if (!check.ok) {
-        rejected.push({ op, reason: check.reason });
-        continue;
-      }
-      if (!op.evidence || op.evidence.length === 0) {
-        rejected.push({ op, reason: "ADD without evidence (no provenance, axiom 1)" });
-        continue;
-      }
-      const badRef = op.evidence.find((e) => !refExists(guard, dataDir, e.ref));
-      if (badRef) {
-        rejected.push({ op, reason: `evidence ref does not resolve: ${badRef.ref}` });
-        continue;
-      }
-      const cap = capForKinds(op.evidence.map((e) => e.kind));
-      const active = doc.partitions[op.partition].entries.filter((e) => e.validTo === null);
-      if (active.length >= policy.profile.partitionCap) {
-        rejected.push({ op, reason: `partition ${op.partition} at cap (${policy.profile.partitionCap}); converge first` });
-        continue;
-      }
-      dbSeq += 1;
-      const entry = {
-        id: `p${dbSeq.toString(36)}${randomUUID3().slice(0, 4)}`,
-        partition: op.partition,
-        topic: op.topic,
-        subTopic: op.subTopic,
-        content: op.content.trim(),
-        confidence: Math.min(op.confidence ?? cap, cap),
-        temporal: check.temporal,
-        validFrom: nowIso,
-        validTo: null,
-        supersededBy: null,
-        evidence: op.evidence,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        updateCount: 0
-      };
-      op.assignedId = entry.id;
-      doc.partitions[op.partition].entries.push(entry);
-      applied.push(op);
-      continue;
-    }
-    if (op.op === "UPDATE") {
-      const entry = findActive(doc, op.id);
-      if (!entry) {
-        rejected.push({ op, reason: `unknown or inactive entry: ${op.id}` });
-        continue;
-      }
-      if (op.changes.content !== void 0) entry.content = op.changes.content.trim();
-      if (op.changes.confidence !== void 0) {
-        const cap = capForKinds(entry.evidence.map((e) => e.kind));
-        if (op.changes.confidence > entry.confidence && entry.evidence.length < 2) {
-          rejected.push({ op, reason: "confidence upgrade requires a second confirming observation" });
-          continue;
-        }
-        entry.confidence = Math.min(op.changes.confidence, cap);
-      }
-      entry.updatedAt = nowIso;
-      entry.updateCount += 1;
-      applied.push(op);
-      continue;
-    }
-    if (op.op === "INVALIDATE") {
-      const entry = findActive(doc, op.id);
-      if (!entry) {
-        rejected.push({ op, reason: `unknown or inactive entry: ${op.id}` });
-        continue;
-      }
-      if (entry.temporal === "volatile") {
-        rejected.push({ op, reason: "volatile expiry is code-owned (time-driven), not LLM-nominated" });
-        continue;
-      }
-      const hasNewObservation = (op.evidence ?? []).length > 0 && (op.evidence ?? []).some((e) => parseIso(e.at) > parseIso(entry.evidence[entry.evidence.length - 1]?.at ?? ""));
-      if (!hasNewObservation) {
-        rejected.push({ op, reason: "stable INVALIDATE requires a newer contradicting observation" });
-        continue;
-      }
-      entry.validTo = nowIso;
-      entry.supersededBy = null;
-      entry.updatedAt = nowIso;
-      entry.updateCount += 1;
-      if (op.evidence) entry.evidence.push(...op.evidence);
-      applied.push(op);
-      continue;
-    }
-  }
-  return { applied, rejected };
-}
-var dbSeq = 0;
-function runDeterministicAging(doc, policy, now) {
-  const nowIso = new Date(now).toISOString();
-  let volatileExpired = 0;
-  let lowActivityMarked = 0;
-  for (const p of PARTITIONS) {
-    for (const e of doc.partitions[p].entries) {
-      if (e.validTo !== null) continue;
-      const lastEvidence = Math.max(...e.evidence.map((x) => parseIso(x.at)), parseIso(e.updatedAt));
-      if (e.temporal === "volatile") {
-        if (now - lastEvidence > policy.profile.volatileDays * DAY_MS2) {
-          e.validTo = nowIso;
-          e.updatedAt = nowIso;
-          e.updateCount += 1;
-          volatileExpired += 1;
-        }
-      } else if (!e.lowActivity && now - lastEvidence > policy.profile.stableLowActivityDays * DAY_MS2) {
-        e.lowActivity = true;
-        lowActivityMarked += 1;
-      }
-    }
-  }
-  return { volatileExpired, lowActivityMarked };
-}
-function persistWithJournal(guard, dataDir, doc, record) {
-  saveJson(guard, profileFilePath(dataDir), doc);
-  const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record });
-  const journal = journalFilePath(dataDir);
-  try {
-    fs7.appendFileSync(guard.assert(journal), line + "\n", "utf8");
-  } catch {
-    fs7.mkdirSync(dataDir, { recursive: true });
-    fs7.appendFileSync(guard.assert(journal), line + "\n", "utf8");
-  }
-}
-function applyOpPermissive(doc, op, ts) {
-  if (op.op === "ADD") {
-    dbSeq += 1;
-    doc.partitions[op.partition].entries.push({
-      id: op.assignedId ?? `r${dbSeq.toString(36)}${randomUUID3().slice(0, 4)}`,
-      partition: op.partition,
-      topic: op.topic,
-      subTopic: op.subTopic,
-      content: op.content,
-      confidence: op.confidence ?? 0.5,
-      temporal: op.temporal ?? "stable",
-      validFrom: ts,
-      validTo: null,
-      supersededBy: null,
-      evidence: op.evidence,
-      createdAt: ts,
-      updatedAt: ts,
-      updateCount: 0
-    });
-    return;
-  }
-  if (op.op === "UPDATE") {
-    const e = [...PARTITIONS].flatMap((p) => doc.partitions[p].entries).find((x) => x.id === op.id);
-    if (e) {
-      if (op.changes.content !== void 0) e.content = op.changes.content;
-      if (op.changes.confidence !== void 0) e.confidence = op.changes.confidence;
-      e.updatedAt = ts;
-      e.updateCount += 1;
-    }
-    return;
-  }
-  if (op.op === "INVALIDATE") {
-    const e = [...PARTITIONS].flatMap((p) => doc.partitions[p].entries).find((x) => x.id === op.id);
-    if (e) {
-      e.validTo = ts;
-      e.updatedAt = ts;
-      e.updateCount += 1;
-    }
-  }
-}
-function replayJournal(guard, dataDir) {
-  const journal = journalFilePath(dataDir);
-  const raw = readText(guard, journal, "");
-  const doc = emptyProfile();
-  let records = 0;
-  let truncatedTail = 0;
-  const lines = raw.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (!trimmed) continue;
-    try {
-      const rec = JSON.parse(trimmed);
-      for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
-      records += 1;
-    } catch {
-      const isLast = lines.slice(i + 1).every((l) => !l.trim());
-      if (isLast) {
-        truncatedTail = lines.length - i;
-        break;
-      }
-    }
-  }
-  return { doc, truncatedTail, records };
-}
-function verifyProfile(guard, dataDir) {
-  const replayed = replayJournal(guard, dataDir);
-  const onDisk = loadProfile(guard, profileFilePath(dataDir));
-  const strip = (doc) => JSON.stringify(doc.partitions, (k, v) => ["id", "supersededBy", "validFrom", "createdAt", "updatedAt", "retiredAt"].includes(k) ? "<norm>" : v);
-  const ok = strip(replayed.doc) === strip(onDisk);
-  if (ok) return { ok: true, truncatedTail: replayed.truncatedTail, records: replayed.records };
-  const diskIds = new Set([...PARTITIONS].flatMap((p) => onDisk.partitions[p].entries.map((e) => e.content)));
-  const replayIds = new Set([...PARTITIONS].flatMap((p) => replayed.doc.partitions[p].entries.map((e) => e.content)));
-  const onlyDisk = [...diskIds].find((c) => !replayIds.has(c));
-  const onlyReplay = [...replayIds].find((c) => !diskIds.has(c));
-  return {
-    ok: false,
-    firstDivergence: {
-      id: onlyDisk ?? onlyReplay ?? "(content)",
-      expected: onlyReplay ? "absent in journal replay" : "present in journal replay",
-      actual: onlyDisk ? "present on disk" : "absent on disk"
-    },
-    truncatedTail: replayed.truncatedTail,
-    records: replayed.records
-  };
-}
-function rebuildProfile(guard, dataDir, opts = {}) {
-  const replayed = replayJournal(guard, dataDir);
-  const target = profileFilePath(dataDir);
-  if (opts.check) {
-    const onDisk = loadProfile(guard, target);
-    const same = JSON.stringify(onDisk) === JSON.stringify(replayed.doc);
-    return {
-      ok: same,
-      truncatedTail: replayed.truncatedTail,
-      records: replayed.records,
-      wrote: false,
-      diffSummary: same ? "no diff" : "materialized view differs from journal replay"
-    };
-  }
-  saveJson(guard, target, replayed.doc);
-  if (replayed.truncatedTail > 0) {
-    writeText(
-      guard,
-      path8.join(dataDir, "logs", "rebuild-report.txt"),
-      `rebuild truncated ${replayed.truncatedTail} torn line(s) at journal tail; ${replayed.records} records applied
-`
-    );
-  }
-  return { ok: true, truncatedTail: replayed.truncatedTail, records: replayed.records, wrote: true };
-}
-
 // src/notify/notify.ts
 import { spawnSync } from "child_process";
-import path9 from "path";
+import path5 from "path";
 function runNotify(paths, args) {
   const r = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path9.join(paths.assetsDir, "notify.ps1"), ...args],
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path5.join(paths.assetsDir, "notify.ps1"), ...args],
     { timeout: 2e4, encoding: "utf8" }
   );
   return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
@@ -858,11 +453,118 @@ function sendNewMessageHint(paths) {
   const r = runNotify(paths, ["-Title", "Heartbeat", "-Message", "\u6709\u65B0\u6D88\u606F"]);
   return r.status === 0 && /TOAST_SENT/.test(r.out);
 }
+function sendWeeklyReadyHint(paths) {
+  const r = runNotify(paths, ["-Title", "\u5FC3\u8DF3\u5468\u62A5", "-Message", "\u672C\u671F\u5468\u62A5\u5DF2\u751F\u6210"]);
+  return r.status === 0 && /TOAST_SENT/.test(r.out);
+}
+
+// src/weekly/report.ts
+import fs4 from "fs";
+import path6 from "path";
+var WEEKLY_INTERVAL_MS = 7 * 864e5;
+function weeklyDirPath(dataDir) {
+  return path6.join(dataDir, "weekly");
+}
+function stateFilePath(dataDir) {
+  return path6.join(weeklyDirPath(dataDir), "state.json");
+}
+function reportFileName(endIso) {
+  return `report-${endIso.slice(0, 10)}.json`;
+}
+function lastWeeklyGeneratedAt(guard, dataDir) {
+  try {
+    const raw = JSON.parse(fs4.readFileSync(guard.assert(stateFilePath(dataDir)), "utf8"));
+    return Number(raw.lastGeneratedAt) || 0;
+  } catch {
+    return 0;
+  }
+}
+function weeklyDue(guard, dataDir, now = Date.now()) {
+  const last = lastWeeklyGeneratedAt(guard, dataDir);
+  return now - last >= WEEKLY_INTERVAL_MS;
+}
+function saveWeeklyReport(guard, dataDir, report) {
+  const dir = weeklyDirPath(dataDir);
+  fs4.mkdirSync(dir, { recursive: true });
+  const file = path6.join(dir, reportFileName(report.end));
+  saveEncryptedText(guard, file, JSON.stringify(report, null, 1));
+  atomicWriteJsonSync(stateFilePath(dataDir), { lastGeneratedAt: Date.parse(report.generatedAt) });
+  return file;
+}
+function listWeeklyReports(guard, dataDir) {
+  const out = [];
+  try {
+    for (const file of fs4.readdirSync(weeklyDirPath(dataDir))) {
+      if (!/^report-\d{4}-\d{2}-\d{2}\.json$/.test(file)) continue;
+      const rep = readWeeklyReport(guard, dataDir, file);
+      if (!rep) continue;
+      out.push({ file, start: rep.start, end: rep.end, generatedAt: rep.generatedAt, source: rep.source });
+    }
+  } catch {
+  }
+  return out.sort((a, b) => a.end < b.end ? 1 : -1);
+}
+function readWeeklyReport(guard, dataDir, file) {
+  if (!/^report-\d{4}-\d{2}-\d{2}\.json$/.test(file)) return null;
+  try {
+    const raw = loadEncryptedText(guard, path6.join(weeklyDirPath(dataDir), file));
+    if (!raw) return null;
+    const rep = JSON.parse(raw);
+    if (typeof rep.text !== "string") return null;
+    return rep;
+  } catch {
+    return null;
+  }
+}
+function buildWeeklyPrompt(facts) {
+  return [
+    "\u4F60\u662F\u5FC3\u8DF3\u63D2\u4EF6\u7684\u540E\u53F0\u62A5\u544A\u5668\u3002\u6839\u636E\u4E0B\u9762\u7684\u672C\u5468\u4E8B\u5B9E\u6E05\u5355\uFF0C\u7528\u4E2D\u6587\u5199\u4E00\u4EFD\u5468\u62A5\u6B63\u6587\u3002",
+    "\u89C4\u5219\uFF1A",
+    "- \u53D9\u8FF0\u8005\u81EA\u79F0\u300C\u5FC3\u8DF3\u300D\u2014\u2014\u8FD9\u662F\u63D2\u4EF6\u540E\u53F0\uFF0C\u4E0D\u662F\u4EFB\u4F55\u4F1A\u8BDD\u91CC\u7684 agent\uFF1B\u7EDD\u4E0D\u80FD\u4EE5\u4F1A\u8BDD agent \u7684\u8EAB\u4EFD\u6216\u4EBA\u683C\u81EA\u79F0\u3002",
+    "- \u53EA\u62A5\u544A\u4E8B\u5B9E\u6E05\u5355\u91CC\u6709\u7684\u5185\u5BB9\uFF1B\u67D0\u4E00\u8282\u6CA1\u6709\u6570\u636E\u5C31\u6574\u8282\u8DF3\u8FC7\uFF0C\u4E0D\u8981\u7F16\u9020\u3001\u4E0D\u8981\u51D1\u6570\u3002",
+    "- \u8BED\u6C14\u5E73\u5B9E\u4E2D\u6027\uFF0C\u4E0D\u7528\u611F\u53F9\u53F7\uFF1B\u7BC7\u5E45\u4E0D\u8D85\u8FC7 250 \u5B57\u3002",
+    "- \u5F85\u529E\u79EF\u538B\u90A3\u4E00\u8282\u7528\u5546\u91CF\u7684\u8BED\u6C14\u63D0\u4E00\u53E5\uFF0C\u4E0D\u50AC\u4FC3\u3002",
+    "- \u76F4\u63A5\u8F93\u51FA\u5468\u62A5\u6B63\u6587\uFF0C\u4E0D\u8981\u8F93\u51FA\u89E3\u91CA\u3001\u6807\u9898\u6216 JSON\u3002",
+    "",
+    "\u672C\u5468\u4E8B\u5B9E\uFF08JSON\uFF09\uFF1A",
+    JSON.stringify(facts, null, 1)
+  ].join("\n");
+}
+function renderTemplateReport(facts) {
+  const d = (iso) => iso.slice(0, 10);
+  const lines = [`\u672C\u5468\uFF08${d(facts.windowStart)} ~ ${d(facts.windowEnd)}\uFF09`];
+  lines.push(`\u8868\u8FBE ${facts.spoken} \u6B21\uFF0C\u9759\u9ED8 ${facts.silent} \u6B21\u3002`);
+  if (facts.silentTopReasons.length > 0) {
+    lines.push(`\u9759\u9ED8\u4E3B\u56E0\uFF1A${facts.silentTopReasons.map((r) => `${r.reason}\uFF08${r.count}\uFF09`).join("\u3001")}\u3002`);
+  }
+  if (facts.profileAdds.length > 0) {
+    lines.push(`\u65B0\u8BA4\u8BC6 ${facts.profileAdds.length} \u6761\uFF1A${facts.profileAdds.map((a) => a.content).join("\uFF1B")}\u3002`);
+  }
+  if (facts.ledger.added.length > 0 || facts.ledger.done.length > 0) {
+    const parts = [];
+    if (facts.ledger.added.length > 0) parts.push(`\u65B0\u589E\u5F85\u529E\uFF1A${facts.ledger.added.join("\u3001")}`);
+    if (facts.ledger.done.length > 0) parts.push(`\u5DF2\u89E3\u51B3\uFF1A${facts.ledger.done.join("\u3001")}`);
+    lines.push(`${parts.join("\uFF1B")}\u3002`);
+  }
+  if (facts.ledger.stale.length > 0) {
+    lines.push(`\u6302\u4E86\u5F88\u4E45\uFF1A${facts.ledger.stale.map((s) => `${s.text}\uFF08${s.days} \u5929\uFF09`).join("\u3001")}\u2014\u2014\u8981\u5220\u6389\u8FD8\u662F\u7EE7\u7EED\u6302\u7740\uFF1F`);
+  }
+  if (facts.seeds.added.length > 0) {
+    lines.push(`\u7D20\u6750\u6C60\u65B0\u589E ${facts.seeds.added.length} \u6761\uFF0C\u5DF2\u6D88\u8D39 ${facts.seeds.consumed.length} \u6761\u3002`);
+  }
+  if (facts.seeds.waiting.length > 0) {
+    lines.push(`\u8FD8\u6CA1\u804A\u8FC7\u7684\u7D20\u6750\uFF1A${facts.seeds.waiting.join("\u3001")}\u3002`);
+  }
+  if (facts.peakHours.length > 0) {
+    lines.push(`\u6D3B\u8DC3\u9AD8\u5CF0\uFF1A${facts.peakHours.join("\u3001")}\u3002`);
+  }
+  return lines.join("\n");
+}
 
 // src/core/preset-install.ts
-import fs8 from "fs";
+import fs5 from "fs";
 import os from "os";
-import path10 from "path";
+import path7 from "path";
 import { fileURLToPath } from "url";
 var COMPOSITION_FILE = "agent.cordis.yml";
 var METADATA_FILE = "preset.yml";
@@ -870,14 +572,14 @@ var BUNDLED_PRESET_ID = "heartbeat";
 function bundledPresetDir(moduleUrl, id = BUNDLED_PRESET_ID) {
   let dir;
   try {
-    dir = path10.dirname(fileURLToPath(moduleUrl));
+    dir = path7.dirname(fileURLToPath(moduleUrl));
   } catch {
     return void 0;
   }
   for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = path10.join(dir, "assets", "presets", id);
-    if (fs8.existsSync(path10.join(candidate, COMPOSITION_FILE))) return candidate;
-    const parent = path10.dirname(dir);
+    const candidate = path7.join(dir, "assets", "presets", id);
+    if (fs5.existsSync(path7.join(candidate, COMPOSITION_FILE))) return candidate;
+    const parent = path7.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -887,12 +589,12 @@ function userPresetRoot(roots) {
   const found = roots?.find(
     (root) => root?.trust === "user" && typeof root.path === "string" && root.path.length > 0
   );
-  return found?.path === void 0 ? void 0 : path10.resolve(found.path);
+  return found?.path === void 0 ? void 0 : path7.resolve(found.path);
 }
 function conventionalUserPresetRoot(env = process.env, home = os.homedir()) {
   const override = env.DSH_HOME?.trim();
-  const root = override && override.length > 0 ? override : path10.join(home, ".dsh");
-  return path10.join(root, ".agent-presets");
+  const root = override && override.length > 0 ? override : path7.join(home, ".dsh");
+  return path7.join(root, ".agent-presets");
 }
 function installBundledPreset(options) {
   const id = options.id && options.id.length > 0 ? options.id : BUNDLED_PRESET_ID;
@@ -924,12 +626,12 @@ function installBundledPreset(options) {
       detail: "the roster mounts no user preset root (includeUserRoot=false)"
     };
   }
-  const dir = path10.join(root, id);
-  const composition = path10.join(dir, COMPOSITION_FILE);
+  const dir = path7.join(root, id);
+  const composition = path7.join(dir, COMPOSITION_FILE);
   try {
-    if (fs8.existsSync(composition)) {
+    if (fs5.existsSync(composition)) {
       if (options.force !== true) {
-        const drifted = !sameBytes(composition, path10.join(bundledDir, COMPOSITION_FILE));
+        const drifted = !sameBytes(composition, path7.join(bundledDir, COMPOSITION_FILE));
         return {
           action: "exists",
           id,
@@ -938,7 +640,7 @@ function installBundledPreset(options) {
           detail: drifted ? "kept as-is (differs from the bundled template)" : "kept as-is"
         };
       }
-      fs8.copyFileSync(path10.join(bundledDir, COMPOSITION_FILE), composition);
+      fs5.copyFileSync(path7.join(bundledDir, COMPOSITION_FILE), composition);
       return {
         action: "restored",
         id,
@@ -947,11 +649,11 @@ function installBundledPreset(options) {
         detail: "composition replaced from the bundled template"
       };
     }
-    const existed = fs8.existsSync(dir);
-    fs8.mkdirSync(dir, { recursive: true });
-    fs8.copyFileSync(path10.join(bundledDir, COMPOSITION_FILE), composition);
-    const metadata = path10.join(dir, METADATA_FILE);
-    if (!fs8.existsSync(metadata)) fs8.copyFileSync(path10.join(bundledDir, METADATA_FILE), metadata);
+    const existed = fs5.existsSync(dir);
+    fs5.mkdirSync(dir, { recursive: true });
+    fs5.copyFileSync(path7.join(bundledDir, COMPOSITION_FILE), composition);
+    const metadata = path7.join(dir, METADATA_FILE);
+    if (!fs5.existsSync(metadata)) fs5.copyFileSync(path7.join(bundledDir, METADATA_FILE), metadata);
     return {
       action: existed ? "repaired" : "created",
       id,
@@ -969,21 +671,21 @@ function describeInstall(result) {
   return `preset ${result.id} ${result.action}${where}${why}`;
 }
 function presetStatus(moduleUrl, id = BUNDLED_PRESET_ID, root = conventionalUserPresetRoot()) {
-  const dir = path10.join(root, id);
+  const dir = path7.join(root, id);
   const bundledDir = bundledPresetDir(moduleUrl, id);
-  const installed = fs8.existsSync(path10.join(dir, COMPOSITION_FILE));
+  const installed = fs5.existsSync(path7.join(dir, COMPOSITION_FILE));
   return {
     id,
     dir,
     ...bundledDir === void 0 ? {} : { bundledDir },
     installed,
-    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path10.join(dir, COMPOSITION_FILE), path10.join(bundledDir, COMPOSITION_FILE)),
-    metadataMatches: bundledDir !== void 0 && fs8.existsSync(path10.join(dir, METADATA_FILE)) && sameBytes(path10.join(dir, METADATA_FILE), path10.join(bundledDir, METADATA_FILE))
+    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path7.join(dir, COMPOSITION_FILE), path7.join(bundledDir, COMPOSITION_FILE)),
+    metadataMatches: bundledDir !== void 0 && fs5.existsSync(path7.join(dir, METADATA_FILE)) && sameBytes(path7.join(dir, METADATA_FILE), path7.join(bundledDir, METADATA_FILE))
   };
 }
 function sameBytes(left, right) {
   try {
-    return fs8.readFileSync(left).equals(fs8.readFileSync(right));
+    return fs5.readFileSync(left).equals(fs5.readFileSync(right));
   } catch {
     return false;
   }
@@ -991,10 +693,6 @@ function sameBytes(left, right) {
 
 export {
   createPathGuard,
-  atomicWriteJsonSync,
-  shredFileSync,
-  appendAuditLine,
-  pruneAuditFile,
   deepMerge,
   loadPolicy,
   updateUserPolicy,
@@ -1011,16 +709,16 @@ export {
   completeWander,
   adviseRefillWander,
   browseStatus,
-  loadProfileSchema,
-  profileFilePath,
-  loadProfile,
-  applyOpsToDoc,
-  runDeterministicAging,
-  persistWithJournal,
-  verifyProfile,
-  rebuildProfile,
   ensureRegistered,
   sendNewMessageHint,
+  sendWeeklyReadyHint,
+  weeklyDirPath,
+  weeklyDue,
+  saveWeeklyReport,
+  listWeeklyReports,
+  readWeeklyReport,
+  buildWeeklyPrompt,
+  renderTemplateReport,
   BUNDLED_PRESET_ID,
   userPresetRoot,
   conventionalUserPresetRoot,
@@ -1028,4 +726,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-ON4MSU6E.js.map
+//# sourceMappingURL=chunk-SQJLKP7L.js.map
