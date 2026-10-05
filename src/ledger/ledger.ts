@@ -60,16 +60,20 @@ export function appendEntry(guard: PathGuard, file: string, text: string, now = 
   return entry;
 }
 
-/** Mark an entry done by id (preferred) or unique text substring. */
+/** Mark an entry done by id (preferred) or unique text substring. The date is
+ * restamped to the completion day (time was already) so weekly reporting can
+ * count "resolved this week" — the creation timestamp lives on in nothing,
+ * but done entries are rarely aged against. */
 export function markDone(guard: PathGuard, file: string, key: string, now = Date.now()): LedgerEntry | null {
   const { rawLines, entries } = readLedger(guard, file);
   const target = entries.find((e) => e.status === 'open' && (e.id === key || e.text.includes(key)));
   if (!target) return null;
   const d = new Date(now);
   const pad = (n: number) => String(n).padStart(2, '0');
+  const doneDate = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const out = rawLines.map((line) => {
     if (line.includes(`#${target.id}] `)) {
-      return `- [${target.date} ${pad(d.getHours())}:${pad(d.getMinutes())}][done][#${target.id}] ${target.text}`;
+      return `- [${doneDate} ${pad(d.getHours())}:${pad(d.getMinutes())}][done][#${target.id}] ${target.text}`;
     }
     return line;
   });
