@@ -22,6 +22,8 @@ import { registerStatusbarSection, noteTrack, pinTrack } from './statusbar/track
 import { StatusReader } from './statusbar/store.js';
 import { renderStatusText } from './statusbar/track.js';
 import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
+import { buildLedgerTool } from './ledger/tool.js';
+import { ledgerFilePath } from './ledger/ledger.js';
 
 export const name = 'heartbeat';
 
@@ -63,6 +65,10 @@ export const Config = z.object({
   idleMode: z.boolean().default(false),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
   tokenSaver: z.boolean().default(false),
+  /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
+  ledgerTool: z.boolean().default(true),
+  /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
+  extraTools: z.string().default(''),
 });
 
 export interface HeartbeatConfig {
@@ -76,6 +82,8 @@ export interface HeartbeatConfig {
   statusbar?: boolean;
   idleMode?: boolean;
   tokenSaver?: boolean;
+  ledgerTool?: boolean;
+  extraTools?: string;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
@@ -108,7 +116,11 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     policy = { ...policy, gate: { ...policy.gate, maxDailySend: config.maxDailySend } };
   }
 
-  const deps: OrchestratorDeps = { ctx, paths, guard, policy, agentPreset: config.agentPreset || 'heartbeat' };
+  const deps: OrchestratorDeps = {
+    ctx, paths, guard, policy,
+    agentPreset: config.agentPreset || 'heartbeat',
+    extraTools: (config.extraTools ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  };
   setRuntime({
     paths,
     guard,
@@ -273,6 +285,30 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     if (typeof merged.tokenSaver === 'boolean') tokenSaverRef = merged.tokenSaver;
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
+
+  // ── Ledger as a model tool (v1.8.0) ─────────────────────────────────────
+  // Registers a shared `ledger` tool in the GLOBAL tool layer so every chat
+  // agent can record/complete todos without being commanded to. The engine
+  // room never sees it (its preset allow-list masks global tools). Definition
+  // is a plain object (no dsh-tools import); a host without a registerable
+  // ToolRuntime degrades to an audit line only.
+  if (config.ledgerTool !== false) {
+    ctx.inject(['tools'], (scoped: unknown) => {
+      const audit = (entry: Record<string, unknown>): void => {
+        try {
+          appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+        } catch { /* audit must never break startup */ }
+      };
+      try {
+        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
+        if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
+        tools.register(buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
+        audit({ event: 'ledger_tool_registered' });
+      } catch (e) {
+        audit({ event: 'ledger_tool_register_failed', error: String(e).slice(0, 160) });
+      }
+    });
+  }
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
   startOrchestrator(deps);

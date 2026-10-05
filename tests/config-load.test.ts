@@ -9,11 +9,13 @@ import { assertPolicy, deepMerge } from '../src/config/schema.js';
 let sandbox = '';
 
 const FACTORY = {
-  heartbeat: { intervalMin: 20, idleMode: false },
+  heartbeat: { intervalMin: 20, idleMode: false, archiveRotatedHome: true },
   gate: { maxDailySend: 3, cooldownMinutes: 30, quietHours: { start: '01:00', end: '08:00' } },
   browse: { windows: [{ start: '11:00', end: '15:00' }], minIntervalHours: 4, maxSeedsPerVisit: 2 },
   seeds: { maxActive: 30, ttlDays: { news: 3, fandom: 14, scene: 60, promise: 90 }, coldBenchDays: 21, retireAfterUsed: 2, scoreWeights: { freshness: 0.4, unused: 0.3, confidence: 0.3 } },
   profile: { consolidation: { minIntervalHours: 12, inboxBacklog: 30 }, partitionCap: 50, maxOpsPerRun: 10, confidenceCap: { chat: 0.6, screen: 0.4, browse: 0.4 }, volatileDays: 14, stableLowActivityDays: 180, psyEnabled: false },
+  observe: { maxChars: 80, perBeat: 10 },
+  weekly: { enabled: true },
   retention: { envPulseHours: 48, decisionLogDays: 30 },
 };
 
@@ -64,4 +66,18 @@ test('policy validation rejects out-of-range heartbeat interval', () => {
 test('policy validation rejects malformed quiet hours', () => {
   const merged = deepMerge(FACTORY, { gate: { quietHours: { start: '25:00', end: '08:00' } } });
   assert.throws(() => assertPolicy(merged), /quietHours/);
+});
+
+test('observe depth: user layer overrides maxChars/perBeat, factory survives merge', () => {
+  fs.writeFileSync(path.join(sandbox, 'settings', 'policy.json'), JSON.stringify({
+    observe: { maxChars: 200 },
+  }), 'utf8');
+  const p = loadPolicy(guardStub, path.join(sandbox, 'config'), path.join(sandbox, 'settings'));
+  assert.equal(p.observe.maxChars, 200);
+  assert.equal(p.observe.perBeat, 10); // untouched factory field survives
+});
+
+test('policy validation rejects out-of-range observe depth', () => {
+  assert.throws(() => assertPolicy(deepMerge(FACTORY, { observe: { maxChars: 5 } })), /observe\.maxChars/);
+  assert.throws(() => assertPolicy(deepMerge(FACTORY, { observe: { perBeat: 0 } })), /observe\.perBeat/);
 });

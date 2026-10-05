@@ -1,7 +1,8 @@
 {
   "heartbeat": {
     "intervalMin": 20,
-    "idleMode": false
+    "idleMode": false,
+    "archiveRotatedHome": true
   },
   "gate": {
     "maxDailySend": 3,
@@ -56,6 +57,13 @@
     "volatileDays": 14,
     "stableLowActivityDays": 180,
     "psyEnabled": false
+  },
+  "observe": {
+    "maxChars": 80,
+    "perBeat": 10
+  },
+  "weekly": {
+    "enabled": true
   },
   "retention": {
     "envPulseHours": 48,

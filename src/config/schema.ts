@@ -13,7 +13,7 @@ export interface BrowseWindow {
 }
 
 export interface Policy {
-  heartbeat: { intervalMin: number; idleMode: boolean };
+  heartbeat: { intervalMin: number; idleMode: boolean; archiveRotatedHome: boolean };
   gate: {
     maxDailySend: number;
     cooldownMinutes: number;
@@ -40,6 +40,9 @@ export interface Policy {
     stableLowActivityDays: number;
     psyEnabled: boolean;
   };
+  /** Observation depth (v1.8.0): how much of each user message enters the inbox. */
+  observe: { maxChars: number; perBeat: number };
+  weekly: { enabled: boolean };
   retention: { envPulseHours: number; decisionLogDays: number };
 }
 
@@ -62,6 +65,7 @@ export function assertPolicy(input: unknown): asserts input is Policy {
     fail('heartbeat.intervalMin must be a number in [1, 1440]');
   }
   if (typeof hb.idleMode !== 'boolean') fail('heartbeat.idleMode must be boolean');
+  if (typeof hb.archiveRotatedHome !== 'boolean') fail('heartbeat.archiveRotatedHome must be boolean');
   const g = p.gate;
   if (!isPlainObject(g)) fail('gate missing');
   if (typeof g.maxDailySend !== 'number' || g.maxDailySend < 0) fail('gate.maxDailySend must be >= 0');
@@ -107,6 +111,12 @@ export function assertPolicy(input: unknown): asserts input is Policy {
   if (typeof pr.volatileDays !== 'number' || pr.volatileDays < 1) fail('profile.volatileDays must be >= 1');
   if (typeof pr.stableLowActivityDays !== 'number' || pr.stableLowActivityDays < 1) fail('profile.stableLowActivityDays must be >= 1');
   if (typeof pr.psyEnabled !== 'boolean') fail('profile.psyEnabled must be boolean');
+  const ob = p.observe;
+  if (!isPlainObject(ob)) fail('observe missing');
+  if (typeof ob.maxChars !== 'number' || ob.maxChars < 20 || ob.maxChars > 2000) fail('observe.maxChars must be in [20, 2000]');
+  if (typeof ob.perBeat !== 'number' || ob.perBeat < 1 || ob.perBeat > 100) fail('observe.perBeat must be in [1, 100]');
+  if (!isPlainObject(p.weekly)) fail('weekly missing');
+  if (typeof p.weekly.enabled !== 'boolean') fail('weekly.enabled must be boolean');
   const r = p.retention;
   if (!isPlainObject(r)) fail('retention missing');
   if (typeof r.envPulseHours !== 'number' || typeof r.decisionLogDays !== 'number') fail('retention fields missing');

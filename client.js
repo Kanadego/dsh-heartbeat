@@ -412,6 +412,97 @@ window.__ModuleLoader__.load({
 				);
 			}
 
+			// ── 周报（v1.8.0）────────────────────────────────────────────
+			// 每 7 天一份：代码收集本周事实 → 引擎室写成中性叙述（自称「心跳」，
+			// 不是会话里的 agent）。报告 DPAPI 加密落盘，这里解密展示。
+			function WeeklySection() {
+				const [data, setData] = React.useState(null);
+				const [error, setError] = React.useState(null);
+				const [selected, setSelected] = React.useState("");
+				const [text, setText] = React.useState(null);
+				const loadReport = React.useCallback((file) => {
+					setSelected(file);
+					rpc("weekly.get", { file }).then((r) => setText(r.text), (e) => setError(String(e).slice(0, 100)));
+				}, []);
+				const reload = React.useCallback(() => {
+					rpc("weekly.list").then(
+						(v) => {
+							setData(v.reports);
+							setText(null);
+							if (v.reports && v.reports.length > 0) loadReport(v.reports[0].file);
+						},
+						(e) => setError(String(e).slice(0, 100)),
+					);
+				}, [loadReport]);
+				React.useEffect(() => { reload(); }, [reload]);
+				if (error) return React.createElement("div", { style: hintStyle }, "加载失败：" + error);
+				if (!data) return React.createElement("div", { style: hintStyle }, "加载中…");
+				return React.createElement(
+					"div",
+					null,
+					React.createElement("div", { style: hintStyle }, "每 7 天生成一份：本周表达与静默、新认识、账本、素材池与活跃高峰。报告只陈述事实，由后台「心跳」署名。"),
+					data.length === 0 ? React.createElement("div", { style: hintStyle }, "（还没有周报——装好一周后自动出第一期）") : null,
+					data.length > 1 ? React.createElement("div", { style: rowStyle },
+						data.map((r) => React.createElement("button", {
+							key: r.file,
+							style: r.file === selected ? buttonStyle : buttonGhost,
+							onClick: () => loadReport(r.file),
+						}, r.end.slice(0, 10))),
+					) : null,
+					text ? React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 12 } }, text) : null,
+					React.createElement("div", { style: rowStyle },
+						React.createElement("button", { style: buttonGhost, onClick: () => { void reload(); } }, "刷新")),
+				);
+			}
+
+			// ── 换机迁移（v1.8.0）────────────────────────────────────────
+			// 打包画像/账本/素材池等为口令加密容器（AES-256-GCM），新机器导入时
+			// 用本机 DPAPI 重新加密。口令只在这一次调用里出现，不落盘不进日志。
+			function MigrateSection() {
+				const [pw1, setPw1] = React.useState("");
+				const [pw2, setPw2] = React.useState("");
+				const [importFile, setImportFile] = React.useState("");
+				const [importPw, setImportPw] = React.useState("");
+				const [status, setStatus] = React.useState("");
+				const busy = React.useRef(false);
+				const run = (fn) => {
+					if (busy.current) return;
+					busy.current = true;
+					setStatus("处理中…");
+					fn().catch((e) => setStatus("失败：" + String(e).slice(0, 120))).finally(() => { busy.current = false; });
+				};
+				const doExport = () => run(async () => {
+					if (!pw1 || pw1 !== pw2) { setStatus("两次口令不一致或为空"); return; }
+					const v = await rpc("migrate.export", { passphrase: pw1 });
+					setPw1(""); setPw2("");
+					setStatus("已打包 " + v.count + " 个文件 → " + v.path + "（可拷贝到新机器，口令别丢）");
+				});
+				const doImport = () => run(async () => {
+					if (!importFile || !importPw) { setStatus("需要容器路径与口令"); return; }
+					const v = await rpc("migrate.import", { file: importFile.trim(), passphrase: importPw });
+					setImportPw("");
+					setStatus("恢复 " + v.restored.length + " 个文件，备份 " + v.backedUp.length + " 个，跳过 " + v.skipped.length + " 个——重启 DSH 后生效");
+				});
+				return React.createElement(
+					"div",
+					null,
+					React.createElement("div", { style: hintStyle }, "换电脑/重装系统时把心跳的记忆带走：导出一个口令加密的迁移包，在新机器上导入。口令丢失无法破解，容器可安全走网盘。"),
+					React.createElement("div", { style: { ...hintStyle, marginTop: 6, fontWeight: 600 } }, "① 在这台机器上导出"),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("input", { style: inputStyle, type: "password", placeholder: "设置口令", value: pw1, onChange: (e) => setPw1(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "password", placeholder: "再输入一次", value: pw2, onChange: (e) => setPw2(e.target.value) }),
+						React.createElement("button", { style: buttonStyle, onClick: () => { void doExport(); } }, "导出迁移包"),
+					),
+					React.createElement("div", { style: { ...hintStyle, marginTop: 6, fontWeight: 600 } }, "② 在新机器上导入"),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("input", { style: { ...inputStyle, width: 220 }, placeholder: "迁移包完整路径（.hbmig）", value: importFile, onChange: (e) => setImportFile(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "password", placeholder: "口令", value: importPw, onChange: (e) => setImportPw(e.target.value) }),
+						React.createElement("button", { style: buttonStyle, onClick: () => { void doImport(); } }, "导入"),
+					),
+					status ? React.createElement("div", { style: hintStyle }, status) : null,
+				);
+			}
+
 			// ── 主卡片 ────────────────────────────────────────────────────
 			function HeartbeatSection() {
 				const [ledgerMsg, setLedgerMsg] = React.useState("");
@@ -434,6 +525,8 @@ window.__ModuleLoader__.load({
 							React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, "一键打开账本"),
 							React.createElement("span", { style: hintStyle }, ledgerMsg || "账本是心跳 agent 的待办与话题来源，可直接手编")),
 					)),
+					React.createElement(Section, { title: "周报" }, React.createElement(WeeklySection, null)),
+					React.createElement(Section, { title: "换机迁移" }, React.createElement(MigrateSection, null)),
 					React.createElement(Section, { title: "节律配置" }, React.createElement(ConfigSection, null)),
 				);
 			}
