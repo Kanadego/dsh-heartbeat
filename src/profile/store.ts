@@ -36,6 +36,87 @@ export function journalFilePath(dataDir: string): string {
   return path.join(dataDir, 'profile_journal.jsonl');
 }
 
+// ── snapshot basepoint (v1.8.0, design doc §14 ③) ─────────────────────────
+// The journal grows forever; the snapshot folds its history into one DPAPI
+// document and moves the folded records into a timestamped archive shard.
+// Replay order: snapshot → archives (name order) → live journal, skipping
+// records at or before the snapshot baseline — so verify/rebuild stay correct
+// without knowing whether a snapshot exists.
+
+export const SNAPSHOT_FILE = 'profile_snapshot.json';
+export const ARCHIVE_PREFIX = 'profile_journal.archive-';
+
+export interface ProfileSnapshot {
+  version: 1;
+  /** ts of the LAST journal record folded into `doc`. */
+  baselineTs: string;
+  recordsFolded: number;
+  doc: ProfileDoc;
+}
+
+export function snapshotFilePath(dataDir: string): string {
+  return path.join(dataDir, SNAPSHOT_FILE);
+}
+
+function loadSnapshot(guard: PathGuard, dataDir: string): ProfileSnapshot | null {
+  const snap = loadJson<ProfileSnapshot>(guard, snapshotFilePath(dataDir));
+  if (!snap || snap.version !== 1 || typeof snap.baselineTs !== 'string' || !snap.doc?.partitions) return null;
+  return snap;
+}
+
+function listArchiveFiles(guard: PathGuard, dataDir: string): string[] {
+  try {
+    return fs.readdirSync(guard.assert(dataDir))
+      .filter((f) => f.startsWith(ARCHIVE_PREFIX) && f.endsWith('.jsonl'))
+      .sort(); // timestamped names sort chronologically
+  } catch {
+    return [];
+  }
+}
+
+/** Replay one JSONL text into `doc`, skipping records at/before the baseline. */
+function replayText(doc: ProfileDoc, text: string, baselineTs: string, stats: { records: number; truncatedTail: number; isLive: boolean }): void {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    if (!trimmed) continue;
+    try {
+      const rec = JSON.parse(trimmed) as JournalRecord;
+      // Baseline skip: only records CARRYING a ts can be proven folded. A
+      // ts-less record is always applied (applyOpPermissive tolerates it).
+      if (baselineTs && rec.ts && String(rec.ts) <= baselineTs) continue;
+      for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
+      stats.records += 1;
+    } catch {
+      // Torn tail only counts on the LIVE journal — archives are closed files.
+      const isLast = lines.slice(i + 1).every((l) => !l.trim());
+      if (stats.isLive && isLast) {
+        stats.truncatedTail = lines.length - i;
+        break;
+      }
+      // mid-file corrupt record: skip (journal stays append-only/immutable)
+    }
+  }
+}
+
+/** Full replay: snapshot basepoint + archive shards + live journal. */
+export function replayJournal(guard: PathGuard, dataDir: string): ReplayResult {
+  const snap = loadSnapshot(guard, dataDir);
+  const doc = snap ? snap.doc : emptyProfile();
+  const baselineTs = snap?.baselineTs ?? '';
+  const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, isLive: false };
+  for (const file of listArchiveFiles(guard, dataDir)) {
+    try {
+      // shard record counts are not reported (the snapshot already folded
+      // them); only the live journal's torn tail is meaningful.
+      replayText(doc, fs.readFileSync(path.join(dataDir, file), 'utf8'), baselineTs, { records: 0, truncatedTail: 0, isLive: false });
+    } catch { /* unreadable shard: skip */ }
+  }
+  stats.isLive = true;
+  replayText(doc, readText(guard, journalFilePath(dataDir), ''), baselineTs, stats);
+  return { doc, truncatedTail: stats.truncatedTail, records: stats.records };
+}
+
 export function loadProfile(guard: PathGuard, file: string): ProfileDoc {
   const doc = loadJson<ProfileDoc>(guard, file);
   if (!doc || !doc.partitions) return emptyProfile();
@@ -297,33 +378,6 @@ export interface ReplayResult {
   doc: ProfileDoc;
   truncatedTail: number;
   records: number;
-}
-
-/** Full replay from an empty view. Tolerates a torn tail (explicitly). */
-export function replayJournal(guard: PathGuard, dataDir: string): ReplayResult {
-  const journal = journalFilePath(dataDir);
-  const raw = readText(guard, journal, '');
-  const doc = emptyProfile();
-  let records = 0;
-  let truncatedTail = 0;
-  const lines = raw.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i]!.trim();
-    if (!trimmed) continue;
-    try {
-      const rec = JSON.parse(trimmed) as JournalRecord;
-      for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
-      records += 1;
-    } catch {
-      const isLast = lines.slice(i + 1).every((l) => !l.trim());
-      if (isLast) {
-        truncatedTail = lines.length - i; // torn tail from a mid-write crash
-        break;
-      }
-      // mid-file corrupt record: skip (journal stays append-only/immutable)
-    }
-  }
-  return { doc, truncatedTail, records };
 }
 
 export interface VerifyReport {

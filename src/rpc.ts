@@ -34,6 +34,7 @@ import {
 import { loadProfile, profileFilePath } from './profile/store.js';
 import { buildDigest } from './profile/digest.js';
 import { ledgerFilePath } from './ledger/ledger.js';
+import { listWeeklyReports, readWeeklyReport } from './weekly/report.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
 import { addInterest, readEffective, removeInterest, setWanderWindows } from './browse/interests-edit.js';
 import { loadEncryptedText, writeText } from './vault/vault.js';
@@ -436,6 +437,56 @@ export function installHeartbeatRpc(
             if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
             spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
             return ok({ path: f });
+          }
+
+          case 'weekly.list':
+            return ok({ reports: listWeeklyReports(guard, paths.dataDir) });
+
+          case 'weekly.get': {
+            const file = String(p.file ?? '');
+            const rep = readWeeklyReport(guard, paths.dataDir, file);
+            if (!rep) return err('bad-request', `no such report: ${file}`);
+            return ok(rep);
+          }
+
+          case 'migrate.export': {
+            // Card-side export (v1.8.0): same container as the CLI. The
+            // passphrase lives only in this call — never audited, never logged.
+            const passphrase = String(p.passphrase ?? '');
+            if (!passphrase) return err('bad-request', '需要设置口令');
+            const { collectMigrationEntries, encryptContainer } = await import('./vault/migrate.js');
+            const { entries } = collectMigrationEntries(guard, paths);
+            if (entries.length === 0) return err('bad-request', '没有可打包的记忆文件（data/ 是空的）');
+            const out = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+            writeText(guard, out, encryptContainer(entries, passphrase));
+            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'migrate_export', files: entries.length });
+            return ok({ path: out, count: entries.length });
+          }
+
+          case 'migrate.import': {
+            const passphrase = String(p.passphrase ?? '');
+            const file = String(p.file ?? '');
+            if (!passphrase || !file) return err('bad-request', '需要容器路径与口令');
+            const { decryptContainer, applyMigrationEntries } = await import('./vault/migrate.js');
+            let text: string;
+            try {
+              // Read-only from a user-chosen path (likely OUTSIDE data/); the
+              // path guard still gates every file we WRITE back.
+              text = fs.readFileSync(file, 'utf8');
+            } catch {
+              return err('bad-request', `读不到迁移包：${file}`);
+            }
+            let container: ReturnType<typeof decryptContainer>;
+            try {
+              container = decryptContainer(text, passphrase);
+            } catch (e) {
+              return err('bad-request', String(e instanceof Error ? e.message : e));
+            }
+            const result = applyMigrationEntries(guard, paths, container.files);
+            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
+              event: 'migrate_import', restored: result.restored.length, backedUp: result.backedUp.length, skipped: result.skipped.length,
+            });
+            return ok(result);
           }
 
           default:

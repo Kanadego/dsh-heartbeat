@@ -45,6 +45,13 @@ import {
 } from '../profile/store.js';
 import { loadProfileSchema } from '../profile/schema.js';
 import { planBurn, executeBurn } from '../vault/burn-list.js';
+import {
+  collectMigrationEntries,
+  encryptContainer,
+  decryptContainer,
+  applyMigrationEntries,
+} from '../vault/migrate.js';
+import { listWeeklyReports, readWeeklyReport, weeklyDirPath } from '../weekly/report.js';
 import { writeText } from '../vault/vault.js';
 import {
   BUNDLED_PRESET_ID,
@@ -84,7 +91,12 @@ function usage(): string {
     '  profile export                    decrypted Markdown export to data/exports/',
     '  profile verify                    journal replay vs disk (report only)',
     '  profile rebuild [--check]         rebuild materialized view from journal',
+    '  profile snapshot [--force]        fold the journal into a snapshot + archive shard',
     '  profile wipe                      wipe profile data (asks --yes)',
+    '  weekly list                       list generated weekly reports',
+    '  weekly show [file]                print a report (default: newest)',
+    '  migrate export [file]             pack memory files into a passphrase container (passphrase: 2 stdin lines)',
+    '  migrate import <file>             restore a container into this workspace (passphrase: 1 stdin line)',
     '  burn [--yes] [--all]              shred runtime data (settings kept unless --all)',
     '  preset status                     bundled agent preset: target dir + installed?',
     '  preset install [--force]          install the bundled preset (never overwrites unless --force)',
@@ -102,6 +114,16 @@ function readStdinText(): string {
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
   return i > -1 ? argv[i + 1] : undefined;
+}
+
+/** Read N lines from stdin (passphrase prompts for migrate). */
+async function readLines(prompts: string[]): Promise<string[]> {
+  const readline = await import('node:readline/promises');
+  const it = readline.createInterface({ input: process.stdin });
+  const out: string[] = [];
+  for (const p of prompts) out.push((await it.question(p)).trim());
+  it.close();
+  return out;
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -254,6 +276,32 @@ export async function main(argv: string[]): Promise<number> {
       }
     }
 
+    case 'weekly': {
+      const reports = listWeeklyReports(guard, paths.dataDir);
+      if (sub === 'list' || sub === undefined) {
+        if (reports.length === 0) console.log('(no reports yet — heartbeat generates one every 7 days)');
+        for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
+        return 0;
+      }
+      if (sub === 'show') {
+        const file = rest[0] ?? reports[0]?.file;
+        if (!file) {
+          console.log('(no reports yet)');
+          return 1;
+        }
+        const rep = readWeeklyReport(guard, paths.dataDir, file);
+        if (!rep) {
+          console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
+          return 1;
+        }
+        console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
+        console.log(rep.text);
+        return 0;
+      }
+      console.error(`unknown weekly subcommand: ${sub}`);
+      return 1;
+    }
+
     case 'logs': {
       if (sub !== 'cleanup') {
         console.error('usage: logs cleanup [--dry-run]');
@@ -389,6 +437,23 @@ export async function main(argv: string[]): Promise<number> {
           console.log('WIPED (settings preserved; use burn for full shredding)');
           return 0;
         }
+        case 'snapshot': {
+          const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import('../profile/snapshot.js');
+          const { needed, lines } = snapshotDue(guard, paths.dataDir);
+          console.log(`journal ${lines} 条（阈值 ${SNAPSHOT_THRESHOLD}）`);
+          if (!needed && !rest.includes('--force')) {
+            console.log('未到阈值，未执行（加 --force 强制折叠）。');
+            return 0;
+          }
+          const report = snapshotProfile(guard, paths.dataDir);
+          if (!report.ok) {
+            console.log(`未执行：${report.reason}`);
+            return 0;
+          }
+          console.log(`已折叠 ${report.folded} 条 → 快照（baseline ${report.baselineTs}），归档 ${report.archiveFile}，live journal 已清空。`);
+          console.log('verify/rebuild 自动从快照基点重放，无需额外操作。');
+          return 0;
+        }
         default:
           console.error(`unknown profile subcommand: ${sub}`);
           return 1;
@@ -408,6 +473,68 @@ export async function main(argv: string[]): Promise<number> {
       const result = executeBurn(guard, paths, { all });
       console.log(`BURNED: ${result.burned.length} 项；MISSING: ${result.missing.length} 项`);
       return 0;
+    }
+
+    case 'migrate': {
+      if (sub === 'export') {
+        const defaultOut = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+        const outfile = rest[0] ?? defaultOut;
+        let outCanon: string;
+        try {
+          outCanon = guard.assert(outfile);
+        } catch {
+          console.error(`导出文件必须落在插件 data/ 目录内（路径守卫拒绝）：${outfile}\n默认位置：${defaultOut}`);
+          return 1;
+        }
+        const [pw1, pw2] = await readLines(['设置口令（用于加密迁移包）: ', '再输入一次确认: ']);
+        if (!pw1 || pw1 !== pw2) {
+          console.error('两次输入不一致或为空，已取消。');
+          return 1;
+        }
+        const { entries, progress } = collectMigrationEntries(guard, paths);
+        if (entries.length === 0) {
+          console.log('没有可打包的记忆文件（data/ 是空的）。');
+          return 1;
+        }
+        fs.mkdirSync(path.dirname(outCanon), { recursive: true });
+        fs.writeFileSync(outCanon, encryptContainer(entries, pw1), 'utf8');
+        console.log(`已打包 ${entries.length} 个文件 → ${outCanon}`);
+        console.log(`  打包：${progress.packed.join(', ')}`);
+        if (progress.missing.length > 0) console.log(`  跳过（不存在）：${progress.missing.join(', ')}`);
+        console.log('容器是口令加密的，可安全拷贝到新机器；DPAPI 会在导入时用新机器重新加密。');
+        return 0;
+      }
+      if (sub === 'import') {
+        const infile = rest[0];
+        if (!infile) {
+          console.error('usage: migrate import <container-file>');
+          return 1;
+        }
+        const [pw] = await readLines(['输入迁移包口令: ']);
+        let text: string;
+        try {
+          text = fs.readFileSync(infile, 'utf8');
+        } catch {
+          console.error(`读不到迁移包：${infile}`);
+          return 1;
+        }
+        let files;
+        try {
+          files = decryptContainer(text, pw ?? '');
+        } catch (e) {
+          console.error(String(e instanceof Error ? e.message : e));
+          return 1;
+        }
+        const result = applyMigrationEntries(guard, paths, files.files);
+        console.log(`恢复 ${result.restored.length} 个文件；备份 ${result.backedUp.length} 个被覆盖文件；跳过 ${result.skipped.length} 个。`);
+        for (const r of result.restored) console.log(`  恢复: ${r}`);
+        for (const b of result.backedUp) console.log(`  备份: ${b}.bak-migrate-*`);
+        if (result.skipped.length > 0) console.log(`  跳过: ${result.skipped.join(', ')}`);
+        console.log('重启 DSH 后生效。');
+        return 0;
+      }
+      console.error(`unknown migrate subcommand: ${sub}`);
+      return 1;
     }
 
     case 'sessions': {

@@ -28,3 +28,10 @@ export function sendNewMessageHint(paths: WorkspacePaths): boolean {
   const r = runNotify(paths, ['-Title', 'Heartbeat', '-Message', '有新消息']);
   return r.status === 0 && /TOAST_SENT/.test(r.out);
 }
+
+/** Weekly report ready hint (v1.8.0): same D12 discipline — announces that a
+ * report exists, never carries its content. */
+export function sendWeeklyReadyHint(paths: WorkspacePaths): boolean {
+  const r = runNotify(paths, ['-Title', '心跳周报', '-Message', '本期周报已生成']);
+  return r.status === 0 && /TOAST_SENT/.test(r.out);
+}

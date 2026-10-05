@@ -33,10 +33,18 @@ import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
 import { adviseWander, adviseRefillWander, checkWatchlist, completeWander, browseStatePath } from '../browse/browse.js';
 import { shouldConsolidate, runConsolidation } from '../profile/consolidate.js';
+import { snapshotIfDue } from '../profile/snapshot.js';
 import { buildDigest } from '../profile/digest.js';
 import { recordPresence } from '../rhythm/rhythm.js';
 import { pruneAuditFile } from './audit-log.js';
-import { ensureRegistered, sendNewMessageHint } from '../notify/notify.js';
+import { ensureRegistered, sendNewMessageHint, sendWeeklyReadyHint } from '../notify/notify.js';
+import { collectWeeklyFacts } from '../weekly/collect.js';
+import {
+  weeklyDue,
+  buildWeeklyPrompt,
+  renderTemplateReport,
+  saveWeeklyReport,
+} from '../weekly/report.js';
 
 export interface OrchestratorDeps {
   ctx: {
@@ -56,6 +64,10 @@ export interface OrchestratorDeps {
   policy: Policy;
   /** Agent preset the heartbeat agent joins (composition entry `agentPreset`). */
   agentPreset?: string;
+  /** Extra tool names the engine-room allow-list should include (config
+   * `extraTools`, comma-separated in the composition entry). Only names that
+   * actually exist in the global layer are applied. */
+  extraTools?: string[];
 }
 
 /** Live-reschedule hook: the settings card may change the interval at runtime. */
@@ -250,6 +262,27 @@ function defaultAgentOptions(ctx: OrchestratorDeps['ctx']): Record<string, unkno
  * heartbeat preset and pins the tool allow-list on every freshly created
  * engine-room agent. Extracted from ensureAgent so rotateHome provisions
  * identically-configured homes (2026-09-30). */
+/** Tools the engine room may additionally use when they exist in the global
+ * layer. billion-context's compression works by the MODEL calling `compress`
+ * as context grows — our allow-list mask was why the engine room could never
+ * fold its own context. Auto-detected by exact name at setup time, so hosts
+ * without the plugin (or with the proxy down) simply don't get them.
+ * `search_context` is deliberately NOT auto-added: dsh-acp registers a
+ * different tool under the same name (see the 2026-09 restrict incident). */
+export const ENGINE_ROOM_EXTRA_TOOLS = ['compress', 'decompress', 'acp_status'];
+
+/** Pure allow-list builder (unit-tested): web_search first, then known
+ * compression tools, then config-requested extras — all only if actually
+ * present in the global layer, deduped, order-stable. */
+export function buildEngineRoomAllowList(globalNames: string[], configExtras: string[] = []): string[] {
+  const global = new Set(globalNames);
+  const allow = ['web_search'];
+  for (const name of [...ENGINE_ROOM_EXTRA_TOOLS, ...configExtras.map((t) => t.trim()).filter(Boolean)]) {
+    if (global.has(name) && !allow.includes(name)) allow.push(name);
+  }
+  return allow;
+}
+
 function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): unknown }) => Promise<void> {
   const { ctx, paths } = deps;
   return async (agentCtx: { get(name: string): unknown }) => {
@@ -294,7 +327,13 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
       if (typeof tools?.restrict !== 'function') {
         notes.push('restrict=no-api');
       } else {
-        const allow = ['web_search'];
+        // Global-layer names, read once: drives both the allow-list (bili
+        // compression tools, config extras) and the diagnostic note.
+        let globalNames: string[] = [];
+        try {
+          globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ''));
+        } catch { /* schemas read is best-effort; allow list falls back to web_search */ }
+        const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
         try {
           tools.restrict({ allow });
           notes.push(`restrict=ok allow=${allow.join('|')}`);
@@ -312,7 +351,7 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
           // such as web_search. It is a sanity read of the process-global
           // layer, not the agent's surface — `restrict=ok` above is the line
           // that proves the preset landed.
-          const visible = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? '?')).sort();
+          const visible = globalNames.sort();
           notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(',') : '(empty)'}`);
         } catch (e) {
           notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
@@ -325,9 +364,11 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
 
 /** Rotate the engine-room home: provision a fresh session with the standard
  * setup, persist it as the saved home, and drop the cached agent so the next
- * acquisition picks the new home up. The fat home is simply abandoned — its
- * file stays on disk as an ordinary conversation; nothing in-session needs
- * carrying (profile / ledger / seeds live in data/ files). */
+ * acquisition picks the new home up. The fat home is retired — with
+ * `heartbeat.archiveRotatedHome` (default on) it is archived through the
+ * host's WorkspaceRegistry so it stops cluttering the sidebar (reversible:
+ * archive never touches workspace accounting or the session file); nothing
+ * in-session needs carrying (profile / ledger / seeds live in data/ files). */
 async function rotateHome(deps: OrchestratorDeps, reason: string): Promise<void> {
   const { ctx, guard, paths } = deps;
   const old = readBeatState(guard, paths).sessionId;
@@ -353,6 +394,49 @@ async function rotateHome(deps: OrchestratorDeps, reason: string): Promise<void>
     event: 'home_rotate_done', from: old, to: realId, reason,
   });
   ctx.logger.info('heartbeat: home rotated %s -> %s (%s)', old ?? '(none)', realId, reason);
+  if (shouldArchiveRotatedHome({ old, realId, enabled: deps.policy.heartbeat.archiveRotatedHome !== false })) {
+    archiveSessionBestEffort(deps, old!, reason);
+  }
+}
+
+/** Pure decision for retiring a rotated-out home (unit-tested): need a real
+ * previous id that differs from the new one, and the policy switch on. */
+export function shouldArchiveRotatedHome(input: { old?: string | null; realId: string; enabled: boolean }): boolean {
+  return Boolean(input.old) && input.old !== input.realId && input.enabled;
+}
+
+/** Retire a rotated-out home through the host's WorkspaceRegistry (0.2.0
+ * verified: `ctx.workspaceRegistry.archiveSession(sessionId, {stopActivity})`
+ * — durable, idempotent for already-archived ids, archive set only). Inject at
+ * call time: the registry mounts long before any rotation, so the lazy
+ * declaration fires immediately; if it never does, the audit says so and
+ * nothing else is affected. */
+function archiveSessionBestEffort(deps: OrchestratorDeps, sessionId: string, why: string): void {
+  const audit = (entry: Record<string, unknown>): void => {
+    try {
+      appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', entry);
+    } catch { /* audit must never break the beat */ }
+  };
+  try {
+    const injectable = deps.ctx as unknown as {
+      inject(services: string[], callback: (scoped: unknown) => void): void;
+    };
+    injectable.inject(['workspaceRegistry'], (scoped: unknown) => {
+      const registry = (scoped as {
+        workspaceRegistry?: { archiveSession(id: string, options?: { stopActivity?: boolean }): Promise<void> };
+      }).workspaceRegistry;
+      if (!registry || typeof registry.archiveSession !== 'function') {
+        audit({ event: 'home_rotate_archive', ok: false, sessionId, why, error: 'workspaceRegistry unavailable' });
+        return;
+      }
+      void Promise.resolve(registry.archiveSession(sessionId, { stopActivity: true })).then(
+        () => audit({ event: 'home_rotate_archive', ok: true, sessionId, why }),
+        (e: unknown) => audit({ event: 'home_rotate_archive', ok: false, sessionId, why, error: String(e).slice(0, 160) }),
+      );
+    });
+  } catch (e) {
+    audit({ event: 'home_rotate_archive', ok: false, sessionId, why, error: String(e).slice(0, 160) });
+  }
 }
 
 function unwrapHomeHandle(handle: unknown): HostAgent {
@@ -597,6 +681,9 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
   gcPool(guard, seedsFilePath(paths.dataDir), policy, now);
   pruneAuditFile(paths.logsDir + '/envpulse.jsonl', policy.retention.envPulseHours * 3600_000, now);
   pruneAuditFile(paths.logsDir + '/heartbeat.jsonl', policy.retention.decisionLogDays * 86_400_000, now);
+  // Journal snapshot basepoint (v1.8.0): fold the journal once it grows past
+  // the threshold, so replay cost stays bounded on long deployments.
+  snapshotIfDue(guard, paths.dataDir, paths.logsDir + '/heartbeat.jsonl', 'maintenance-threshold', now);
   const cons = shouldConsolidate(guard, paths, policy, now);
   if (cons.due) {
     const llm = async (prompt: string): Promise<string> => {
@@ -627,7 +714,7 @@ async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | n
 /**
  * D13 observe role: for each observe-bound session with a LIVE agent, drain
  * new user messages since the stored cursor into the profile inbox (pointer +
- * first sentence only, ≤80 chars; plugin-injected messages are skipped).
+ * first sentence only, ≤ observe.maxChars; plugin-injected messages skipped).
  */
 async function observeBoundSessions(bc: BeatContext): Promise<void> {
   const { deps, now } = bc;
@@ -651,7 +738,10 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
       const cursor = cursors[b.sessionId] ?? 0;
       let last = cursor;
       let added = 0;
-      for (let i = cursor; i < events.length && added < 10; i++) {
+      // Depth knobs (v1.8.0): perBeat caps messages per session per beat,
+      // maxChars caps the note kept per message (first sentence).
+      const { maxChars, perBeat } = deps.policy.observe;
+      for (let i = cursor; i < events.length && added < perBeat; i++) {
         const e = events[i]!;
         if (e.type !== 'user/message') continue;
         const d = e.data as { source?: { kind?: string; plugin?: string }; content?: { type?: string; text?: string }[] } | undefined;
@@ -665,7 +755,7 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
           kind: 'chat',
           at: new Date(now).toISOString(),
           ref: `cursors.json#${b.sessionId}:${i}`,
-          note: text.split(/[。！？\n]/)[0]!.slice(0, 80),
+          note: text.split(/[。！？\n]/)[0]!.slice(0, maxChars),
         });
         added += 1;
         last = i + 1;
@@ -678,6 +768,56 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
     } catch (e) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observe_error', sessionId: b.sessionId, error: String(e).slice(0, 120) });
     }
+  }
+}
+
+/** Weekly report phase (v1.8.0): once every 7 days, collect the week's facts
+ * from the plugin stores and have the engine room write them up as a neutral
+ * "心跳" narrator. The report is DPAPI-encrypted (it quotes profile/ledger
+ * content), a toast announces it (never its content), and the card reads it
+ * back over RPC. Generation is an ordinary engine-room turn (zero tools), so
+ * an LLM failure degrades to the deterministic template, never an error. */
+async function weeklyPhase(bc: BeatContext): Promise<void> {
+  const { deps, agent, now } = bc;
+  const { guard, paths, policy } = deps;
+  if (policy.weekly.enabled === false) return;
+  if (!weeklyDue(guard, paths.dataDir, now)) return;
+  const audit = (entry: Record<string, unknown>): void => {
+    try {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', entry);
+    } catch { /* audit must never break the beat */ }
+  };
+  if (!agent) {
+    audit({ event: 'weekly_skipped', reason: 'agentless beat' });
+    return;
+  }
+  try {
+    const facts = collectWeeklyFacts(guard, paths, policy, now);
+    let text = '';
+    let source: 'llm' | 'template' = 'template';
+    try {
+      text = (await agentTurn(deps, agent, buildWeeklyPrompt(facts), 'weekly', IDLE_WAIT_TIMEOUT_MS)).trim();
+      if (text) source = 'llm';
+    } catch (e) {
+      audit({ event: 'weekly_llm_failed', error: String(e).slice(0, 160) });
+    }
+    if (!text) text = renderTemplateReport(facts); // plain report beats no report
+    saveWeeklyReport(guard, paths.dataDir, {
+      start: facts.windowStart,
+      end: facts.windowEnd,
+      generatedAt: new Date(now).toISOString(),
+      source,
+      text,
+    });
+    audit({ event: 'weekly_generated', source, chars: text.length });
+    // Toast skips quiet hours — a 3 a.m. "your report is ready" is noise.
+    if (!inQuietHours(policy, now)) {
+      try {
+        sendWeeklyReadyHint(paths);
+      } catch { /* toast is best-effort */ }
+    }
+  } catch (e) {
+    audit({ event: 'weekly_failed', error: String(e).slice(0, 160) });
   }
 }
 
@@ -1154,6 +1294,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
       } else {
         await maintenancePhase(bc);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
+        await weeklyPhase(bc);
         await collectPhase(bc);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'collect' });
         wandered = await wanderPhase(bc);
