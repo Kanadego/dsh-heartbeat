@@ -28,6 +28,8 @@ export interface Policy {
     maxActive: number;
     ttlDays: { news: number; fandom: number; scene: number; promise: number };
     coldBenchDays: number;
+    /** Archive-area cap (v1.9.0): gc trims archived seeds beyond this, oldest first. */
+    archiveCap: number;
     retireAfterUsed: number;
     scoreWeights: { freshness: number; unused: number; confidence: number };
   };
@@ -94,6 +96,7 @@ export function assertPolicy(input: unknown): asserts input is Policy {
     if (typeof s.ttlDays[k] !== 'number') fail(`seeds.ttlDays.${k} missing`);
   }
   if (typeof s.coldBenchDays !== 'number') fail('seeds.coldBenchDays missing');
+  if (typeof s.archiveCap !== 'number' || s.archiveCap < 1) fail('seeds.archiveCap must be >= 1');
   if (typeof s.retireAfterUsed !== 'number' || s.retireAfterUsed < 1) fail('seeds.retireAfterUsed must be >= 1');
   if (!isPlainObject(s.scoreWeights)) fail('seeds.scoreWeights missing');
   const pr = p.profile;

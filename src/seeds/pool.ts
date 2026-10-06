@@ -19,6 +19,25 @@ import {
 
 const DAY_MS = 86_400_000;
 
+// ── lifecycle audit (2026-10-06 / v1.9.0) ───────────────────────────────
+// The pool used to mutate in silence: a seed could appear, be evicted for
+// capacity, or be dropped from the archive with nothing in the log. Every
+// mutator now takes an optional sink and reports what it did. IDs and
+// metadata ONLY — heartbeat.jsonl is plaintext by charter and must never
+// carry conversation text; the seed text itself stays in the DPAPI pool.
+export type SeedAuditFn = (entry: Record<string, unknown>) => void;
+
+const NO_AUDIT: SeedAuditFn = () => {};
+
+/** Audit must never break the pool (or the beat that called it). */
+function emit(audit: SeedAuditFn, entry: Record<string, unknown>): void {
+  try {
+    audit(entry);
+  } catch {
+    /* audit is diagnostic; a failed append is not a pool failure */
+  }
+}
+
 // Per-category pool caps (2026-09-18 spec ⑤): topic stock vs conversation-grown
 // chat material, decoupled from `source`; sum == the global maxActive default.
 export const SEED_CATEGORY_CAPS: Record<SeedCategory, number> = { topic: 16, chat: 14 };
@@ -54,6 +73,8 @@ export interface GcReport {
   expired: number;
   coldBench: number;
   activeAfter: number;
+  /** v1.9.0: archived rows dropped to honor seeds.archiveCap (oldest first). */
+  archiveTrimmed: number;
 }
 
 export const TTL_KEYS: readonly SeedTag[] = ['news', 'fandom', 'scene', 'promise'];
@@ -162,6 +183,7 @@ export function addSeed(
   policy: Policy,
   input: AddSeedInput,
   now = Date.now(),
+  audit: SeedAuditFn = NO_AUDIT,
 ): AddSeedResult {
   const db = loadPool(guard, file);
   const text = input.text.trim();
@@ -198,6 +220,7 @@ export function addSeed(
       extra.status = 'archived';
       extra.retireReason = 'completed';
       extra.retiredAt = nowIso;
+      emit(audit, { event: 'seed_retired', id: extra.id, reason: 'completed', via: 'merge', into: kept.id });
     }
     seed = kept;
     // capacity still applies after growth check below if kept is somehow over cap
@@ -205,10 +228,13 @@ export function addSeed(
       const victim = pickEvictionVictim(db, policy, now, normalizeCategory(kept.category));
       if (victim && victim.id !== kept.id) {
         archiveSeed(victim, 'pool_cap', now);
+        emit(audit, { event: 'seed_added', id: kept.id, kind: 'merged', tag: kept.tag, source: kept.source, category: kept.category, confidence: kept.confidence, mergedFrom: sameTopic.length - 1 });
+        emit(audit, { event: 'seed_retired', id: victim.id, reason: 'pool_cap', via: 'merge', into: kept.id });
         savePool(guard, file, db);
         return { kind: 'merged', seed: kept, evicted: victim };
       }
     }
+    emit(audit, { event: 'seed_added', id: kept.id, kind: 'merged', tag: kept.tag, source: kept.source, category: kept.category, confidence: kept.confidence, mergedFrom: sameTopic.length - 1 });
     savePool(guard, file, db);
     return { kind: 'merged', seed: kept };
   }
@@ -251,16 +277,20 @@ export function addSeed(
     status: 'active',
   };
   db.seeds.push(seed);
+  emit(audit, { event: 'seed_added', id: seed.id, kind: 'added', tag: seed.tag, source: seed.source, category: seed.category, confidence: seed.confidence });
+  if (evicted) emit(audit, { event: 'seed_retired', id: evicted.id, reason: 'pool_cap', via: 'add', into: seed.id });
   savePool(guard, file, db);
   return { kind: 'added', seed, evicted };
 }
 
 /**
  * Deterministic gc (rules 1-3 of §4.2). Rule 4 (pool cap) fires on add only.
+ * v1.9.0: the archive area is ALSO capped (seeds.archiveCap) — the archive is
+ * a forensic trail, not a hoard; trim oldest-retired first.
  */
-export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Date.now()): GcReport {
+export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Date.now(), audit: SeedAuditFn = NO_AUDIT): GcReport {
   const db = loadPool(guard, file);
-  const report: GcReport = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0 };
+  const report: GcReport = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0, archiveTrimmed: 0 };
   for (const s of activeSeeds(db)) {
     const ageMs = now - parseIso(s.bornAt);
     const sinceEvidence = parseIso(s.lastEvidenceAt);
@@ -268,13 +298,31 @@ export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Dat
     if (s.used >= retireLimit(s, policy) && sinceEvidence <= sinceUsed) {
       archiveSeed(s, 'consumed', now);
       report.consumed += 1;
+      emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'gc', used: s.used });
     } else if (now > parseIso(s.expiresAt)) {
       archiveSeed(s, 'expired', now);
       report.expired += 1;
+      emit(audit, { event: 'seed_retired', id: s.id, reason: 'expired', via: 'gc', used: s.used });
     } else if (s.used === 0 && ageMs >= policy.seeds.coldBenchDays * DAY_MS) {
       archiveSeed(s, 'cold_bench', now);
       report.coldBench += 1;
+      emit(audit, { event: 'seed_retired', id: s.id, reason: 'cold_bench', via: 'gc', used: s.used });
     }
+  }
+  // archive cap: drop the oldest-retired rows beyond the cap (retiredAt may be
+  // missing on pre-v1.5 rows — parseIso('') = 0 sorts them oldest).
+  const archived = db.seeds.filter((s) => s.status === 'archived');
+  if (archived.length > policy.seeds.archiveCap) {
+    const drop = [...archived]
+      .sort((a, b) => parseIso(a.retiredAt ?? '') - parseIso(b.retiredAt ?? ''))
+      .slice(0, archived.length - policy.seeds.archiveCap);
+    const dropped = new Set(drop.map((s) => s.id));
+    db.seeds = db.seeds.filter((s) => !dropped.has(s.id));
+    report.archiveTrimmed = drop.length;
+    // These rows are GONE (not archived — deleted): the log is the only trace
+    // left, so name them. IDs only, and cap the list in case a first GC trims
+    // a legacy archive wholesale.
+    emit(audit, { event: 'seed_archive_trimmed', count: drop.length, ids: drop.slice(0, 50).map((s) => s.id) });
   }
   report.activeAfter = activeSeeds(db).length;
   savePool(guard, file, db);
@@ -288,6 +336,7 @@ export function surfaceSeed(
   policy: Policy,
   id: string,
   now = Date.now(),
+  audit: SeedAuditFn = NO_AUDIT,
 ): Seed | null {
   const db = loadPool(guard, file);
   const s = db.seeds.find((x) => x.id === id && x.status === 'active');
@@ -296,6 +345,7 @@ export function surfaceSeed(
   s.lastUsedAt = new Date(now).toISOString();
   if (s.used >= retireLimit(s, policy) && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
     archiveSeed(s, 'consumed', now);
+    emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'surface', used: s.used });
   }
   savePool(guard, file, db);
   return s;
@@ -308,11 +358,13 @@ export function archiveSeedById(
   id: string,
   reason: SeedRetireReason = 'completed',
   now = Date.now(),
+  audit: SeedAuditFn = NO_AUDIT,
 ): Seed | null {
   const db = loadPool(guard, file);
   const s = db.seeds.find((x) => x.id === id && x.status === 'active');
   if (!s) return null;
   archiveSeed(s, reason, now);
+  emit(audit, { event: 'seed_retired', id: s.id, reason, via: 'manual' });
   savePool(guard, file, db);
   return s;
 }
@@ -324,6 +376,7 @@ export function restoreSeed(
   policy: Policy,
   id: string,
   now = Date.now(),
+  audit: SeedAuditFn = NO_AUDIT,
 ): { ok: true; seed: Seed } | { ok: false; reason: string } {
   const db = loadPool(guard, file);
   const s = db.seeds.find((x) => x.id === id && x.status === 'archived');
@@ -336,16 +389,18 @@ export function restoreSeed(
   s.retiredAt = undefined;
   s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
   s.lastEvidenceAt = new Date(now).toISOString();
+  emit(audit, { event: 'seed_restored', id: s.id });
   savePool(guard, file, db);
   return { ok: true, seed: s };
 }
 
-/** Hard delete (UI explicit action with confirm; audit lives in the CLI/log). */
-export function deleteSeed(guard: PathGuard, file: string, id: string): boolean {
+/** Hard delete (UI explicit action with confirm; the caller audits it). */
+export function deleteSeed(guard: PathGuard, file: string, id: string, audit: SeedAuditFn = NO_AUDIT): boolean {
   const db = loadPool(guard, file);
   const before = db.seeds.length;
   db.seeds = db.seeds.filter((x) => x.id !== id);
   if (db.seeds.length === before) return false;
+  emit(audit, { event: 'seed_deleted', id });
   savePool(guard, file, db);
   return true;
 }

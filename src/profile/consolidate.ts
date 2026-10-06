@@ -243,12 +243,19 @@ export async function runConsolidation(
     // Chat seeds land in the material pool (category=chat via source 'chat');
     // addSeed merges by topic and applies the chat cap (spec ⑤) itself.
     const { addSeed, seedsFilePath } = await import('../seeds/pool.js');
+    const seedAudit = (entry: Record<string, unknown>): void => {
+      try {
+        appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', entry);
+      } catch {
+        /* audit must never break the consolidation run */
+      }
+    };
     let chatSeedsAdded = 0;
     for (const cs of chatSeeds) {
       try {
         addSeed(guard, seedsFilePath(paths.dataDir), policy, {
           text: cs.text, ...(cs.topic ? { topic: cs.topic } : {}), source: 'chat', tag: 'scene',
-        }, now);
+        }, now, seedAudit);
         chatSeedsAdded += 1;
       } catch { /* a bad seed must not fail the consolidation run */ }
     }

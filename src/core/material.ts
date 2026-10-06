@@ -10,7 +10,11 @@
 //     (used >= 1) before: "or you can also say something heartfelt (no material)"
 //
 // The materials come from the active seed pool (never the archive). Attribution
-// (attributionIds) = explicit seed_ids first, containment match fallback.
+// (2026-10-06): explicit nomination ONLY — the persona's seed_report first,
+// the engine room's D23 seed_ids as fallback. The old containment match is
+// deleted: heavy paraphrase missed (real-world recovery rate collapsed, pool
+// starved) and loose prefixes mis-credited. Under-crediting is cheap (seed
+// stays one beat longer); false credit poisons the preference loop.
 
 export interface MaterialInput {
   id: string;
@@ -67,9 +71,10 @@ export function assembleCandidates<T extends CandidateSeed>(seeds: T[], opts: As
 export const PACKAGE_DECLARE =
   '这是心跳插件素材投递,请你根据当前处境判断要不要选一条说';
 
-/** ② each material as ONE sentence (already compressed); no reasons, no order. */
+/** ② each material as ONE sentence prefixed by its id — the persona reports
+ * usage by id (seed_report), so the id must be visible in the package. */
 export function materialLines(materials: MaterialInput[]): string[] {
-  return materials.map((m) => m.text.trim());
+  return materials.map((m) => `- [${m.id}] ${m.text.trim()}`);
 }
 
 /** ③ conditional "heartfelt" option: true only when 2+ of the given materials
@@ -81,11 +86,13 @@ export function wantHonestOption(materials: MaterialInput[], threshold = 2): boo
 /**
  * Build the persona-facing material-package prompt. Spec ② (2026-09-18):
  * every delivery carries the "我在干嘛" line when — and only when — vision
- * produced one this beat.
+ * produced one this beat. Section ④ (2026-10-06) is the standing report
+ * instruction: after speaking (or deciding not to), the persona files one
+ * seed_report — the unified bookkeeping format the orchestrator reconciles.
  */
 export function buildMaterialPrompt(
   materials: MaterialInput[],
-  opts: { threshold?: number; doing?: string } = {},
+  opts: { threshold?: number; doing?: string; deliveryId?: string } = {},
 ): string {
   const lines: string[] = [];
   if (opts.doing && opts.doing.trim()) {
@@ -93,34 +100,138 @@ export function buildMaterialPrompt(
   }
   lines.push(PACKAGE_DECLARE);
   const items = materialLines(materials);
-  for (const it of items) lines.push('- ' + it);
+  for (const it of items) lines.push(it);
   if (wantHonestOption(materials, opts.threshold ?? 2)) {
     lines.push('(或者也可以说一句真心话,不带素材)');
   }
+  // ④b (v1.9.0): the delivery id ties the report back to THIS package.
+  if (opts.deliveryId) {
+    lines.push(`(本次投递编号:${opts.deliveryId},报账时原样填进 delivery_id)`);
+  }
+  lines.push(REPORT_DECLARE);
   return lines.join('\n');
 }
 
+/** ④ standing report instruction (2026-10-06): one seed_report per delivery,
+ * even for "used nothing". Reasons are the persona's own one-line why. */
+export const REPORT_DECLARE =
+  '最后,无论刚才说不说话、用没用素材,都要调用一次 seed_report 工具报账:' +
+  'spoken=material(说了素材)/heartfelt(说了不带素材的话)/silent(没说话);' +
+  '用了素材就把素材编号填进 seed_ids(可多条,只填编号本身);用了画像条目当话题就填 profile_ids;' +
+  '没用素材时用 reason 简单记一笔原因(不想说话/素材不搭/在忙或刚聊过,无需素材);' +
+  '并把本次投递编号填进 delivery_id。';
+
 /**
- * A2 attribution (redesign): explicit seed_ids first, then containment-match
- * fallback against the delivered materials. Only the materials actually present in this
- * package are eligible (never archive-sourced). A candidate is credited when the
- * persona's actual output contains a >=8-char prefix of the material text, or the
- * material contains a >=8-char prefix of the output.
+ * Attribution (2026-10-06): explicit nomination only, validated against THIS
+ * package — an id absent from the delivery is never credited, whatever the
+ * model claims. Order of trust is decided by the caller (persona report >
+ * engine-room D23 seed_ids); both funnel through here.
  */
-export function attributionIds(
-  candidates: MaterialInput[],
-  output: string,
-  explicitIds: string[] = [],
-): string[] {
-  const used = new Set(explicitIds);
-  const b = output.trim();
-  for (const c of candidates) {
-    const a = c.text.trim();
-    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-      used.add(c.id);
-    }
+export function explicitIds(candidates: MaterialInput[], ids: string[] = []): string[] {
+  const known = new Set(candidates.map((c) => c.id));
+  return [...new Set(ids)].filter((id) => known.has(id));
+}
+
+/** The persona's seed_report, structurally typed so material.ts stays free of
+ * a runtime dependency on the report store. */
+export interface DeliveryReportInput {
+  spoken: 'material' | 'heartfelt' | 'silent';
+  seedIds: string[];
+  profileIds: string[];
+  reason?: string;
+  /** Delivery id of the package this report answers (v1.9.0). */
+  deliveryId?: string;
+}
+
+export interface DeliveryAccount {
+  spoken: 'material' | 'heartfelt' | 'silent';
+  seedIds: string[];
+  profileIds: string[];
+  reason?: string;
+  /** report = persona's tool report; decision = engine-room D23 seed_ids;
+   * none = nothing usable — credit zero, never guess. */
+  source: 'report' | 'decision' | 'none';
+}
+
+/** The one report reason that is about the MATERIAL rather than about her mood
+ * or the moment. The list itself lives in seeds/report.ts (that module keeps
+ * zero runtime imports on purpose) — the two are kept in sync by a test. */
+export const MATERIAL_MISMATCH_REASON = '素材不搭' as const;
+
+/**
+ * Whether a reconciled delivery may feed the topic-preference counters
+ * (v1.9.0). Two exclusions, both about not blaming the subject:
+ *   - source 'none' — no report and no decision ids: we do not know what she
+ *     used, so recording the whole package as "offered, never adopted" would
+ *     drag every topic toward the floor;
+ *   - a silence whose reason is NOT 素材不搭 — "不想说话"/"在忙或刚聊过" say
+ *     nothing about the topic at all.
+ */
+export function isTopicSignal(account: DeliveryAccount): boolean {
+  if (account.source === 'none') return false;
+  if (account.spoken === 'silent' && account.reason !== MATERIAL_MISMATCH_REASON) return false;
+  return true;
+}
+
+/**
+ * Pick the report that answers THIS delivery (v1.9.0). A plain time window
+ * could not tell two deliveries apart, so any report filed inside it was
+ * credited to the current package. A report naming a DIFFERENT delivery id is
+ * never used; a report that named none at all is still accepted (entries
+ * written before v1.9.0, and a persona that forgot the field), newest last.
+ */
+export function pickReport(reports: DeliveryReportInput[], deliveryId: string): DeliveryReportInput | null {
+  const exact = reports.filter((r) => r.deliveryId && r.deliveryId === deliveryId);
+  if (exact.length > 0) return exact[exact.length - 1]!;
+  const anonymous = reports.filter((r) => !r.deliveryId);
+  return anonymous.length > 0 ? anonymous[anonymous.length - 1]! : null;
+}
+
+/**
+ * Reconcile one delivery (2026-10-06). Trust order: persona report >
+ * engine-room seed_ids > nothing. A report saying "silent" with no speakable
+ * text is a LEGITIMATE silence (not a spoke failure) and keeps its reason;
+ * ids from any source are validated against this package (explicitIds), so a
+ * stale id from an earlier beat never lands.
+ */
+export function reconcileDelivery(
+  materials: MaterialInput[],
+  report: DeliveryReportInput | null,
+  decisionIds: string[],
+  spokeText: boolean,
+): DeliveryAccount {
+  if (report && report.spoken === 'silent' && !spokeText) {
+    return {
+      spoken: 'silent',
+      seedIds: [],
+      profileIds: explicitIds(materials, report.profileIds),
+      ...(report.reason ? { reason: report.reason } : {}),
+      source: 'report',
+    };
   }
-  return [...used];
+  if (!spokeText) {
+    return { spoken: 'silent', seedIds: [], profileIds: [], source: 'none' };
+  }
+  if (report) {
+    const seedIds = explicitIds(materials, report.seedIds);
+    return {
+      // 报账说 silent 但实际出了声：话已成事实，降级记 heartfelt（说了但不带素材）。
+      // v1.9.0: 报账说 material 但 id 一个都不在本包里（抄错/上一轮残留）同样降级——
+      // 绝不凭一句「我用了素材」记名。
+      spoken: report.spoken === 'silent' || seedIds.length === 0 ? 'heartfelt' : report.spoken,
+      seedIds,
+      profileIds: explicitIds(materials, report.profileIds),
+      ...(report.reason ? { reason: report.reason } : {}),
+      source: 'report',
+    };
+  }
+  const ids = explicitIds(materials, decisionIds);
+  return {
+    spoken: ids.length > 0 ? 'material' : 'heartfelt',
+    seedIds: ids,
+    profileIds: [],
+    source: ids.length > 0 ? 'decision' : 'none',
+  };
 }
 
 /**

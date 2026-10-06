@@ -12,7 +12,7 @@ const FACTORY = {
   heartbeat: { intervalMin: 20, idleMode: false, archiveRotatedHome: true },
   gate: { maxDailySend: 3, cooldownMinutes: 30, quietHours: { start: '01:00', end: '08:00' } },
   browse: { windows: [{ start: '11:00', end: '15:00' }], minIntervalHours: 4, maxSeedsPerVisit: 2 },
-  seeds: { maxActive: 30, ttlDays: { news: 3, fandom: 14, scene: 60, promise: 90 }, coldBenchDays: 21, retireAfterUsed: 2, scoreWeights: { freshness: 0.4, unused: 0.3, confidence: 0.3 } },
+  seeds: { maxActive: 30, ttlDays: { news: 3, fandom: 14, scene: 60, promise: 90 }, coldBenchDays: 21, archiveCap: 50, retireAfterUsed: 2, scoreWeights: { freshness: 0.4, unused: 0.3, confidence: 0.3 } },
   profile: { consolidation: { minIntervalHours: 12, inboxBacklog: 30 }, partitionCap: 50, maxOpsPerRun: 10, confidenceCap: { chat: 0.6, screen: 0.4, browse: 0.4 }, volatileDays: 14, stableLowActivityDays: 180, psyEnabled: false },
   observe: { maxChars: 80, perBeat: 10 },
   weekly: { enabled: true },

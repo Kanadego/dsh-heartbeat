@@ -44,12 +44,24 @@ export function lastWeeklyGeneratedAt(guard: PathGuard, dataDir: string): number
   }
 }
 
-/** Due when the last report is ≥7 days old. Never-generated counts as due:
- * the first run after installing writes an onboarding report from whatever
- * the 7-day window already holds. */
+/** Due when the last report is ≥7 days old. A never-anchored store lands on
+ *  the install-time anchor (see ensureWeeklyAnchor), so a fresh install is NOT
+ *  due — the first report arrives one full interval after installation. */
 export function weeklyDue(guard: PathGuard, dataDir: string, now = Date.now()): boolean {
   const last = lastWeeklyGeneratedAt(guard, dataDir);
   return now - last >= WEEKLY_INTERVAL_MS;
+}
+
+/** Stamp the install-time anchor for a store that has never generated a report
+ *  (v1.9.0). Returns true when it wrote — the caller audits that. Without this,
+ *  `lastGeneratedAt = 0` made the very first maintenance beat due, so a fresh
+ *  install produced an "onboarding" report immediately, contradicting the
+ *  release notes ("first report after a week"). */
+export function ensureWeeklyAnchor(guard: PathGuard, dataDir: string, now = Date.now()): boolean {
+  if (lastWeeklyGeneratedAt(guard, dataDir) > 0) return false;
+  fs.mkdirSync(weeklyDirPath(dataDir), { recursive: true });
+  atomicWriteJsonSync(stateFilePath(dataDir), { lastGeneratedAt: now });
+  return true;
 }
 
 /** Persist a report (DPAPI) and stamp the state file. */
@@ -139,6 +151,17 @@ export function renderTemplateReport(facts: WeeklyFacts): string {
   }
   if (facts.seeds.waiting.length > 0) {
     lines.push(`还没聊过的素材：${facts.seeds.waiting.join('、')}。`);
+  }
+  if (facts.reports.total > 0) {
+    const reasonPart = facts.reports.reasons.length > 0
+      ? `（${facts.reports.reasons.map((r) => `${r.reason} ${r.count} 次`).join('、')}）`
+      : '';
+    lines.push(`投递报账 ${facts.reports.total} 次：用素材 ${facts.reports.material}、说真心话 ${facts.reports.heartfelt}、没说话 ${facts.reports.silent}${reasonPart}。`);
+  }
+  // v1.9.0: unaccounted deliveries are reported even when no report landed at
+  // all — a silent rise in "no report" is exactly what would otherwise hide.
+  if (facts.reports.missing > 0) {
+    lines.push(`另有 ${facts.reports.missing} 次投递没等到报账（这部分没算进偏好统计）。`);
   }
   if (facts.peakHours.length > 0) {
     lines.push(`活跃高峰：${facts.peakHours.join('、')}。`);

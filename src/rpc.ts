@@ -95,6 +95,15 @@ function homeSessionId(paths: WorkspacePaths, guard: PathGuard): string | null {
   }
 }
 
+/** 素材池生命周期的审计出口（v1.9.0）：卡片上的归档/恢复/删除也留下痕迹。 */
+function seedAuditSink(paths: WorkspacePaths): (entry: Record<string, unknown>) => void {
+  return (entry) => {
+    try {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', entry);
+    } catch { /* audit must never break the RPC call */ }
+  };
+}
+
 /** 兴趣/时段卡片编辑的审计留痕（成功才记；失败原因走 RPC err 回给卡片）。 */
 function auditInterests(
   paths: WorkspacePaths,
@@ -351,17 +360,17 @@ export function installHeartbeatRpc(
           }
 
           case 'seeds.archive': {
-            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), 'completed');
+            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), 'completed', Date.now(), seedAuditSink(paths));
             return s ? ok(s) : err('not-found', 'active seed not found');
           }
 
           case 'seeds.restore': {
-            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ''));
+            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ''), Date.now(), seedAuditSink(paths));
             return r.ok ? ok(r.seed) : err('restore-failed', r.reason);
           }
 
           case 'seeds.delete': {
-            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? '')) });
+            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), seedAuditSink(paths)) });
           }
 
           // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──

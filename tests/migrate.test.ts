@@ -51,6 +51,28 @@ test('container roundtrip: encrypt/decrypt preserves entries; wrong passphrase i
   assert.throws(() => decryptContainer('not json', '口令ABC'), /container/);
 });
 
+test('v1.9.0: decrypt honors the container kdf.N instead of assuming the current default', () => {
+  const entries = [{ path: 'ledger.md', encrypted: false, content: '# 账本\n- 一条' }];
+  const container = encryptContainer(entries, 'pw', new Date('2026-10-05T12:00:00Z'));
+  const withN = (n: number): string => {
+    const doc = JSON.parse(container) as { kdf: { N?: number } };
+    doc.kdf.N = n;
+    return JSON.stringify(doc);
+  };
+
+  // the container's N is validated before any crypto runs
+  assert.throws(() => decryptContainer(withN(999), 'pw'), /invalid kdf parameters/); // not a power of two
+  assert.throws(() => decryptContainer(withN(1 << 20), 'pw'), /outside the supported range/); // far too big
+
+  // ...and it is the one actually used for key derivation: a container that
+  // claims a different (valid) N no longer opens with the current default —
+  // under the old code the outer N was ignored, so this returned the plaintext
+  assert.throws(() => decryptContainer(withN(1 << 15), 'pw'), /wrong passphrase|corrupted/);
+
+  // untouched container still round-trips
+  assert.equal(decryptContainer(container, 'pw').files[0]!.content, '# 账本\n- 一条');
+});
+
 test('export collects plaintext + DPAPI files; import restores them re-encrypted with local DPAPI', () => {
   // ── source machine: real stores ──
   const srcPaths = workspace();

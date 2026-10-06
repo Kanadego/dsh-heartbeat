@@ -12,6 +12,7 @@ import { readAuditLines } from '../core/audit-log.js';
 import { journalFilePath } from '../profile/store.js';
 import { readLedger, pendingOlderThan, ledgerFilePath } from '../ledger/ledger.js';
 import { loadPool, seedsFilePath, activeSeeds } from '../seeds/pool.js';
+import { readSeedReports, reportFilePath } from '../seeds/report.js';
 import { summarizeRhythm } from '../rhythm/rhythm.js';
 
 const DAY_MS = 86_400_000;
@@ -40,6 +41,18 @@ export interface WeeklyFacts {
     poolActive: number;
   };
   peakHours: string[];
+  /** v1.9.0: the persona's seed_report accounting this week. */
+  reports: {
+    total: number;
+    material: number;
+    heartfelt: number;
+    silent: number;
+    /** deliveries that ended with no usable report at all (audit event
+     *  report_missing) — the number that says how much of the week went
+     *  unaccounted, so a rise is visible instead of silent. */
+    missing: number;
+    reasons: { reason: string; count: number }[];
+  };
 }
 
 function inWindow(ts: string, start: number, end: number): boolean {
@@ -62,6 +75,7 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
   let spoken = 0;
   let silent = 0;
   let observedItems = 0;
+  let reportMissing = 0;
   const reasons = new Map<string, number>();
   try {
     for (const e of readAuditLines(paths.logsDir + '/heartbeat.jsonl')) {
@@ -69,6 +83,7 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
       if (!inWindow(ts, start, end)) continue;
       const ev = (e as { event?: string }).event;
       if (ev === 'spoke') spoken += 1;
+      else if (ev === 'report_missing') reportMissing += 1;
       else if (ev === 'silent') {
         silent += 1;
         const reason = String((e as { reason?: string }).reason ?? 'unknown').slice(0, 60);
@@ -135,6 +150,21 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
       .map((s) => trim(s.text, 40));
   } catch { /* pool unreadable */ }
 
+  // 4b) seed reports (v1.9.0): what the persona actually did with deliveries.
+  const reports = { total: 0, material: 0, heartfelt: 0, silent: 0, missing: reportMissing, reasons: [] as { reason: string; count: number }[] };
+  try {
+    const reasonTally = new Map<string, number>();
+    for (const r of readSeedReports(guard, reportFilePath(paths.dataDir))) {
+      if (r.ts < start || r.ts > end) continue;
+      reports.total += 1;
+      if (r.spoken === 'material') reports.material += 1;
+      else if (r.spoken === 'heartfelt') reports.heartfelt += 1;
+      else reports.silent += 1;
+      if (r.reason) reasonTally.set(r.reason, (reasonTally.get(r.reason) ?? 0) + 1);
+    }
+    reports.reasons = [...reasonTally.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+  } catch { /* no reports yet */ }
+
   // 5) rhythm peaks (aggregate histogram only - no titles, no content).
   let peakHours: string[] = [];
   try {
@@ -154,6 +184,7 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
     profileAdds,
     ledger,
     seeds,
+    reports,
     peakHours,
   };
 }

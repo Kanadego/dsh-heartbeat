@@ -138,6 +138,12 @@ export async function main(argv: string[]): Promise<number> {
   const seedsFile = seedsFilePath(paths.dataDir);
   const ledgerFile = ledgerFilePath(paths.dataDir);
   const decisionLog = path.join(paths.logsDir, 'heartbeat.jsonl');
+  /** Seed lifecycle audit (v1.9.0): CLI edits land in the same log as the beat's. */
+  const seedAudit = (entry: Record<string, unknown>): void => {
+    try {
+      appendAuditLine(decisionLog, entry);
+    } catch { /* audit must never break the command */ }
+  };
 
   switch (cmd) {
     case 'status': {
@@ -166,7 +172,7 @@ export async function main(argv: string[]): Promise<number> {
             source: flag(rest, '--source') as never,
             topic: flag(rest, '--topic'),
             confidence: flag(rest, '--confidence') ? Number(flag(rest, '--confidence')) : undefined,
-          });
+          }, Date.now(), seedAudit);
           if (result.kind === 'duplicate') {
             console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
             return 0;
@@ -188,7 +194,7 @@ export async function main(argv: string[]): Promise<number> {
           return 0;
         }
         case 'surface': {
-          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? '');
+          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? '', Date.now(), seedAudit);
           if (!s) {
             console.log('NOT_FOUND');
             return 1;
@@ -197,7 +203,7 @@ export async function main(argv: string[]): Promise<number> {
           return 0;
         }
         case 'archive': {
-          const s = archiveSeedById(guard, seedsFile, rest[0] ?? '');
+          const s = archiveSeedById(guard, seedsFile, rest[0] ?? '', 'completed', Date.now(), seedAudit);
           if (!s) {
             console.log('NOT_FOUND');
             return 1;
@@ -206,9 +212,10 @@ export async function main(argv: string[]): Promise<number> {
           return 0;
         }
         case 'gc': {
-          const report = gcPool(guard, seedsFile, policy);
+          const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
           console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench}` +
-            ` -> active ${report.activeAfter}/${policy.seeds.maxActive}`);
+            ` archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive}` +
+            ` archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
           return 0;
         }
         case 'stats': {
