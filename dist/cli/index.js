@@ -22,7 +22,7 @@ import {
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-SQJLKP7L.js";
+} from "../chunk-2SYXKKZF.js";
 import {
   activeSeeds,
   addSeed,
@@ -32,7 +32,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-MXJPX3FM.js";
+} from "../chunk-PQTSXW4F.js";
 import {
   appendAuditLine,
   loadProfile,
@@ -47,7 +47,7 @@ import {
   collectMigrationEntries,
   decryptContainer,
   encryptContainer
-} from "../chunk-UCJR6TC7.js";
+} from "../chunk-IPOZFZPY.js";
 import {
   initWorkspace,
   loadEncryptedText,
@@ -214,6 +214,12 @@ async function main(argv) {
   const seedsFile = seedsFilePath(paths.dataDir);
   const ledgerFile = ledgerFilePath(paths.dataDir);
   const decisionLog = path2.join(paths.logsDir, "heartbeat.jsonl");
+  const seedAudit = (entry) => {
+    try {
+      appendAuditLine(decisionLog, entry);
+    } catch {
+    }
+  };
   switch (cmd) {
     case "status": {
       console.log(JSON.stringify({
@@ -240,7 +246,7 @@ async function main(argv) {
             source: flag(rest, "--source"),
             topic: flag(rest, "--topic"),
             confidence: flag(rest, "--confidence") ? Number(flag(rest, "--confidence")) : void 0
-          });
+          }, Date.now(), seedAudit);
           if (result.kind === "duplicate") {
             console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
             return 0;
@@ -259,7 +265,7 @@ async function main(argv) {
           return 0;
         }
         case "surface": {
-          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? "");
+          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? "", Date.now(), seedAudit);
           if (!s) {
             console.log("NOT_FOUND");
             return 1;
@@ -268,7 +274,7 @@ async function main(argv) {
           return 0;
         }
         case "archive": {
-          const s = archiveSeedById(guard, seedsFile, rest[0] ?? "");
+          const s = archiveSeedById(guard, seedsFile, rest[0] ?? "", "completed", Date.now(), seedAudit);
           if (!s) {
             console.log("NOT_FOUND");
             return 1;
@@ -277,8 +283,8 @@ async function main(argv) {
           return 0;
         }
         case "gc": {
-          const report = gcPool(guard, seedsFile, policy);
-          console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench} -> active ${report.activeAfter}/${policy.seeds.maxActive}`);
+          const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
+          console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench} archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive} archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
           return 0;
         }
         case "stats": {

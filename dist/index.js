@@ -8,14 +8,17 @@ import {
   deepMerge,
   describeInstall,
   ensureRegistered,
+  ensureWeeklyAnchor,
   installBundledPreset,
   ledgerFilePath,
   listWeeklyReports,
   loadPolicy,
   markDone,
   pendingOlderThan,
+  preferenceFilePath,
   readLedger,
   readWeeklyReport,
+  recordDelivery,
   renderTemplateReport,
   saveWeeklyReport,
   scanPending,
@@ -24,7 +27,7 @@ import {
   updateUserPolicy,
   userPresetRoot,
   weeklyDue
-} from "./chunk-SQJLKP7L.js";
+} from "./chunk-2SYXKKZF.js";
 import {
   getRuntime,
   setRuntime
@@ -40,7 +43,7 @@ import {
   restoreSeed,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-MXJPX3FM.js";
+} from "./chunk-PQTSXW4F.js";
 import {
   dedupeItems,
   inboxClear,
@@ -81,7 +84,7 @@ import {
   writeText
 } from "./chunk-IFTFDHZX.js";
 
-// node_modules/@deepseek-ai/cosmokit/lib/index.js
+// node_modules/.pnpm/@deepseek-ai+cosmokit@1.8.3/node_modules/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
   return value === null || value === void 0;
 }
@@ -99,32 +102,6 @@ function pick(source, keys, forced) {
   const result = {};
   for (const key of keys) if (forced || source[key] !== void 0) result[key] = source[key];
   return result;
-}
-var write = /* @__PURE__ */ Symbol.for("cosmokit.volatile.write");
-function snapshot(value, ancestors = /* @__PURE__ */ new Set()) {
-  if (typeof value === "function") throw new TypeError("volatile config cannot contain functions");
-  if (value === null || typeof value !== "object") return value;
-  if (ancestors.has(value)) throw new TypeError("volatile config cannot contain cycles");
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return Object.freeze(value.map((item) => snapshot(item, ancestors)));
-    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new TypeError("volatile config objects must be plain objects or arrays");
-    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item, ancestors)])));
-  } finally {
-    ancestors.delete(value);
-  }
-}
-function createVolatile(value) {
-  let current = snapshot(value);
-  return Object.freeze({
-    get: () => current,
-    [write]: (value2) => {
-      current = value2;
-    }
-  });
-}
-function isVolatile(value) {
-  return typeof value === "object" && value !== null && write in value;
 }
 function is(type, value) {
   if (arguments.length === 1) return (value2) => is(type, value2);
@@ -204,37 +181,24 @@ function clone(source, refs = /* @__PURE__ */ new Map()) {
   return result;
 }
 function deepEqual(a, b, strict) {
-  const ancestors = /* @__PURE__ */ new Set();
-  function compare(a2, b2) {
-    if (a2 === b2) return true;
-    if (isVolatile(a2) || isVolatile(b2)) return isVolatile(a2) && isVolatile(b2);
-    if (!strict && isNullable(a2) && isNullable(b2)) return true;
-    if (typeof a2 !== typeof b2 || typeof a2 !== "object" || !a2 || !b2) return false;
-    if (ancestors.has(a2)) return false;
-    function check(test, then) {
-      return test(a2) ? test(b2) ? then(a2, b2) : false : test(b2) ? false : void 0;
-    }
-    ancestors.add(a2);
-    try {
-      return check(Array.isArray, (a3, b3) => {
-        if (a3.length !== b3.length) return false;
-        for (let index = 0; index < a3.length; index++) if (!compare(a3[index], b3[index])) return false;
-        return true;
-      }) ?? check(is("Date"), (a3, b3) => a3.valueOf() === b3.valueOf()) ?? check(is("URL"), (a3, b3) => a3.href === b3.href) ?? check(is("RegExp"), (a3, b3) => a3.source === b3.source && a3.flags === b3.flags) ?? check(isArrayBufferLike, (a3, b3) => {
-        if (a3.byteLength !== b3.byteLength) return false;
-        const viewA = new Uint8Array(a3);
-        const viewB = new Uint8Array(b3);
-        for (let i = 0; i < viewA.length; i++) if (viewA[i] !== viewB[i]) return false;
-        return true;
-      }) ?? ((!strict || [a2, b2].every((value) => Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) && Object.keys({
-        ...a2,
-        ...b2
-      }).every((key) => compare(a2[key], b2[key])));
-    } finally {
-      ancestors.delete(a2);
-    }
+  if (a === b) return true;
+  if (!strict && isNullable(a) && isNullable(b)) return true;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== "object") return false;
+  if (!a || !b) return false;
+  function check(test, then) {
+    return test(a) ? test(b) ? then(a, b) : false : test(b) ? false : void 0;
   }
-  return compare(a, b);
+  return check(Array.isArray, (a2, b2) => a2.length === b2.length && a2.every((item, index) => deepEqual(item, b2[index]))) ?? check(is("Date"), (a2, b2) => a2.valueOf() === b2.valueOf()) ?? check(is("RegExp"), (a2, b2) => a2.source === b2.source && a2.flags === b2.flags) ?? check(isArrayBufferLike, (a2, b2) => {
+    if (a2.byteLength !== b2.byteLength) return false;
+    const viewA = new Uint8Array(a2);
+    const viewB = new Uint8Array(b2);
+    for (let i = 0; i < viewA.length; i++) if (viewA[i] !== viewB[i]) return false;
+    return true;
+  }) ?? Object.keys({
+    ...a,
+    ...b
+  }).every((key) => deepEqual(a[key], b[key], strict));
 }
 var Time;
 (function(Time2) {
@@ -306,7 +270,7 @@ var Time;
   Time2.template = template;
 })(Time || (Time = {}));
 
-// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+// node_modules/.pnpm/@deepseek-ai+schemastery@3.18.2/node_modules/@deepseek-ai/schemastery/lib/index.mjs
 var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
 var kValidationError = /* @__PURE__ */ Symbol.for("ValidationError");
 globalThis.__schemastery_index__ ??= 0;
@@ -483,7 +447,6 @@ Schema.prototype.pattern = function pattern(regexp) {
   return schema;
 };
 Schema.prototype.simplify = function simplify(value) {
-  if (isVolatile(value)) value = value.get();
   if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
   if (isNullable(value)) return value;
   if (this.type === "object" || this.type === "dict") {
@@ -541,49 +504,12 @@ for (const key of [
   };
   return schema;
 } });
-Schema.prototype.volatile = function volatile() {
-  if (this.meta.volatile) throw new TypeError("volatile schema is already wrapped");
-  return this.extra("volatile", true);
-};
 var resolvers = {};
-var checkedVolatile = /* @__PURE__ */ Symbol("checked-volatile-schema");
-function validateVolatileSchema(schema, path13 = [], blocked = false, seen = /* @__PURE__ */ new Map()) {
-  const states = seen.get(schema) ?? /* @__PURE__ */ new Set();
-  if (states.has(blocked)) return;
-  states.add(blocked);
-  seen.set(schema, states);
-  if (schema.meta?.volatile && blocked) throw new ValidationError("volatile fields require a fixed object path without an enclosing volatile field", { path: path13 });
-  const nested = blocked || !!schema.meta?.volatile;
-  if (schema.dict) for (const [key, child] of Object.entries(schema.dict)) validateVolatileSchema(child, [...path13, key], nested, seen);
-  if (schema.sKey) validateVolatileSchema(schema.sKey, [...path13, "<key>"], true, seen);
-  if (schema.inner && (schema.type !== "lazy" || schema.inner[kSchema])) validateVolatileSchema(schema.inner, [...path13, "*"], true, seen);
-  if (schema.list) for (let index = 0; index < schema.list.length; index++) validateVolatileSchema(schema.list[index], [...path13, String(index)], true, seen);
-}
 Schema.extend = function extend(type, resolve2) {
   resolvers[type] = resolve2;
 };
 Schema.resolve = function resolve(data, schema, options = {}, strict = false) {
   if (!schema) return [data];
-  if (!options[checkedVolatile]) {
-    validateVolatileSchema(schema, options.path);
-    options = {
-      ...options,
-      [checkedVolatile]: true
-    };
-  }
-  if (schema.meta?.volatile) {
-    const inner = Schema(schema);
-    inner.meta = {
-      ...schema.meta,
-      volatile: false
-    };
-    const [value, adapted] = Schema.resolve(data, inner, options, strict);
-    try {
-      return [createVolatile(value), adapted];
-    } catch (error) {
-      throw new ValidationError(error instanceof Error ? error.message : String(error), options);
-    }
-  }
   if (options.ignore?.(data, schema)) return [data];
   if (isNullable(data) && schema.type !== "lazy") {
     if (schema.meta.required) throw new ValidationError(`missing required value`, options);
@@ -691,7 +617,6 @@ Schema.extend("lazy", (data, schema, options, strict) => {
       ...schema.meta,
       ...schema.inner.meta
     };
-    validateVolatileSchema(schema.inner, options.path, true);
   }
   return Schema.resolve(data, schema.inner, options, strict);
 });
@@ -791,7 +716,7 @@ function property(data, key, schema, options) {
   } catch (e) {
     if (!options?.autofix) throw e;
     delete data[key];
-    return schema.meta.volatile ? createVolatile(schema.meta.default) : schema.meta.default;
+    return schema.meta.default;
   }
 }
 Schema.extend("array", (data, { inner, meta }, options) => {
@@ -993,7 +918,7 @@ function saveUiConfig(guard, settingsDir, patch) {
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
 import fs10 from "fs";
-import path9 from "path";
+import path10 from "path";
 
 // src/env/envpulse.ts
 import fs3 from "fs";
@@ -1121,7 +1046,7 @@ function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ 
   const idle = probeIdle(guard, paths);
   const windowClass = classifyProcess(fgProcess, rules);
   const t = timeContext(now);
-  const snapshot2 = {
+  const snapshot = {
     takenAt: now.toISOString(),
     idleSeconds: idle,
     presence: presenceOf(idle, windowClass),
@@ -1132,24 +1057,24 @@ function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__PURE__ 
     festival: t.festival
   };
   try {
-    fs3.writeFileSync(path3.join(paths.dataDir, "envpulse.json"), JSON.stringify(snapshot2, null, 1), "utf8");
+    fs3.writeFileSync(path3.join(paths.dataDir, "envpulse.json"), JSON.stringify(snapshot, null, 1), "utf8");
   } catch {
   }
-  writePulseStream(paths, snapshot2);
-  return snapshot2;
+  writePulseStream(paths, snapshot);
+  return snapshot;
 }
-function writePulseStream(paths, snapshot2) {
+function writePulseStream(paths, snapshot) {
   try {
     appendAuditLine(path3.join(paths.logsDir, "envpulse.jsonl"), {
       event: "pulse",
-      takenAt: snapshot2.takenAt,
-      idleSeconds: snapshot2.idleSeconds,
-      presence: snapshot2.presence,
-      windowClass: snapshot2.windowClass,
-      daypart: snapshot2.daypart,
-      weekday: snapshot2.weekday,
-      isWeekend: snapshot2.isWeekend,
-      festival: snapshot2.festival
+      takenAt: snapshot.takenAt,
+      idleSeconds: snapshot.idleSeconds,
+      presence: snapshot.presence,
+      windowClass: snapshot.windowClass,
+      daypart: snapshot.daypart,
+      weekday: snapshot.weekday,
+      isWeekend: snapshot.isWeekend,
+      festival: snapshot.festival
     });
   } catch {
   }
@@ -1490,7 +1415,7 @@ function assembleCandidates(seeds, opts = {}) {
 }
 var PACKAGE_DECLARE = "\u8FD9\u662F\u5FC3\u8DF3\u63D2\u4EF6\u7D20\u6750\u6295\u9012,\u8BF7\u4F60\u6839\u636E\u5F53\u524D\u5904\u5883\u5224\u65AD\u8981\u4E0D\u8981\u9009\u4E00\u6761\u8BF4";
 function materialLines(materials) {
-  return materials.map((m) => m.text.trim());
+  return materials.map((m) => `- [${m.id}] ${m.text.trim()}`);
 }
 function wantHonestOption(materials, threshold = 2) {
   return materials.filter((m) => m.used >= 1).length >= threshold;
@@ -1502,22 +1427,60 @@ function buildMaterialPrompt(materials, opts = {}) {
   }
   lines.push(PACKAGE_DECLARE);
   const items = materialLines(materials);
-  for (const it of items) lines.push("- " + it);
+  for (const it of items) lines.push(it);
   if (wantHonestOption(materials, opts.threshold ?? 2)) {
     lines.push("(\u6216\u8005\u4E5F\u53EF\u4EE5\u8BF4\u4E00\u53E5\u771F\u5FC3\u8BDD,\u4E0D\u5E26\u7D20\u6750)");
   }
+  if (opts.deliveryId) {
+    lines.push(`(\u672C\u6B21\u6295\u9012\u7F16\u53F7:${opts.deliveryId},\u62A5\u8D26\u65F6\u539F\u6837\u586B\u8FDB delivery_id)`);
+  }
+  lines.push(REPORT_DECLARE);
   return lines.join("\n");
 }
-function attributionIds(candidates, output, explicitIds = []) {
-  const used = new Set(explicitIds);
-  const b = output.trim();
-  for (const c of candidates) {
-    const a = c.text.trim();
-    if (a.length >= 8 && (b.includes(a.slice(0, Math.min(20, a.length))) || a.includes(b.slice(0, Math.min(20, b.length))))) {
-      used.add(c.id);
-    }
+var REPORT_DECLARE = "\u6700\u540E,\u65E0\u8BBA\u521A\u624D\u8BF4\u4E0D\u8BF4\u8BDD\u3001\u7528\u6CA1\u7528\u7D20\u6750,\u90FD\u8981\u8C03\u7528\u4E00\u6B21 seed_report \u5DE5\u5177\u62A5\u8D26:spoken=material(\u8BF4\u4E86\u7D20\u6750)/heartfelt(\u8BF4\u4E86\u4E0D\u5E26\u7D20\u6750\u7684\u8BDD)/silent(\u6CA1\u8BF4\u8BDD);\u7528\u4E86\u7D20\u6750\u5C31\u628A\u7D20\u6750\u7F16\u53F7\u586B\u8FDB seed_ids(\u53EF\u591A\u6761,\u53EA\u586B\u7F16\u53F7\u672C\u8EAB);\u7528\u4E86\u753B\u50CF\u6761\u76EE\u5F53\u8BDD\u9898\u5C31\u586B profile_ids;\u6CA1\u7528\u7D20\u6750\u65F6\u7528 reason \u7B80\u5355\u8BB0\u4E00\u7B14\u539F\u56E0(\u4E0D\u60F3\u8BF4\u8BDD/\u7D20\u6750\u4E0D\u642D/\u5728\u5FD9\u6216\u521A\u804A\u8FC7,\u65E0\u9700\u7D20\u6750);\u5E76\u628A\u672C\u6B21\u6295\u9012\u7F16\u53F7\u586B\u8FDB delivery_id\u3002";
+function explicitIds(candidates, ids = []) {
+  const known = new Set(candidates.map((c) => c.id));
+  return [...new Set(ids)].filter((id) => known.has(id));
+}
+function pickReport(reports, deliveryId) {
+  const exact = reports.filter((r) => r.deliveryId && r.deliveryId === deliveryId);
+  if (exact.length > 0) return exact[exact.length - 1];
+  const anonymous = reports.filter((r) => !r.deliveryId);
+  return anonymous.length > 0 ? anonymous[anonymous.length - 1] : null;
+}
+function reconcileDelivery(materials, report, decisionIds, spokeText) {
+  if (report && report.spoken === "silent" && !spokeText) {
+    return {
+      spoken: "silent",
+      seedIds: [],
+      profileIds: explicitIds(materials, report.profileIds),
+      ...report.reason ? { reason: report.reason } : {},
+      source: "report"
+    };
   }
-  return [...used];
+  if (!spokeText) {
+    return { spoken: "silent", seedIds: [], profileIds: [], source: "none" };
+  }
+  if (report) {
+    const seedIds = explicitIds(materials, report.seedIds);
+    return {
+      // 报账说 silent 但实际出了声：话已成事实，降级记 heartfelt（说了但不带素材）。
+      // v1.9.0: 报账说 material 但 id 一个都不在本包里（抄错/上一轮残留）同样降级——
+      // 绝不凭一句「我用了素材」记名。
+      spoken: report.spoken === "silent" || seedIds.length === 0 ? "heartfelt" : report.spoken,
+      seedIds,
+      profileIds: explicitIds(materials, report.profileIds),
+      ...report.reason ? { reason: report.reason } : {},
+      source: "report"
+    };
+  }
+  const ids = explicitIds(materials, decisionIds);
+  return {
+    spoken: ids.length > 0 ? "material" : "heartfelt",
+    seedIds: ids,
+    profileIds: [],
+    source: ids.length > 0 ? "decision" : "none"
+  };
 }
 function buildRuminationPrompt(input) {
   const max = input.max ?? 3;
@@ -1558,9 +1521,128 @@ function buildRuminationPrompt(input) {
   return lines.join("\n");
 }
 
+// src/seeds/report.ts
+import path7 from "path";
+var REPORT_REASONS = ["\u4E0D\u60F3\u8BF4\u8BDD", "\u7D20\u6750\u4E0D\u642D", "\u5728\u5FD9\u6216\u521A\u804A\u8FC7"];
+function reportFilePath(dataDir) {
+  return path7.join(dataDir, "seed_report.jsonl");
+}
+var REPORT_KEEP = 400;
+function parseEntry(obj) {
+  const e = obj;
+  if (!e || typeof e.ts !== "number" || !Number.isFinite(e.ts)) return null;
+  if (e.spoken !== "material" && e.spoken !== "heartfelt" && e.spoken !== "silent") return null;
+  const arr = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.length > 0) : [];
+  const ids = arr(e.seedIds);
+  const pids = arr(e.profileIds);
+  const reason = REPORT_REASONS.includes(e.reason) ? e.reason : void 0;
+  const did = typeof e.deliveryId === "string" && e.deliveryId.trim() ? e.deliveryId.trim() : "";
+  return {
+    ts: e.ts,
+    spoken: e.spoken,
+    seedIds: ids,
+    profileIds: pids,
+    ...did ? { deliveryId: did } : {},
+    ...reason ? { reason } : {}
+  };
+}
+function appendSeedReport(guard, file, entry) {
+  const raw = loadEncryptedText(guard, file) ?? "";
+  const lines = raw.split("\n").filter((l) => l.trim());
+  lines.push(JSON.stringify(entry));
+  saveEncryptedText(guard, file, lines.slice(-REPORT_KEEP).join("\n") + "\n");
+}
+function readSeedReports(guard, file) {
+  const raw = loadEncryptedText(guard, file);
+  if (!raw) return [];
+  const out = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const e = parseEntry(JSON.parse(t));
+      if (e) out.push(e);
+    } catch {
+    }
+  }
+  return out;
+}
+function readSeedReportsSince(guard, file, sinceTs) {
+  return readSeedReports(guard, file).filter((e) => e.ts >= sinceTs);
+}
+function cleanIds(v) {
+  return Array.isArray(v) ? v.map((x) => String(x ?? "").replace(/[[\]{}"'`]/g, "").trim().replace(/\s+/g, "")).filter((s) => s.length > 0 && s.length <= 24) : [];
+}
+function buildSeedReportTool(guard, file) {
+  return {
+    name: "seed_report",
+    description: "\u7D20\u6750\u62A5\u8D26\u5DE5\u5177\uFF08\u5FC3\u8DF3\u63D2\u4EF6\uFF09\u3002\u6536\u5230\u5FC3\u8DF3\u7D20\u6750\u5305\u540E\u5FC5\u987B\u8C03\u7528\u4E00\u6B21\u672C\u5DE5\u5177\u62A5\u8D26\uFF0C\u8BF4\u4E0D\u8BF4\u3001\u7528\u6CA1\u7528\u90FD\u8981\u62A5\uFF1Aspoken=material \u8868\u793A\u8BF4\u4E86\u7D20\u6750\u91CC\u7684\u5185\u5BB9\uFF08\u6B64\u65F6 seed_ids \u5FC5\u586B\uFF0C\u586B\u5B9E\u9645\u7528\u5230\u7684\u7D20\u6750\u7F16\u53F7\uFF0C\u53EF\u591A\u6761\uFF09\uFF1Bspoken=heartfelt \u8868\u793A\u8BF4\u4E86\u4E0D\u5E26\u7D20\u6750\u7684\u8BDD\uFF08\u771F\u5FC3\u8BDD\u6216\u77ED\u5E94\u7B54\uFF09\uFF1Bspoken=silent \u8868\u793A\u6CA1\u8BF4\u8BDD\u3002\u628A\u5F53\u6210\u8BDD\u9898\u804A\u4E86\u7684\u753B\u50CF\u6761\u76EE\u7F16\u53F7\u586B\u8FDB profile_ids\u3002\u6CA1\u7528\u7D20\u6750\u65F6\u7528 reason \u8BB0\u4E00\u7B14\u539F\u56E0\uFF1A\u4E0D\u60F3\u8BF4\u8BDD / \u7D20\u6750\u4E0D\u642D / \u5728\u5FD9\u6216\u521A\u804A\u8FC7\u3002\u4E00\u6B21\u6295\u9012\u53EA\u62A5\u4E00\u6B21\u8D26\uFF0C\u5E76\u628A\u7D20\u6750\u5305\u91CC\u7684\u672C\u6B21\u6295\u9012\u7F16\u53F7\u539F\u6837\u586B\u8FDB delivery_id\u3002",
+    parameters: {
+      type: "object",
+      properties: {
+        spoken: { type: "string", enum: ["material", "heartfelt", "silent"], description: "material=\u8BF4\u4E86\u7D20\u6750\uFF0Cheartfelt=\u8BF4\u4E86\u4E0D\u5E26\u7D20\u6750\u7684\u8BDD\uFF0Csilent=\u6CA1\u8BF4\u8BDD" },
+        seed_ids: { type: "array", items: { type: "string" }, description: 'spoken=material \u65F6\u5FC5\u586B\uFF1A\u5B9E\u9645\u7528\u5230\u7684\u7D20\u6750\u7F16\u53F7\uFF0C\u53EA\u586B\u7F16\u53F7\u672C\u8EAB\uFF08\u5982 ["s3"]\uFF09\uFF0C\u4E0D\u8981\u5E26\u65B9\u62EC\u53F7' },
+        profile_ids: { type: "array", items: { type: "string" }, description: "\u5B9E\u9645\u5F53\u6210\u8BDD\u9898\u804A\u4E86\u7684\u753B\u50CF\u6761\u76EE\u7F16\u53F7\uFF08\u95F2\u7740\u6A21\u5F0F\u7D20\u6750\u5305\u91CC\u624D\u6709\uFF09" },
+        reason: { type: "string", enum: [...REPORT_REASONS], description: "\u6CA1\u7528\u7D20\u6750\u65F6\u7684\u539F\u56E0\uFF0C\u9009\u586B" },
+        delivery_id: { type: "string", description: "\u7D20\u6750\u5305\u91CC\u7684\u672C\u6B21\u6295\u9012\u7F16\u53F7\uFF08\u5F62\u5982 d1a2b3c4\uFF09\uFF0C\u539F\u6837\u56DE\u586B" }
+      },
+      required: ["spoken"],
+      additionalProperties: false
+    },
+    output: {
+      schema: {
+        type: "object",
+        properties: { ok: { type: "boolean" }, message: { type: "string" } },
+        required: ["ok", "message"],
+        additionalProperties: false
+      },
+      render: (_args, value) => {
+        const v = value;
+        return [{ type: "text", text: String(v.message ?? "") }];
+      }
+    },
+    // Whole-file load+save through DPAPI, and the report is filed while the
+    // persona turn is still finishing — 0.7–2.7 s measured here, so 5 s was
+    // too tight for a slow disk (raised 2026-10-06).
+    timeoutMs: 15e3,
+    // whole-file rewrite on one encrypted file; never parallel
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const a = args ?? {};
+      const spoken = String(a.spoken ?? "");
+      if (spoken !== "material" && spoken !== "heartfelt" && spoken !== "silent") {
+        return { ok: false, message: "spoken \u5FC5\u987B\u662F material / heartfelt / silent \u4E4B\u4E00" };
+      }
+      const seedIds = cleanIds(a.seed_ids);
+      const profileIds = cleanIds(a.profile_ids);
+      if (spoken === "material" && seedIds.length === 0) {
+        return { ok: false, message: "spoken=material \u9700\u8981 seed_ids\uFF1A\u628A\u5B9E\u9645\u7528\u5230\u7684\u7D20\u6750\u7F16\u53F7\u586B\u8FDB\u6765" };
+      }
+      const reasonRaw = String(a.reason ?? "");
+      const reason = REPORT_REASONS.includes(reasonRaw) ? reasonRaw : void 0;
+      const deliveryId = String(a.delivery_id ?? "").trim().slice(0, 64);
+      const entry = {
+        ts: Date.now(),
+        spoken,
+        seedIds,
+        profileIds,
+        ...deliveryId ? { deliveryId } : {}
+      };
+      if (spoken !== "material" && reason) entry.reason = reason;
+      appendSeedReport(guard, file, entry);
+      const bits = [`spoken=${entry.spoken}`];
+      if (entry.deliveryId) bits.push(`delivery_id=${entry.deliveryId}`);
+      if (entry.seedIds.length) bits.push(`seed_ids=${entry.seedIds.join(",")}`);
+      if (entry.profileIds.length) bits.push(`profile_ids=${entry.profileIds.join(",")}`);
+      if (entry.reason) bits.push(`reason=${entry.reason}`);
+      return { ok: true, message: `\u5DF2\u62A5\u8D26\uFF1A${bits.join(" ")}` };
+    }
+  };
+}
+
 // src/statusbar/store.ts
 import fs7 from "fs";
-import path7 from "path";
+import path8 from "path";
 function deriveScene(input) {
   if (input.quietHours) return "quiet-hours";
   if (input.spokeThisBeat) return "just-spoke";
@@ -1575,7 +1657,7 @@ function clampNote(note) {
   return t.length <= 30 ? t : t.slice(0, 30);
 }
 function statusFilePath(dataDir) {
-  return path7.join(dataDir, "settings", "status.json");
+  return path8.join(dataDir, "settings", "status.json");
 }
 function writeStatus(guard, paths, state) {
   atomicWriteJsonSync(guard.assert(statusFilePath(paths.dataDir)), state);
@@ -1750,7 +1832,13 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
     const report = applyOpsToDoc(guard, paths.dataDir, doc, profileOpsCast, schema, policy, now);
     const aged = runDeterministicAging(doc, policy, now);
     persistWithJournal(guard, paths.dataDir, doc, { runId, applied: report.applied, rejected: report.rejected });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-JQC5JWIZ.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-7I4VACG2.js");
+    const seedAudit = (entry) => {
+      try {
+        appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
+      } catch {
+      }
+    };
     let chatSeedsAdded = 0;
     for (const cs of chatSeeds) {
       try {
@@ -1759,7 +1847,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
           ...cs.topic ? { topic: cs.topic } : {},
           source: "chat",
           tag: "scene"
-        }, now);
+        }, now, seedAudit);
         chatSeedsAdded += 1;
       } catch {
       }
@@ -1793,6 +1881,10 @@ function fmtEntry(prefix, content, opts) {
   const flag = opts.low ? "\uFF08\u4E45\u672A\u9A8C\u8BC1\uFF09" : "";
   return `${prefix}${content}${flag} [conf ${opts.confidence.toFixed(2)}]`;
 }
+function profileTopicEntries(doc, topN) {
+  const score = (e) => e.confidence * 0.7 + 1 / (1 + Math.max(0, Date.now() - Date.parse(e.updatedAt)) / 864e5) * 0.3;
+  return [...doc.partitions.interest.entries, ...doc.partitions.projects.entries].filter((e) => e.validTo === null).sort((a, b) => score(b) - score(a)).slice(0, topN);
+}
 function buildDigest(guard, paths, policy, input = {}) {
   const doc = loadProfile(guard, profileFilePath(paths.dataDir));
   const topN = input.topN ?? 8;
@@ -1810,8 +1902,7 @@ function buildDigest(guard, paths, policy, input = {}) {
     `[\u65F6\u95F4\u611F] ${rhythmLine}${input.windowClass ? ` | \u5F53\u524D\u7A97\u53E3\u7C7B\u522B: ${input.windowClass}` : ""}`,
     ...comm
   ];
-  const score = (e) => e.confidence * 0.7 + 1 / (1 + Math.max(0, Date.now() - Date.parse(e.updatedAt)) / 864e5) * 0.3;
-  const topicEntries = [...doc.partitions.interest.entries, ...doc.partitions.projects.entries].filter((e) => e.validTo === null).sort((a, b) => score(b) - score(a)).slice(0, topN).map((e) => {
+  const topicEntries = profileTopicEntries(doc, topN).map((e) => {
     const prefix = e.partition === "projects" ? "- \u8FDB\u884C\u4E2D: " : "- \u5174\u8DA3: ";
     return fmtEntry(prefix, `${e.topic}/${e.subTopic}: ${e.content}`, { low: e.lowActivity, confidence: e.confidence });
   });
@@ -1839,11 +1930,11 @@ function buildDigest(guard, paths, policy, input = {}) {
 
 // src/rhythm/rhythm.ts
 import fs8 from "fs";
-import path8 from "path";
+import path9 from "path";
 var DAY_MS = 864e5;
 var TAU_DAYS = 10;
 function rhythmFilePath(paths) {
-  return path8.join(paths.dataDir, "profile_rhythm.json");
+  return path9.join(paths.dataDir, "profile_rhythm.json");
 }
 function loadRhythm(paths) {
   try {
@@ -1914,6 +2005,7 @@ function collectWeeklyFacts(guard, paths, policy, now = Date.now()) {
   let spoken = 0;
   let silent = 0;
   let observedItems = 0;
+  let reportMissing = 0;
   const reasons = /* @__PURE__ */ new Map();
   try {
     for (const e of readAuditLines(paths.logsDir + "/heartbeat.jsonl")) {
@@ -1921,6 +2013,7 @@ function collectWeeklyFacts(guard, paths, policy, now = Date.now()) {
       if (!inWindow(ts, start, end)) continue;
       const ev = e.event;
       if (ev === "spoke") spoken += 1;
+      else if (ev === "report_missing") reportMissing += 1;
       else if (ev === "silent") {
         silent += 1;
         const reason = String(e.reason ?? "unknown").slice(0, 60);
@@ -1981,6 +2074,20 @@ function collectWeeklyFacts(guard, paths, policy, now = Date.now()) {
     seeds.waiting = activeSeeds(db).filter((s) => s.used === 0 && s.category === "topic").sort((a, b) => a.bornAt < b.bornAt ? 1 : -1).slice(0, 5).map((s) => trim(s.text, 40));
   } catch {
   }
+  const reports = { total: 0, material: 0, heartfelt: 0, silent: 0, missing: reportMissing, reasons: [] };
+  try {
+    const reasonTally = /* @__PURE__ */ new Map();
+    for (const r of readSeedReports(guard, reportFilePath(paths.dataDir))) {
+      if (r.ts < start || r.ts > end) continue;
+      reports.total += 1;
+      if (r.spoken === "material") reports.material += 1;
+      else if (r.spoken === "heartfelt") reports.heartfelt += 1;
+      else reports.silent += 1;
+      if (r.reason) reasonTally.set(r.reason, (reasonTally.get(r.reason) ?? 0) + 1);
+    }
+    reports.reasons = [...reasonTally.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
+  } catch {
+  }
   let peakHours = [];
   try {
     peakHours = summarizeRhythm(paths).peakHours;
@@ -1996,6 +2103,7 @@ function collectWeeklyFacts(guard, paths, policy, now = Date.now()) {
     profileAdds,
     ledger,
     seeds,
+    reports,
     peakHours
   };
 }
@@ -2013,8 +2121,8 @@ function sessionEvents(session) {
   if (!session) return [];
   if (typeof session.snapshotEvents === "function") {
     try {
-      const snapshot2 = session.snapshotEvents();
-      if (Array.isArray(snapshot2)) return snapshot2;
+      const snapshot = session.snapshotEvents();
+      if (Array.isArray(snapshot)) return snapshot;
     } catch {
     }
   }
@@ -2051,7 +2159,7 @@ function noteBeat(verdict, detail) {
   lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
 }
 function stateFile(paths) {
-  return path9.join(paths.dataDir, "gate.json");
+  return path10.join(paths.dataDir, "gate.json");
 }
 function readBeatState(guard, paths) {
   try {
@@ -2370,10 +2478,18 @@ function parseJsonBlock(raw) {
   }
   throw new Error(text.includes("{") ? "unparseable JSON object in model output" : "no JSON object in model output");
 }
+function seedAuditSink(paths) {
+  return (entry) => {
+    try {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", entry);
+    } catch {
+    }
+  };
+}
 async function maintenancePhase(bc) {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
-  gcPool(guard, seedsFilePath(paths.dataDir), policy, now);
+  gcPool(guard, seedsFilePath(paths.dataDir), policy, now, seedAuditSink(paths));
   pruneAuditFile(paths.logsDir + "/envpulse.jsonl", policy.retention.envPulseHours * 36e5, now);
   pruneAuditFile(paths.logsDir + "/heartbeat.jsonl", policy.retention.decisionLogDays * 864e5, now);
   snapshotIfDue(guard, paths.dataDir, paths.logsDir + "/heartbeat.jsonl", "maintenance-threshold", now);
@@ -2412,7 +2528,7 @@ async function observeBoundSessions(bc) {
   const data = loadBindings2(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
-  const cursorFile = path9.join(paths.dataDir, "cursors.json");
+  const cursorFile = path10.join(paths.dataDir, "cursors.json");
   let cursors = {};
   try {
     cursors = JSON.parse(fs10.readFileSync(cursorFile, "utf8"));
@@ -2458,13 +2574,16 @@ async function weeklyPhase(bc) {
   const { deps, agent, now } = bc;
   const { guard, paths, policy } = deps;
   if (policy.weekly.enabled === false) return;
-  if (!weeklyDue(guard, paths.dataDir, now)) return;
   const audit = (entry) => {
     try {
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", entry);
     } catch {
     }
   };
+  if (ensureWeeklyAnchor(guard, paths.dataDir, now)) {
+    audit({ event: "weekly_anchored" });
+  }
+  if (!weeklyDue(guard, paths.dataDir, now)) return;
   if (!agent) {
     audit({ event: "weekly_skipped", reason: "agentless beat" });
     return;
@@ -2590,7 +2709,7 @@ async function runWanderTurn(bc, prompt, focus, opts) {
         tag: "news",
         source: "browse",
         confidence: 0.4
-      }, now);
+      }, now, seedAuditSink(paths));
       registered += 1;
     }
   } catch (e) {
@@ -2599,6 +2718,24 @@ async function runWanderTurn(bc, prompt, focus, opts) {
   completeWander(guard, paths, focus, now, { refill: opts.label === "refill_wander" });
   appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: opts.label, focus, registered });
   return true;
+}
+function recordDeliveryFromAccount(deps, materials, account) {
+  if (account.spoken === "silent" && account.reason !== "\u7D20\u6750\u4E0D\u642D") return;
+  const { guard, paths } = deps;
+  const db = loadPool(guard, seedsFilePath(paths.dataDir));
+  const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+  const seedTopic = new Map(db.seeds.map((s) => [s.id, s.topic]));
+  const entryTopic = new Map(
+    [...doc.partitions.interest.entries, ...doc.partitions.projects.entries].map((e) => [e.id, `${e.topic}/${e.subTopic}`])
+  );
+  const topicOf = (id) => seedTopic.get(id) ?? entryTopic.get(id) ?? null;
+  const offered = [...new Set(materials.map((m) => topicOf(m.id)).filter((t) => Boolean(t)))];
+  const adopted = [...new Set([...account.seedIds, ...account.profileIds].map(topicOf).filter((t) => Boolean(t)))];
+  recordDelivery(guard, preferenceFilePath(paths.dataDir), {
+    offeredTopics: offered,
+    adoptedTopics: adopted,
+    now: Date.now()
+  });
 }
 async function deliverPackage(bc, materials, opts) {
   const { deps, now } = bc;
@@ -2630,11 +2767,14 @@ async function deliverPackage(bc, materials, opts) {
   }
   const voiceSessionId = voiceAgent.session?.id ?? null;
   try {
+    const deliveryId = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const phrasePrompt = buildMaterialPrompt(materials, {
+      deliveryId,
       // spec ②: the "我在干嘛" line rides on every delivery when vision
       // produced one this beat; absent otherwise (never invented).
       ...typeof opts.doing === "string" && opts.doing.trim() ? { doing: opts.doing.trim().slice(0, 80) } : {}
     });
+    const turnStart = Date.now();
     let spokenRaw;
     try {
       spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, "expression", EXPRESSION_IDLE_WAIT_MS);
@@ -2650,9 +2790,31 @@ async function deliverPackage(bc, materials, opts) {
     const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, "").trim().split("\n").map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
     const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
     const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? "").slice(0, 200);
-    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
-      noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
+    const spokeText = Boolean(text && /[\u4e00-\u9fff]/.test(text));
+    let report = null;
+    try {
+      const reports = readSeedReportsSince(guard, reportFilePath(paths.dataDir), turnStart);
+      report = pickReport(reports, deliveryId);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "report_read_failed", error: String(e).slice(0, 120) });
+    }
+    const account = reconcileDelivery(materials, report, opts.seedIds, spokeText);
+    if (!spokeText) {
+      if (account.source === "report" && account.spoken === "silent") {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+          event: "silent",
+          reason: `\u62A5\u8D26\u6C89\u9ED8:${account.reason ?? "\u672A\u8BF4\u660E"}`
+        });
+        noteBeat("silent", { reason: "\u672C\u4EBA\u62A5\u8D26\u6C89\u9ED8" });
+        try {
+          recordDeliveryFromAccount(deps, materials, account);
+        } catch (e) {
+          appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "preference_record_failed", error: String(e).slice(0, 120) });
+        }
+      } else {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
+        noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
+      }
       return;
     }
     const confirm = confirmSend(guard, policy, paths, "topic", text, now);
@@ -2661,12 +2823,31 @@ async function deliverPackage(bc, materials, opts) {
       noteBeat("spoke_failed", { reason: confirm.reason });
       return;
     }
-    const usedIds = new Set(attributionIds(materials, text, opts.seedIds));
-    for (const id of usedIds) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    for (const id of account.seedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now, seedAuditSink(paths));
+    }
+    if (account.source === "none") {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+        event: "report_missing",
+        offered: materials.map((m) => m.id).join(",")
+      });
+    } else {
+      try {
+        recordDeliveryFromAccount(deps, materials, account);
+      } catch (e) {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "preference_record_failed", error: String(e).slice(0, 120) });
+      }
     }
     sendNewMessageHint(paths);
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke", text: text.slice(0, 80), seeds: [...usedIds] });
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+      event: "spoke",
+      text: text.slice(0, 80),
+      seeds: account.seedIds,
+      profile_ids: account.profileIds,
+      source: account.source,
+      spoken: account.spoken,
+      ...account.reason ? { reason: account.reason } : {}
+    });
     if (voiceSessionId && voiceSessionId !== homeId) {
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "delivered", sessionId: voiceSessionId });
     }
@@ -2705,9 +2886,13 @@ async function expressionPhases(bc) {
   const offered = assembleCandidates(activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))));
   if (offered.length === 0) {
     if (policy.heartbeat.idleMode && bc.agent) {
-      const idleTopics = digest.topic.trim();
-      if (idleTopics) {
-        const fallback = idleTopics.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).map((line, i) => ({ id: "idle-" + i, text: line.slice(0, 60), used: 0 }));
+      const idleEntries = profileTopicEntries(loadProfile(guard, profileFilePath(paths.dataDir)), 3);
+      if (idleEntries.length > 0) {
+        const fallback = idleEntries.map((e) => ({
+          id: e.id,
+          text: `${e.partition === "projects" ? "\u8FDB\u884C\u4E2D" : "\u5174\u8DA3"} ${e.topic}/${e.subTopic}: ${e.content}`.slice(0, 60),
+          used: 0
+        }));
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "idle_fallback", topics: fallback.length });
         return deliverPackage(bc, fallback, {
           seedIds: [],
@@ -2940,20 +3125,20 @@ function startOrchestrator(deps) {
 import { spawn as spawn2 } from "child_process";
 import fs13 from "fs";
 import os from "os";
-import path12 from "path";
+import path13 from "path";
 
 // src/browse/interests-edit.ts
 import fs11 from "fs";
-import path10 from "path";
+import path11 from "path";
 var MAX_INTERESTS = 32;
 var MAX_INTEREST_LEN = 60;
 var MAX_WINDOWS = 6;
 var HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 function userInterestsPath(paths) {
-  return path10.join(paths.settingsDir, "interests.json");
+  return path11.join(paths.settingsDir, "interests.json");
 }
 function factoryInterestsPath(paths) {
-  return path10.join(paths.configDir, "interests.json");
+  return path11.join(paths.configDir, "interests.json");
 }
 function readDoc(file) {
   try {
@@ -2975,7 +3160,7 @@ function ensureUserLayer(guard, paths) {
   return doc;
 }
 function saveDoc(guard, file, doc) {
-  fs11.mkdirSync(path10.dirname(file), { recursive: true });
+  fs11.mkdirSync(path11.dirname(file), { recursive: true });
   fs11.writeFileSync(guard.assert(file), JSON.stringify(doc, null, 2), "utf8");
 }
 function normalizeInterest(text) {
@@ -3043,7 +3228,7 @@ function setWanderWindows(guard, paths, rawWindows) {
 
 // src/statusbar/time-inject.ts
 import fs12 from "fs";
-import path11 from "path";
+import path12 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
   if (!input.originIsInboxSplice) return false;
@@ -3105,7 +3290,7 @@ function lastMessageTime(session) {
   return void 0;
 }
 function timeInjectStatePath(dataDir) {
-  return path11.join(dataDir, "time-inject-state.json");
+  return path12.join(dataDir, "time-inject-state.json");
 }
 function loadTimeInjectState(guard, dataDir) {
   try {
@@ -3174,7 +3359,7 @@ var cachedVersion = null;
 function pluginVersion(paths) {
   if (cachedVersion) return cachedVersion;
   try {
-    const pkg = JSON.parse(fs13.readFileSync(path12.join(paths.packageRoot, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs13.readFileSync(path13.join(paths.packageRoot, "package.json"), "utf8"));
     cachedVersion = typeof pkg.version === "string" ? pkg.version : "unknown";
   } catch {
     cachedVersion = "unknown";
@@ -3183,11 +3368,19 @@ function pluginVersion(paths) {
 }
 function homeSessionId(paths, guard) {
   try {
-    const raw = loadEncryptedText(guard, path12.join(paths.dataDir, "gate.json"));
+    const raw = loadEncryptedText(guard, path13.join(paths.dataDir, "gate.json"));
     return JSON.parse(raw ?? "{}").sessionId ?? null;
   } catch {
     return null;
   }
+}
+function seedAuditSink2(paths) {
+  return (entry) => {
+    try {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", entry);
+    } catch {
+    }
+  };
 }
 function auditInterests(paths, action, result, detail) {
   if (!result.ok) return;
@@ -3205,13 +3398,13 @@ function loadSessionTitles() {
     if (row && typeof row.val === "string" && row.val && !titles[id]) titles[id] = row.val;
   };
   try {
-    const dir = path12.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
+    const dir = path13.join(os.homedir(), ".dsh", "storages", "session_projcache", "sessions");
     for (const file of fs13.readdirSync(dir)) {
       if (!file.endsWith(".json")) continue;
       const id = file.slice(0, -".json".length);
       if (!id.startsWith("session-")) continue;
       try {
-        const record = JSON.parse(fs13.readFileSync(path12.join(dir, file), "utf8"));
+        const record = JSON.parse(fs13.readFileSync(path13.join(dir, file), "utf8"));
         take(id, record.record);
       } catch {
       }
@@ -3219,7 +3412,7 @@ function loadSessionTitles() {
   } catch {
   }
   try {
-    const raw = JSON.parse(fs13.readFileSync(path12.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
+    const raw = JSON.parse(fs13.readFileSync(path13.join(os.homedir(), ".dsh", "storages", "session_projcache.json"), "utf8"));
     const walk = (node) => {
       if (!node || typeof node !== "object") return;
       for (const [key, value] of Object.entries(node)) {
@@ -3237,7 +3430,7 @@ function loadSessionTitles() {
 }
 function loadVisibleSessionIds(registryFile) {
   try {
-    const file = registryFile ?? path12.join(os.homedir(), ".dsh", "storages", "workspace.json");
+    const file = registryFile ?? path13.join(os.homedir(), ".dsh", "storages", "workspace.json");
     const j = JSON.parse(fs13.readFileSync(file, "utf8"));
     const archived = new Set(
       (Array.isArray(j.global?.archivedSessionIds) ? j.global.archivedSessionIds : []).map((s) => String(s))
@@ -3309,7 +3502,7 @@ function installHeartbeatRpc(ctx, deps) {
             });
           }
           case "sessions.list": {
-            const root = path12.join(os.homedir(), ".dsh", "sessions");
+            const root = path13.join(os.homedir(), ".dsh", "sessions");
             const bindings = loadBindings(guard, paths.settingsDir).bindings;
             const home = homeSessionId(paths, guard);
             const titles = loadSessionTitles();
@@ -3317,7 +3510,7 @@ function installHeartbeatRpc(ctx, deps) {
             const out = [];
             if (fs13.existsSync(root)) {
               for (const slug of fs13.readdirSync(root)) {
-                for (const id of fs13.readdirSync(path12.join(root, slug))) {
+                for (const id of fs13.readdirSync(path13.join(root, slug))) {
                   if (registryFound && id !== home && !visible.has(id)) continue;
                   const binding = bindings.find((b) => b.sessionId === id);
                   out.push({
@@ -3353,7 +3546,7 @@ function installHeartbeatRpc(ctx, deps) {
             let homeReset = false;
             if (id === homeSessionId(paths, guard)) {
               try {
-                fs13.rmSync(guard.assert(path12.join(paths.dataDir, "gate.json")), { force: true });
+                fs13.rmSync(guard.assert(path13.join(paths.dataDir, "gate.json")), { force: true });
                 homeReset = true;
               } catch {
               }
@@ -3369,15 +3562,15 @@ function installHeartbeatRpc(ctx, deps) {
             });
           }
           case "seeds.archive": {
-            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ""), "completed");
+            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ""), "completed", Date.now(), seedAuditSink2(paths));
             return s ? ok(s) : err("not-found", "active seed not found");
           }
           case "seeds.restore": {
-            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ""));
+            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ""), Date.now(), seedAuditSink2(paths));
             return r.ok ? ok(r.seed) : err("restore-failed", r.reason);
           }
           case "seeds.delete": {
-            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? "")) });
+            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ""), seedAuditSink2(paths)) });
           }
           // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
           case "interests.list":
@@ -3435,7 +3628,7 @@ function installHeartbeatRpc(ctx, deps) {
                 lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
               }
             }
-            const out = path12.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+            const out = path13.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
             writeText(guard, out, lines.join("\n") + "\n");
             return ok({ path: out });
           }
@@ -3456,10 +3649,10 @@ function installHeartbeatRpc(ctx, deps) {
           case "migrate.export": {
             const passphrase = String(p.passphrase ?? "");
             if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-            const { collectMigrationEntries, encryptContainer } = await import("./migrate-43PUK25G.js");
+            const { collectMigrationEntries, encryptContainer } = await import("./migrate-N6NXMZ3G.js");
             const { entries } = collectMigrationEntries(guard, paths);
             if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
-            const out = path12.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+            const out = path13.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
             writeText(guard, out, encryptContainer(entries, passphrase));
             appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), { event: "migrate_export", files: entries.length });
             return ok({ path: out, count: entries.length });
@@ -3468,7 +3661,7 @@ function installHeartbeatRpc(ctx, deps) {
             const passphrase = String(p.passphrase ?? "");
             const file = String(p.file ?? "");
             if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-            const { decryptContainer, applyMigrationEntries } = await import("./migrate-43PUK25G.js");
+            const { decryptContainer, applyMigrationEntries } = await import("./migrate-N6NXMZ3G.js");
             let text;
             try {
               text = fs13.readFileSync(file, "utf8");
@@ -3721,6 +3914,8 @@ var Config = Schema.object({
   tokenSaver: Schema.boolean().default(false),
   /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
   ledgerTool: Schema.boolean().default(true),
+  /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
+  seedReportTool: Schema.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
   extraTools: Schema.string().default("")
 });
@@ -3892,6 +4087,24 @@ function apply(ctx, config = {}) {
         audit({ event: "ledger_tool_registered" });
       } catch (e) {
         audit({ event: "ledger_tool_register_failed", error: String(e).slice(0, 160) });
+      }
+    });
+  }
+  if (config.seedReportTool !== false) {
+    ctx.inject(["tools"], (scoped) => {
+      const audit = (entry) => {
+        try {
+          appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+        } catch {
+        }
+      };
+      try {
+        const tools = scoped.tools;
+        if (!tools || typeof tools.register !== "function") throw new Error("ToolRuntime.register unavailable on this host");
+        tools.register(buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+        audit({ event: "seed_report_tool_registered" });
+      } catch (e) {
+        audit({ event: "seed_report_tool_register_failed", error: String(e).slice(0, 160) });
       }
     });
   }
