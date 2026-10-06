@@ -11,12 +11,14 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
-  scryptSync,
-  timingSafeEqual
+  scryptSync
 } from "crypto";
 var MIGRATE_MAGIC = "HBMIG1";
 var MIGRATE_VERSION = 1;
 var KDF_N = 16384;
+var KDF_N_MIN = 1 << 12;
+var KDF_N_MAX = 1 << 16;
+var SCRYPT_MAXMEM = 128 * 1024 * 1024;
 var KEY_LEN = 32;
 var MIGRATE_FILES = [
   "profile.json",
@@ -28,7 +30,10 @@ var MIGRATE_FILES = [
   "browse.json",
   "seeds.jsonl",
   "ledger.md",
-  "cursors.json"
+  "cursors.json",
+  // v1.9.0: persona report log + topic preference stats
+  "seed_report.jsonl",
+  "preference.json"
 ];
 function collectWeeklyFiles(guard, paths) {
   const dir = path.join(paths.dataDir, "weekly");
@@ -72,14 +77,24 @@ function collectMigrationEntries(guard, paths) {
   }
   return { entries, progress: { packed, missing } };
 }
-function deriveKey(passphrase, salt) {
-  return scryptSync(passphrase, salt, KEY_LEN, { N: KDF_N, r: 8, p: 1 });
+function deriveKey(passphrase, salt, n) {
+  return scryptSync(passphrase, salt, KEY_LEN, { N: n, r: 8, p: 1, maxmem: SCRYPT_MAXMEM });
+}
+function assertKdfN(v) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0 || (n & n - 1) !== 0) {
+    throw new Error("migrate: container has invalid kdf parameters (N must be a power of two)");
+  }
+  if (n < KDF_N_MIN || n > KDF_N_MAX) {
+    throw new Error(`migrate: container kdf N ${n} is outside the supported range [${KDF_N_MIN}, ${KDF_N_MAX}]`);
+  }
+  return n;
 }
 function encryptContainer(entries, passphrase, now = /* @__PURE__ */ new Date()) {
   if (!passphrase) throw new Error("migrate: passphrase must not be empty");
   const salt = randomBytes(16);
   const iv = randomBytes(12);
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, KDF_N);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const plain = Buffer.from(JSON.stringify({ version: MIGRATE_VERSION, createdAt: now.toISOString(), files: entries }), "utf8");
   const data = Buffer.concat([cipher.update(plain), cipher.final()]);
@@ -100,11 +115,12 @@ function decryptContainer(text, passphrase) {
     throw new Error("migrate: not a migration container (bad JSON)");
   }
   if (outer.magic !== MIGRATE_MAGIC) throw new Error("migrate: not a migration container (bad magic)");
+  const n = assertKdfN(outer.kdf?.N);
   const salt = Buffer.from(String(outer.kdf?.salt ?? ""), "hex");
   const iv = Buffer.from(String(outer.iv ?? ""), "hex");
   const tag = Buffer.from(String(outer.tag ?? ""), "hex");
   const data = Buffer.from(String(outer.data ?? ""), "base64");
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, n);
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
   let plain;
@@ -116,8 +132,6 @@ function decryptContainer(text, passphrase) {
   const inner = JSON.parse(plain.toString("utf8"));
   if (inner.version !== MIGRATE_VERSION) throw new Error(`migrate: unsupported container version ${inner.version}`);
   if (!Array.isArray(inner.files)) throw new Error("migrate: container has no file list");
-  const v = Buffer.from([inner.version]);
-  timingSafeEqual(v, Buffer.from([MIGRATE_VERSION]));
   return { createdAt: inner.createdAt, files: inner.files };
 }
 function applyMigrationEntries(guard, paths, files, now = Date.now()) {
@@ -127,15 +141,15 @@ function applyMigrationEntries(guard, paths, files, now = Date.now()) {
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, "").slice(0, 14);
   for (const f of files) {
     const rel = String(f.path ?? "");
+    if (!rel || rel.includes("..") || path.isAbsolute(rel)) {
+      skipped.push(rel);
+      continue;
+    }
     const abs = path.join(paths.dataDir, rel);
     let absCanon;
     try {
       absCanon = guard.assert(abs);
     } catch {
-      skipped.push(rel);
-      continue;
-    }
-    if (rel.includes("..") || path.isAbsolute(rel)) {
       skipped.push(rel);
       continue;
     }
@@ -160,4 +174,4 @@ export {
   decryptContainer,
   applyMigrationEntries
 };
-//# sourceMappingURL=chunk-UCJR6TC7.js.map
+//# sourceMappingURL=chunk-IPOZFZPY.js.map

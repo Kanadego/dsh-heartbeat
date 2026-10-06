@@ -3,7 +3,7 @@ import {
   loadPool,
   normalizeCategory,
   seedsFilePath
-} from "./chunk-MXJPX3FM.js";
+} from "./chunk-PQTSXW4F.js";
 import {
   atomicWriteJsonSync
 } from "./chunk-VIZNIQLK.js";
@@ -122,6 +122,7 @@ function assertPolicy(input) {
     if (typeof s.ttlDays[k] !== "number") fail(`seeds.ttlDays.${k} missing`);
   }
   if (typeof s.coldBenchDays !== "number") fail("seeds.coldBenchDays missing");
+  if (typeof s.archiveCap !== "number" || s.archiveCap < 1) fail("seeds.archiveCap must be >= 1");
   if (typeof s.retireAfterUsed !== "number" || s.retireAfterUsed < 1) fail("seeds.retireAfterUsed must be >= 1");
   if (!isPlainObject(s.scoreWeights)) fail("seeds.scoreWeights missing");
   const pr = p.profile;
@@ -270,14 +271,93 @@ function pendingOlderThan(guard, file, days, now = Date.now()) {
 
 // src/browse/browse.ts
 import fs3 from "fs";
+import path5 from "path";
+
+// src/browse/preference.ts
 import path4 from "path";
+var DAY_MS2 = 864e5;
+var W_MIN = 0.5;
+var W_MAX = 2;
+var SMOOTH_ADOPTED = 1;
+var SMOOTH_DELIVERED = 4;
+var DECAY_HALF_LIFE_DAYS = 30;
+function preferenceFilePath(dataDir) {
+  return path4.join(dataDir, "preference.json");
+}
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+function sanitizeTopicPref(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const t = raw;
+  if (!Number.isFinite(Number(t.delivered)) || !Number.isFinite(Number(t.adopted))) return null;
+  const delivered = Math.floor(num(t.delivered));
+  return {
+    delivered,
+    adopted: Math.min(delivered, Math.floor(num(t.adopted))),
+    lastDeliveredAt: num(t.lastDeliveredAt),
+    lastAdoptedAt: num(t.lastAdoptedAt)
+  };
+}
+function loadPreference(guard, file) {
+  const doc = loadJson(guard, file);
+  if (!doc || typeof doc !== "object" || !doc.topics || typeof doc.topics !== "object") {
+    return { version: 1, topics: {}, updatedAt: 0 };
+  }
+  const topics = {};
+  for (const [key, raw] of Object.entries(doc.topics)) {
+    const t = sanitizeTopicPref(raw);
+    if (key && t) topics[key] = t;
+  }
+  const updatedAt = Number(doc.updatedAt);
+  return { version: 1, topics, updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0 };
+}
+function savePreference(guard, file, state) {
+  saveJson(guard, file, state);
+}
+function recordDelivery(guard, file, opts) {
+  const state = loadPreference(guard, file);
+  const adopted = new Set(opts.adoptedTopics);
+  for (const topic of opts.offeredTopics) {
+    if (!topic) continue;
+    const t = state.topics[topic] ?? { delivered: 0, adopted: 0, lastDeliveredAt: 0, lastAdoptedAt: 0 };
+    t.delivered += 1;
+    t.lastDeliveredAt = opts.now;
+    if (adopted.has(topic)) {
+      t.adopted += 1;
+      t.lastAdoptedAt = opts.now;
+    }
+    state.topics[topic] = t;
+  }
+  state.updatedAt = opts.now;
+  savePreference(guard, file, state);
+  return state;
+}
+function decayed(t, now) {
+  const dAgeDays = Math.max(0, now - t.lastDeliveredAt) / DAY_MS2;
+  const aAgeDays = Math.max(0, now - t.lastAdoptedAt) / DAY_MS2;
+  const dHalf = Math.pow(0.5, dAgeDays / DECAY_HALF_LIFE_DAYS);
+  const aHalf = Math.pow(0.5, aAgeDays / DECAY_HALF_LIFE_DAYS);
+  return { delivered: t.delivered * dHalf, adopted: t.adopted * aHalf };
+}
+function preferenceWeight(state, topic, now) {
+  const t = state.topics[topic];
+  const rate = t ? (() => {
+    const d = decayed(t, now);
+    return (d.adopted + SMOOTH_ADOPTED) / (d.delivered + SMOOTH_DELIVERED);
+  })() : SMOOTH_ADOPTED / SMOOTH_DELIVERED;
+  return Math.min(W_MAX, Math.max(W_MIN, rate / (SMOOTH_ADOPTED / SMOOTH_DELIVERED)));
+}
+
+// src/browse/browse.ts
 var WATCH_THROTTLE_MS = 6 * 36e5;
 var UA = { "User-Agent": "dsh-heartbeat/2.0 (+local; personal companion)" };
 function emptyBrowseState() {
   return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
 }
 function browseStatePath(paths) {
-  return path4.join(paths.dataDir, "browse.json");
+  return path5.join(paths.dataDir, "browse.json");
 }
 function readJsonFile(file, fallback) {
   try {
@@ -287,14 +367,14 @@ function readJsonFile(file, fallback) {
   }
 }
 function loadInterests(paths) {
-  const userPath = path4.join(paths.settingsDir, "interests.json");
+  const userPath = path5.join(paths.settingsDir, "interests.json");
   if (fs3.existsSync(userPath)) return readJsonFile(userPath, { interests: [], _schedule: {} });
-  return readJsonFile(path4.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
+  return readJsonFile(path5.join(paths.configDir, "interests.json"), { interests: [], _schedule: {} });
 }
 function loadWatchlist(paths) {
-  const userPath = path4.join(paths.settingsDir, "watchlist.json");
+  const userPath = path5.join(paths.settingsDir, "watchlist.json");
   if (fs3.existsSync(userPath)) return readJsonFile(userPath, { targets: [] });
-  return readJsonFile(path4.join(paths.configDir, "watchlist.json"), { targets: [] });
+  return readJsonFile(path5.join(paths.configDir, "watchlist.json"), { targets: [] });
 }
 function loadState(guard, paths) {
   return loadJson(guard, browseStatePath(paths)) ?? emptyBrowseState();
@@ -362,12 +442,24 @@ function onCooldown(state, focus, cooldownDays, now) {
   const last = state.wander.focusHistory[focus] ?? 0;
   return last > now - cooldownDays * 864e5;
 }
-function pickFocus(state, interests, now) {
+var STARVATION_DAYS = 14;
+function pickFocus(state, interests, now, pref) {
   const sc = interests._schedule ?? {};
   const cooldown = sc.focus_cooldown_days ?? 3;
   const pool = (interests.interests ?? []).filter((t) => !onCooldown(state, t, cooldown, now));
   if (pool.length === 0) return null;
-  pool.sort((a, b) => (state.wander.focusHistory[a] ?? 0) - (state.wander.focusHistory[b] ?? 0));
+  if (!pref) {
+    pool.sort((a, b) => (state.wander.focusHistory[a] ?? 0) - (state.wander.focusHistory[b] ?? 0));
+    return pool[0];
+  }
+  const age = (t) => now - (state.wander.focusHistory[t] ?? 0);
+  const starved = pool.filter((t) => age(t) >= STARVATION_DAYS * 864e5);
+  if (starved.length > 0) {
+    starved.sort((a, b) => age(b) - age(a));
+    return starved[0];
+  }
+  const effAge = (t) => age(t) * preferenceWeight(pref, t, now);
+  pool.sort((a, b) => effAge(b) - effAge(a));
   return pool[0];
 }
 function adviseWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
@@ -383,7 +475,7 @@ function adviseWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
   if (now.getTime() - state.wander.last_wander_at < minGap) {
     return { focus: null, query: null, skipped: "min-interval" };
   }
-  const focus = pickFocus(state, interests, now.getTime());
+  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir)));
   if (!focus) return { focus: null, query: null, skipped: "no-focus" };
   return { focus, query: `${focus} 2026 \u6700\u65B0`, skipped: null };
 }
@@ -422,7 +514,7 @@ function adviseRefillWander(guard, paths, policy, now = /* @__PURE__ */ new Date
     return { focus: null, query: null, skipped: `topic-stock-ok(${topicCount})`, topicCount, refillsToday };
   }
   const interests = loadInterests(paths);
-  const focus = pickFocus(state, interests, now.getTime());
+  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir)));
   if (!focus) {
     return { focus: null, query: null, skipped: "no-focus", topicCount, refillsToday };
   }
@@ -434,11 +526,11 @@ function browseStatus(guard, paths) {
 
 // src/notify/notify.ts
 import { spawnSync } from "child_process";
-import path5 from "path";
+import path6 from "path";
 function runNotify(paths, args) {
   const r = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path5.join(paths.assetsDir, "notify.ps1"), ...args],
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path6.join(paths.assetsDir, "notify.ps1"), ...args],
     { timeout: 2e4, encoding: "utf8" }
   );
   return { status: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
@@ -460,13 +552,13 @@ function sendWeeklyReadyHint(paths) {
 
 // src/weekly/report.ts
 import fs4 from "fs";
-import path6 from "path";
+import path7 from "path";
 var WEEKLY_INTERVAL_MS = 7 * 864e5;
 function weeklyDirPath(dataDir) {
-  return path6.join(dataDir, "weekly");
+  return path7.join(dataDir, "weekly");
 }
 function stateFilePath(dataDir) {
-  return path6.join(weeklyDirPath(dataDir), "state.json");
+  return path7.join(weeklyDirPath(dataDir), "state.json");
 }
 function reportFileName(endIso) {
   return `report-${endIso.slice(0, 10)}.json`;
@@ -483,10 +575,16 @@ function weeklyDue(guard, dataDir, now = Date.now()) {
   const last = lastWeeklyGeneratedAt(guard, dataDir);
   return now - last >= WEEKLY_INTERVAL_MS;
 }
+function ensureWeeklyAnchor(guard, dataDir, now = Date.now()) {
+  if (lastWeeklyGeneratedAt(guard, dataDir) > 0) return false;
+  fs4.mkdirSync(weeklyDirPath(dataDir), { recursive: true });
+  atomicWriteJsonSync(stateFilePath(dataDir), { lastGeneratedAt: now });
+  return true;
+}
 function saveWeeklyReport(guard, dataDir, report) {
   const dir = weeklyDirPath(dataDir);
   fs4.mkdirSync(dir, { recursive: true });
-  const file = path6.join(dir, reportFileName(report.end));
+  const file = path7.join(dir, reportFileName(report.end));
   saveEncryptedText(guard, file, JSON.stringify(report, null, 1));
   atomicWriteJsonSync(stateFilePath(dataDir), { lastGeneratedAt: Date.parse(report.generatedAt) });
   return file;
@@ -507,7 +605,7 @@ function listWeeklyReports(guard, dataDir) {
 function readWeeklyReport(guard, dataDir, file) {
   if (!/^report-\d{4}-\d{2}-\d{2}\.json$/.test(file)) return null;
   try {
-    const raw = loadEncryptedText(guard, path6.join(weeklyDirPath(dataDir), file));
+    const raw = loadEncryptedText(guard, path7.join(weeklyDirPath(dataDir), file));
     if (!raw) return null;
     const rep = JSON.parse(raw);
     if (typeof rep.text !== "string") return null;
@@ -555,6 +653,13 @@ function renderTemplateReport(facts) {
   if (facts.seeds.waiting.length > 0) {
     lines.push(`\u8FD8\u6CA1\u804A\u8FC7\u7684\u7D20\u6750\uFF1A${facts.seeds.waiting.join("\u3001")}\u3002`);
   }
+  if (facts.reports.total > 0) {
+    const reasonPart = facts.reports.reasons.length > 0 ? `\uFF08${facts.reports.reasons.map((r) => `${r.reason} ${r.count} \u6B21`).join("\u3001")}\uFF09` : "";
+    lines.push(`\u6295\u9012\u62A5\u8D26 ${facts.reports.total} \u6B21\uFF1A\u7528\u7D20\u6750 ${facts.reports.material}\u3001\u8BF4\u771F\u5FC3\u8BDD ${facts.reports.heartfelt}\u3001\u6CA1\u8BF4\u8BDD ${facts.reports.silent}${reasonPart}\u3002`);
+  }
+  if (facts.reports.missing > 0) {
+    lines.push(`\u53E6\u6709 ${facts.reports.missing} \u6B21\u6295\u9012\u6CA1\u7B49\u5230\u62A5\u8D26\uFF08\u8FD9\u90E8\u5206\u6CA1\u7B97\u8FDB\u504F\u597D\u7EDF\u8BA1\uFF09\u3002`);
+  }
   if (facts.peakHours.length > 0) {
     lines.push(`\u6D3B\u8DC3\u9AD8\u5CF0\uFF1A${facts.peakHours.join("\u3001")}\u3002`);
   }
@@ -564,7 +669,7 @@ function renderTemplateReport(facts) {
 // src/core/preset-install.ts
 import fs5 from "fs";
 import os from "os";
-import path7 from "path";
+import path8 from "path";
 import { fileURLToPath } from "url";
 var COMPOSITION_FILE = "agent.cordis.yml";
 var METADATA_FILE = "preset.yml";
@@ -572,14 +677,14 @@ var BUNDLED_PRESET_ID = "heartbeat";
 function bundledPresetDir(moduleUrl, id = BUNDLED_PRESET_ID) {
   let dir;
   try {
-    dir = path7.dirname(fileURLToPath(moduleUrl));
+    dir = path8.dirname(fileURLToPath(moduleUrl));
   } catch {
     return void 0;
   }
   for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = path7.join(dir, "assets", "presets", id);
-    if (fs5.existsSync(path7.join(candidate, COMPOSITION_FILE))) return candidate;
-    const parent = path7.dirname(dir);
+    const candidate = path8.join(dir, "assets", "presets", id);
+    if (fs5.existsSync(path8.join(candidate, COMPOSITION_FILE))) return candidate;
+    const parent = path8.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -589,12 +694,12 @@ function userPresetRoot(roots) {
   const found = roots?.find(
     (root) => root?.trust === "user" && typeof root.path === "string" && root.path.length > 0
   );
-  return found?.path === void 0 ? void 0 : path7.resolve(found.path);
+  return found?.path === void 0 ? void 0 : path8.resolve(found.path);
 }
 function conventionalUserPresetRoot(env = process.env, home = os.homedir()) {
   const override = env.DSH_HOME?.trim();
-  const root = override && override.length > 0 ? override : path7.join(home, ".dsh");
-  return path7.join(root, ".agent-presets");
+  const root = override && override.length > 0 ? override : path8.join(home, ".dsh");
+  return path8.join(root, ".agent-presets");
 }
 function installBundledPreset(options) {
   const id = options.id && options.id.length > 0 ? options.id : BUNDLED_PRESET_ID;
@@ -626,12 +731,12 @@ function installBundledPreset(options) {
       detail: "the roster mounts no user preset root (includeUserRoot=false)"
     };
   }
-  const dir = path7.join(root, id);
-  const composition = path7.join(dir, COMPOSITION_FILE);
+  const dir = path8.join(root, id);
+  const composition = path8.join(dir, COMPOSITION_FILE);
   try {
     if (fs5.existsSync(composition)) {
       if (options.force !== true) {
-        const drifted = !sameBytes(composition, path7.join(bundledDir, COMPOSITION_FILE));
+        const drifted = !sameBytes(composition, path8.join(bundledDir, COMPOSITION_FILE));
         return {
           action: "exists",
           id,
@@ -640,7 +745,7 @@ function installBundledPreset(options) {
           detail: drifted ? "kept as-is (differs from the bundled template)" : "kept as-is"
         };
       }
-      fs5.copyFileSync(path7.join(bundledDir, COMPOSITION_FILE), composition);
+      fs5.copyFileSync(path8.join(bundledDir, COMPOSITION_FILE), composition);
       return {
         action: "restored",
         id,
@@ -651,9 +756,9 @@ function installBundledPreset(options) {
     }
     const existed = fs5.existsSync(dir);
     fs5.mkdirSync(dir, { recursive: true });
-    fs5.copyFileSync(path7.join(bundledDir, COMPOSITION_FILE), composition);
-    const metadata = path7.join(dir, METADATA_FILE);
-    if (!fs5.existsSync(metadata)) fs5.copyFileSync(path7.join(bundledDir, METADATA_FILE), metadata);
+    fs5.copyFileSync(path8.join(bundledDir, COMPOSITION_FILE), composition);
+    const metadata = path8.join(dir, METADATA_FILE);
+    if (!fs5.existsSync(metadata)) fs5.copyFileSync(path8.join(bundledDir, METADATA_FILE), metadata);
     return {
       action: existed ? "repaired" : "created",
       id,
@@ -671,16 +776,16 @@ function describeInstall(result) {
   return `preset ${result.id} ${result.action}${where}${why}`;
 }
 function presetStatus(moduleUrl, id = BUNDLED_PRESET_ID, root = conventionalUserPresetRoot()) {
-  const dir = path7.join(root, id);
+  const dir = path8.join(root, id);
   const bundledDir = bundledPresetDir(moduleUrl, id);
-  const installed = fs5.existsSync(path7.join(dir, COMPOSITION_FILE));
+  const installed = fs5.existsSync(path8.join(dir, COMPOSITION_FILE));
   return {
     id,
     dir,
     ...bundledDir === void 0 ? {} : { bundledDir },
     installed,
-    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path7.join(dir, COMPOSITION_FILE), path7.join(bundledDir, COMPOSITION_FILE)),
-    metadataMatches: bundledDir !== void 0 && fs5.existsSync(path7.join(dir, METADATA_FILE)) && sameBytes(path7.join(dir, METADATA_FILE), path7.join(bundledDir, METADATA_FILE))
+    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path8.join(dir, COMPOSITION_FILE), path8.join(bundledDir, COMPOSITION_FILE)),
+    metadataMatches: bundledDir !== void 0 && fs5.existsSync(path8.join(dir, METADATA_FILE)) && sameBytes(path8.join(dir, METADATA_FILE), path8.join(bundledDir, METADATA_FILE))
   };
 }
 function sameBytes(left, right) {
@@ -702,6 +807,8 @@ export {
   markDone,
   scanPending,
   pendingOlderThan,
+  preferenceFilePath,
+  recordDelivery,
   loadInterests,
   loadWatchlist,
   checkWatchlist,
@@ -714,6 +821,7 @@ export {
   sendWeeklyReadyHint,
   weeklyDirPath,
   weeklyDue,
+  ensureWeeklyAnchor,
   saveWeeklyReport,
   listWeeklyReports,
   readWeeklyReport,
@@ -726,4 +834,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-SQJLKP7L.js.map
+//# sourceMappingURL=chunk-2SYXKKZF.js.map
