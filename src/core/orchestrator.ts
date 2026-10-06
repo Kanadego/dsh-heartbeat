@@ -28,19 +28,23 @@ import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
 import { runGate, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
-import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, attributionIds, type MaterialInput } from './material.js';
+import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
+import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
+import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
 import { adviseWander, adviseRefillWander, checkWatchlist, completeWander, browseStatePath } from '../browse/browse.js';
 import { shouldConsolidate, runConsolidation } from '../profile/consolidate.js';
 import { snapshotIfDue } from '../profile/snapshot.js';
-import { buildDigest } from '../profile/digest.js';
+import { buildDigest, profileTopicEntries } from '../profile/digest.js';
+import { loadProfile, profileFilePath } from '../profile/store.js';
 import { recordPresence } from '../rhythm/rhythm.js';
 import { pruneAuditFile } from './audit-log.js';
 import { ensureRegistered, sendNewMessageHint, sendWeeklyReadyHint } from '../notify/notify.js';
 import { collectWeeklyFacts } from '../weekly/collect.js';
 import {
   weeklyDue,
+  ensureWeeklyAnchor,
   buildWeeklyPrompt,
   renderTemplateReport,
   saveWeeklyReport,
@@ -674,11 +678,23 @@ interface BeatContext {
   now: number;
 }
 
+/** Seed lifecycle audit sink (v1.9.0): pool mutations land in heartbeat.jsonl.
+ *  A failed append must never break the beat. */
+function seedAuditSink(paths: WorkspacePaths): (entry: Record<string, unknown>) => void {
+  return (entry) => {
+    try {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', entry);
+    } catch {
+      /* audit must never break the beat */
+    }
+  };
+}
+
 /** ① 维护相 */
 async function maintenancePhase(bc: BeatContext): Promise<void> {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
-  gcPool(guard, seedsFilePath(paths.dataDir), policy, now);
+  gcPool(guard, seedsFilePath(paths.dataDir), policy, now, seedAuditSink(paths));
   pruneAuditFile(paths.logsDir + '/envpulse.jsonl', policy.retention.envPulseHours * 3600_000, now);
   pruneAuditFile(paths.logsDir + '/heartbeat.jsonl', policy.retention.decisionLogDays * 86_400_000, now);
   // Journal snapshot basepoint (v1.8.0): fold the journal once it grows past
@@ -781,12 +797,18 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
   const { deps, agent, now } = bc;
   const { guard, paths, policy } = deps;
   if (policy.weekly.enabled === false) return;
-  if (!weeklyDue(guard, paths.dataDir, now)) return;
   const audit = (entry: Record<string, unknown>): void => {
     try {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', entry);
     } catch { /* audit must never break the beat */ }
   };
+  // v1.9.0: a never-generated store is anchored to NOW instead of counting as
+  // due — the first report comes one full week after installation (that is what
+  // the release notes promise), not on the first maintenance beat.
+  if (ensureWeeklyAnchor(guard, paths.dataDir, now)) {
+    audit({ event: 'weekly_anchored' });
+  }
+  if (!weeklyDue(guard, paths.dataDir, now)) return;
   if (!agent) {
     audit({ event: 'weekly_skipped', reason: 'agentless beat' });
     return;
@@ -944,7 +966,7 @@ async function runWanderTurn(
       if (!item.text) continue;
       addSeed(guard, seedsFilePath(paths.dataDir), policy, {
         text: item.text, topic: item.topic ?? focus, tag: 'news', source: 'browse', confidence: 0.4,
-      }, now);
+      }, now, seedAuditSink(paths));
       registered += 1;
     }
   } catch (e) {
@@ -953,6 +975,41 @@ async function runWanderTurn(
   completeWander(guard, paths, focus, now, { refill: opts.label === 'refill_wander' }); // throttle registered regardless (§7.4)
   appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: opts.label, focus, registered });
   return true;
+}
+
+/** 偏好记账（2026-10-06）：把一次投递折算成话题键写入偏好统计——offered = 包里
+ * 全部素材/画像条目的话题，adopted = 对账后实际采用的话题。素材话题取 seed.topic，
+ * 画像条目取 `topic/subTopic`。查询失败由调用方的 try 吞掉（审计 preference_record_failed）。
+ *
+ * v1.9.0 收紧了「什么算话题信号」：
+ *   - 报账沉默只有在 reason=素材不搭 时才算——「不想说话 / 在忙或刚聊过」跟话题无关，
+ *     算进去等于让好话题背锅（旧行为正是如此）；
+ *   - 没报账（source==='none'）时调用方不记账：不知道她用了哪条，就不该把整包都算成
+ *     「发了没人要」，只留一条 report_missing 审计。 */
+function recordDeliveryFromAccount(
+  deps: OrchestratorDeps,
+  materials: MaterialInput[],
+  account: DeliveryAccount,
+): void {
+  if (account.spoken === 'silent' && account.reason !== '素材不搭') return;
+  const { guard, paths } = deps;
+  const db = loadPool(guard, seedsFilePath(paths.dataDir));
+  const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+  const seedTopic = new Map(db.seeds.map((s) => [s.id, s.topic] as const));
+  const entryTopic = new Map(
+    [...doc.partitions.interest!.entries, ...doc.partitions.projects!.entries]
+      .map((e) => [e.id, `${e.topic}/${e.subTopic}`] as const),
+  );
+  const topicOf = (id: string): string | null =>
+    seedTopic.get(id) ?? entryTopic.get(id) ?? null;
+  const offered = [...new Set(materials.map((m) => topicOf(m.id)).filter((t): t is string => Boolean(t)))];
+  const adopted = [...new Set([...account.seedIds, ...account.profileIds]
+    .map(topicOf).filter((t): t is string => Boolean(t)))];
+  recordDelivery(guard, preferenceFilePath(paths.dataDir), {
+    offeredTopics: offered,
+    adoptedTopics: adopted,
+    now: Date.now(),
+  });
 }
 
 /** ⑤b→⑥→⑦ 投递包（v1.6.3 从 expressionPhases 抽出）：在投递目标会话的 agent 上出声，
@@ -999,7 +1056,10 @@ async function deliverPackage(
     // 要不要说、说哪条（或真心话）。buildMaterialPrompt 已含 ①②③（3条里≥2条 used>=1
     // 时自动加「也可以说一句真心话」）。它可以直接说素材里的一条，也可以顺着处境说
     // 想说的话；觉得没什么可说的可以沉默。
+    // 本次投递编号（v1.9.0）：报账把它带回来，这一包的账才不会被上一包或下一包认领。
+    const deliveryId = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const phrasePrompt = buildMaterialPrompt(materials, {
+      deliveryId,
       // spec ②: the "我在干嘛" line rides on every delivery when vision
       // produced one this beat; absent otherwise (never invented).
       ...(typeof opts.doing === 'string' && opts.doing.trim()
@@ -1008,6 +1068,7 @@ async function deliverPackage(
     });
 
     // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
+    const turnStart = Date.now(); // 报账对账窗口起点（2026-10-06）
     let spokenRaw: string;
     try {
       spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
@@ -1025,28 +1086,73 @@ async function deliverPackage(
       .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
     const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
     const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? '').slice(0, 200);
+    const spokeText = Boolean(text && /[\u4e00-\u9fff]/.test(text));
+    // 报账对账（2026-10-06）：陪伴 agent 的 seed_report 优先，决策轮 D23 seed_ids
+    // 作后备，都没有就记零——宁可漏记不假记（包含匹配已删）。
+    // v1.9.0：按投递编号取本次的那条（同窗口里点名了别的包的报账一律不用），
+    // 只在对方没填编号时才退回「窗口内最新一条」。
+    let report: DeliveryReportInput | null = null;
+    try {
+      const reports = readSeedReportsSince(guard, reportFilePath(paths.dataDir), turnStart);
+      report = pickReport(reports, deliveryId);
+    } catch (e) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'report_read_failed', error: String(e).slice(0, 120) });
+    }
+    const account = reconcileDelivery(materials, report, opts.seedIds, spokeText);
     // 兜底闸：陪伴者说中文；整段完全没有中文才判为泄漏的思考，不投递。
-    if (!text || !/[\u4e00-\u9fff]/.test(text)) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
-      noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
+    // 例外：本人报账 spoken=silent 是合法沉默（带原因），不再算失败。
+    if (!spokeText) {
+      if (account.source === 'report' && account.spoken === 'silent') {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+          event: 'silent', reason: `报账沉默:${account.reason ?? '未说明'}`,
+        });
+        noteBeat('silent', { reason: '本人报账沉默' });
+        // 沉默也是投递结果：reason=素材不搭 时把这一包记成 offered/未采用
+        // （recordDeliveryFromAccount 内部会把无关原因的沉默滤掉）。
+        try {
+          recordDeliveryFromAccount(deps, materials, account);
+        } catch (e) {
+          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
+        }
+      } else {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
+        noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
+      }
       return;
     }
 
-    // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、toast 提示。
+    // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、偏好记账、toast 提示。
     const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
     if (!confirm.ok) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
       noteBeat('spoke_failed', { reason: confirm.reason });
       return;
     }
-    // A2 attribution（2026-09-16 改版）：seed_ids 优先 + 包含匹配兜底 + 轻引导。
-    // 画像兜底的伪素材 id（idle-N）在真实池里不存在，surfaceSeed 会安全返回 null，不产生误归账。
-    const usedIds = new Set(attributionIds(materials, text, opts.seedIds));
-    for (const id of usedIds) {
-      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now);
+    // 素材归账：只认对账后的显式 id（报告 > 决策轮）。画像条目 id 不在池里，
+    // surfaceSeed 安全返回 null，不会误归账；画像采用走偏好统计与报账流水。
+    for (const id of account.seedIds) {
+      surfaceSeed(guard, seedsFilePath(paths.dataDir), policy, id, now, seedAuditSink(paths));
+    }
+    // 偏好记账（2026-10-06）：投递的素材/画像话题 + 实际采用的话题。
+    // v1.9.0：没有报账（source==='none'）时不记——不知道她用了哪条，就不该把整包
+    // 都算成「发了没人要」（旧行为会把每条话题一路顶到 W_MIN），只留审计。
+    if (account.source === 'none') {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'report_missing', offered: materials.map((m) => m.id).join(','),
+      });
+    } else {
+      try {
+        recordDeliveryFromAccount(deps, materials, account);
+      } catch (e) {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
+      }
     }
     sendNewMessageHint(paths);
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke', text: text.slice(0, 80), seeds: [...usedIds] });
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'spoke', text: text.slice(0, 80), seeds: account.seedIds,
+      profile_ids: account.profileIds, source: account.source, spoken: account.spoken,
+      ...(account.reason ? { reason: account.reason } : {}),
+    });
     if (voiceSessionId && voiceSessionId !== homeId) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
     }
@@ -1097,10 +1203,15 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     // v1.6.3 闲着模式：素材池为空时，若开启 idleMode，用本跳 digest 的话题切面兜底，
     // 仍复用投递链路（闸门已在上面通过）；未开启则照旧沉默。
     if (policy.heartbeat.idleMode && bc.agent) {
-      const idleTopics = digest.topic.trim();
-      if (idleTopics) {
-        const fallback: MaterialInput[] = idleTopics.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 3)
-          .map((line, i) => ({ id: 'idle-' + i, text: line.slice(0, 60), used: 0 }));
+      const idleEntries = profileTopicEntries(loadProfile(guard, profileFilePath(paths.dataDir)), 3);
+      if (idleEntries.length > 0) {
+        // 兜底素材携带真实画像条目 id（2026-10-06）：seed_report 才能把"聊了画像"
+        // 记到具体条目上（旧 idle-N 伪 id 无处落账）。
+        const fallback: MaterialInput[] = idleEntries.map((e) => ({
+          id: e.id,
+          text: `${e.partition === 'projects' ? '进行中' : '兴趣'} ${e.topic}/${e.subTopic}: ${e.content}`.slice(0, 60),
+          used: 0,
+        }));
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'idle_fallback', topics: fallback.length });
         // 画像兜底同样携带"我在干嘛"（vision 成功时才有；失败不编造）。
         return deliverPackage(bc, fallback, {

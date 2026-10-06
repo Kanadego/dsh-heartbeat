@@ -17,7 +17,7 @@ import {
   inboxFilePath,
 } from '../src/profile/inbox.js';
 import { runConsolidation, shouldConsolidate } from '../src/profile/consolidate.js';
-import { buildDigest } from '../src/profile/digest.js';
+import { buildDigest, profileTopicEntries } from '../src/profile/digest.js';
 import { recordPresence, summarizeRhythm } from '../src/rhythm/rhythm.js';
 import { planBurn, executeBurn } from '../src/vault/burn-list.js';
 import { appendAuditLine } from '../src/core/audit-log.js';
@@ -47,6 +47,47 @@ after(() => {
 });
 
 const inboxFile = () => inboxFilePath(paths.dataDir);
+
+test('profileTopicEntries: valid interest+projects only, scored by confidence then freshness', () => {
+  const entry = (over: Partial<Record<string, unknown>>): never => ({
+    id: 'a1',
+    partition: 'interest',
+    topic: 't',
+    subTopic: 's',
+    content: 'c',
+    confidence: 0.5,
+    temporal: 'stable',
+    validFrom: new Date(NOW).toISOString(),
+    validTo: null,
+    supersededBy: null,
+    evidence: [],
+    createdAt: new Date(NOW).toISOString(),
+    updatedAt: new Date(NOW).toISOString(),
+    updateCount: 0,
+    ...over,
+  } as never);
+
+  const doc = {
+    version: 1,
+    partitions: {
+      interest: {
+        entries: [
+          entry({ id: 'stale', confidence: 0.9, validTo: new Date(NOW).toISOString() }), // superseded → out
+          entry({ id: 'low', confidence: 0.1 }),
+          entry({ id: 'high', confidence: 0.95 }),
+        ],
+      },
+      projects: { entries: [entry({ id: 'proj', partition: 'projects', confidence: 0.8 })] },
+      comm: { entries: [entry({ id: 'comm', partition: 'comm', confidence: 1 })] }, // never a topic
+      psy: { entries: [] },
+    },
+  } as never;
+
+  const top = profileTopicEntries(doc, 3);
+  assert.deepEqual(top.map((e) => e.id), ['high', 'proj', 'low']);
+  // the idle-mode fallback uses these REAL ids, so they must be stable across calls
+  assert.deepEqual(profileTopicEntries(doc, 1).map((e) => e.id), ['high']);
+});
 
 test('inbox: append/count/drain/clear with note truncation and dedupe key', () => {
   inboxAppend(guard, inboxFile(), { kind: 'chat', at: new Date(NOW).toISOString(), ref: 'logs/heartbeat.jsonl#a', note: '短观察' });

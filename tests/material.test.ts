@@ -1,14 +1,21 @@
 // Material delivery pure functions (redesign 2026-09-16): buildMaterialPrompt,
-// buildRuminationPrompt, attributionIds, wantHonestOption, materialLines, PACKAGE_DECLARE.
+// buildRuminationPrompt, wantHonestOption, materialLines, PACKAGE_DECLARE,
+// plus reconciliation (2026-10-06/v1.9.0): explicitIds, reconcileDelivery, pickReport.
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   PACKAGE_DECLARE,
+  REPORT_DECLARE,
   buildMaterialPrompt,
   buildRuminationPrompt,
-  attributionIds,
+  explicitIds,
+  isTopicSignal,
+  MATERIAL_MISMATCH_REASON,
+  pickReport,
+  reconcileDelivery,
   wantHonestOption,
   materialLines,
+  type DeliveryReportInput,
   type MaterialInput,
 } from '../src/core/material.js';
 
@@ -22,10 +29,9 @@ test('PACKAGE_DECLARE: section ① is the heartbeat material delivery declaratio
   assert.ok(PACKAGE_DECLARE.includes('判断要不要选一条说'));
 });
 
-test('materialLines: each material becomes one trimmed line, no reasons, no order', () => {
+test('materialLines: each line carries the material id so the persona can report by id', () => {
   const lines = materialLines([M0, M2]);
-  assert.deepStrictEqual(lines, [M0.text, M2.text]);
-  assert.ok(lines.every((l) => typeof l === 'string' && l.length > 0));
+  assert.deepStrictEqual(lines, [`- [${M0.id}] ${M0.text}`, `- [${M2.id}] ${M2.text}`]);
 });
 
 test('wantHonestOption: true only when 2+ materials have used >= 1', () => {
@@ -40,8 +46,8 @@ test('wantHonestOption: true only when 2+ materials have used >= 1', () => {
 test('buildMaterialPrompt: sections ①+② always, section ③ only when 2+ used', () => {
   const p0 = buildMaterialPrompt([M0, M1]); // 0 used -> no honest line
   assert.ok(p0.includes(PACKAGE_DECLARE));
-  assert.ok(p0.includes('- ' + M0.text));
-  assert.ok(p0.includes('- ' + M1.text));
+  assert.ok(p0.includes(`- [${M0.id}] ${M0.text}`));
+  assert.ok(p0.includes(`- [${M1.id}] ${M1.text}`));
   assert.ok(!p0.includes('真心话'));
 
   const p1 = buildMaterialPrompt([M0, M2]); // 1 used
@@ -50,6 +56,13 @@ test('buildMaterialPrompt: sections ①+② always, section ③ only when 2+ use
   const p2 = buildMaterialPrompt([M2, M3]); // 2 used -> honest line
   assert.ok(p2.includes('真心话'));
   assert.ok(p2.includes('不带素材'));
+});
+
+test('buildMaterialPrompt: every package ends with the seed_report standing instruction', () => {
+  const p = buildMaterialPrompt([M0]);
+  assert.ok(p.includes(REPORT_DECLARE));
+  // the report instruction is always last, even for a single-item package
+  assert.ok(p.trimEnd().endsWith(REPORT_DECLARE));
 });
 
 test('buildRuminationPrompt: picks from candidates, one sentence per line, JSON speak/text/seed_ids', () => {
@@ -61,26 +74,15 @@ test('buildRuminationPrompt: picks from candidates, one sentence per line, JSON 
   assert.ok(prompt.includes('最多 3 条'));
 });
 
-test('attributionIds: explicit seed_ids first', () => {
-  const out = attributionIds([M0, M1], '他最近在学煮咖啡真有意思', ['s1']);
-  assert.deepStrictEqual(out, ['s1']);
-});
-
-test('attributionIds: containment match fallback (>=8-char prefix) when no explicit id', () => {
-  const out = attributionIds([M0, M2], M0.text + ' 之后我也试了');
-  assert.deepStrictEqual(out, ['s1']);
-  assert.ok(out.includes('s1'));
-});
-
-test('attributionIds: no credit for a material whose text is absent from the output', () => {
-  const out = attributionIds([M0, M1], '我今天特别想吃火锅');
-  assert.deepStrictEqual(out, []);
-});
-
-test('attributionIds: short (<8 char) material never credited by containment', () => {
-  const short: MaterialInput = { id: 'sX', text: '短', used: 0 };
-  const out = attributionIds([short], short.text);
-  assert.deepStrictEqual(out, []);
+test('explicitIds: nominations validated against THIS package only', () => {
+  // id present in the package -> credited
+  assert.deepStrictEqual(explicitIds([M0, M1], ['s1']), ['s1']);
+  // stale id from an earlier beat's package -> never credited
+  assert.deepStrictEqual(explicitIds([M0, M1], ['s1', 's9']), ['s1']);
+  // duplicates collapse
+  assert.deepStrictEqual(explicitIds([M0], ['s1', 's1']), ['s1']);
+  assert.deepStrictEqual(explicitIds([M0]), []);
+  assert.deepStrictEqual(explicitIds([], ['s1']), []);
 });
 
 // ── M2: assembleCandidates (2026-09-18 spec ③) ───────────────────────────
@@ -187,4 +189,90 @@ test('spec ②: material package carries the doing line when provided, never oth
   assert.ok(!blank.includes('他此刻大概在'));
   const none = buildMaterialPrompt([M0]);
   assert.ok(!none.includes('他此刻大概在'));
+});
+
+// ── M6: 对账（v1.9.0）—— 投递编号 + 「宁可漏记不假记」的降级规则 ────────────
+
+const rep = (over: Partial<DeliveryReportInput>): DeliveryReportInput => ({
+  spoken: 'material', seedIds: [], profileIds: [], ...over,
+});
+
+test('buildMaterialPrompt: the delivery id is visible; the report instruction stays last', () => {
+  const p = buildMaterialPrompt([M0], { deliveryId: 'dabc1234' });
+  assert.ok(p.includes('本次投递编号:dabc1234'));
+  assert.ok(p.trimEnd().endsWith(REPORT_DECLARE));
+  assert.ok(REPORT_DECLARE.includes('delivery_id'));
+  assert.ok(!buildMaterialPrompt([M0]).includes('(本次投递编号:'));
+});
+
+test('reconcileDelivery: the report wins and its ids are validated against this package', () => {
+  const a = reconcileDelivery([M0, M1], rep({ seedIds: ['s1', 's9'] }), [], true);
+  assert.equal(a.source, 'report');
+  assert.equal(a.spoken, 'material');
+  assert.deepEqual(a.seedIds, ['s1']); // s9 is not in this package
+});
+
+test('reconcileDelivery: claiming material with no valid id degrades to heartfelt (v1.9.0)', () => {
+  const a = reconcileDelivery([M0, M1], rep({ spoken: 'material', seedIds: ['s9'] }), [], true);
+  assert.equal(a.spoken, 'heartfelt');
+  assert.deepEqual(a.seedIds, []);
+  assert.equal(a.source, 'report');
+});
+
+test('reconcileDelivery: reported silence without speech is legitimate and keeps its reason', () => {
+  const a = reconcileDelivery([M0], rep({ spoken: 'silent', reason: '素材不搭' }), [], false);
+  assert.equal(a.spoken, 'silent');
+  assert.equal(a.source, 'report');
+  assert.equal(a.reason, '素材不搭');
+});
+
+test('reconcileDelivery: reported silence but she actually spoke → heartfelt', () => {
+  const a = reconcileDelivery([M0], rep({ spoken: 'silent' }), [], true);
+  assert.equal(a.spoken, 'heartfelt');
+  assert.equal(a.source, 'report');
+});
+
+test('reconcileDelivery: no report → decision ids; nothing at all → credit zero (source none)', () => {
+  const decided = reconcileDelivery([M0, M1], null, ['s2', 's9'], true);
+  assert.equal(decided.source, 'decision');
+  assert.equal(decided.spoken, 'material');
+  assert.deepEqual(decided.seedIds, ['s2']);
+
+  const nothing = reconcileDelivery([M0, M1], null, [], true);
+  assert.equal(nothing.source, 'none');
+  assert.equal(nothing.spoken, 'heartfelt');
+  assert.deepEqual(nothing.seedIds, []);
+
+  const silent = reconcileDelivery([M0], null, ['s1'], false);
+  assert.equal(silent.source, 'none');
+  assert.equal(silent.spoken, 'silent');
+});
+
+test('isTopicSignal: only reports that actually know something feed the preference counters', () => {
+  // a real material use / a real 真心话
+  assert.equal(isTopicSignal({ spoken: 'material', seedIds: ['s1'], profileIds: [], source: 'report' }), true);
+  assert.equal(isTopicSignal({ spoken: 'heartfelt', seedIds: [], profileIds: [], source: 'report' }), true);
+  assert.equal(isTopicSignal({ spoken: 'material', seedIds: ['s1'], profileIds: [], source: 'decision' }), true);
+  // reported silence with the material itself as the reason → the topic is the signal
+  assert.equal(isTopicSignal({ spoken: 'silent', seedIds: [], profileIds: [], reason: MATERIAL_MISMATCH_REASON, source: 'report' }), true);
+  // silence for any other reason says nothing about the topic
+  assert.equal(isTopicSignal({ spoken: 'silent', seedIds: [], profileIds: [], reason: '在忙或刚聊过', source: 'report' }), false);
+  assert.equal(isTopicSignal({ spoken: 'silent', seedIds: [], profileIds: [], reason: '不想说话', source: 'report' }), false);
+  // nothing usable at all → never counted, not even as "offered"
+  assert.equal(isTopicSignal({ spoken: 'heartfelt', seedIds: [], profileIds: [], source: 'none' }), false);
+  assert.equal(isTopicSignal({ spoken: 'silent', seedIds: [], profileIds: [], source: 'none' }), false);
+});
+
+test('pickReport: only the report naming THIS delivery id; id-less reports are the fallback', () => {
+  const a = rep({ deliveryId: 'dA', seedIds: ['s1'] });
+  const b = rep({ deliveryId: 'dB', seedIds: ['s2'] });
+  assert.equal(pickReport([a], 'dA'), a);
+  assert.equal(pickReport([a, b], 'dB'), b);
+  // a report that names a different delivery is never credited to this one
+  assert.equal(pickReport([a], 'dC'), null);
+  // pre-v1.9.0 entries (and a forgetful persona) carry no id: newest wins
+  const anon1 = rep({});
+  const anon2 = rep({});
+  assert.equal(pickReport([anon1, anon2], 'dA'), anon2);
+  assert.equal(pickReport([], 'dA'), null);
 });

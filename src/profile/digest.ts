@@ -10,6 +10,7 @@ import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { loadProfile, profileFilePath } from './store.js';
+import type { ProfileDoc, ProfileEntry } from './types.js';
 import { readText as vaultReadText } from '../vault/vault.js';
 import { pendingOlderThan } from '../ledger/ledger.js';
 import { ledgerFilePath } from '../ledger/ledger.js';
@@ -32,6 +33,18 @@ export interface SituationDigest {
 function fmtEntry(prefix: string, content: string, opts: { low?: boolean; confidence: number }): string {
   const flag = opts.low ? '（久未验证）' : '';
   return `${prefix}${content}${flag} [conf ${opts.confidence.toFixed(2)}]`;
+}
+
+/** Scored, valid interest+projects entries, best first. Shared by the digest
+ * topic slice and the idle-mode fallback materials — the fallback needs the
+ * REAL entry ids so the persona's seed_report can credit profile usage. */
+export function profileTopicEntries(doc: ProfileDoc, topN: number): ProfileEntry[] {
+  const score = (e: { confidence: number; updatedAt: string }) =>
+    e.confidence * 0.7 + (1 / (1 + Math.max(0, Date.now() - Date.parse(e.updatedAt)) / 86_400_000)) * 0.3;
+  return [...doc.partitions.interest!.entries, ...doc.partitions.projects!.entries]
+    .filter((e) => e.validTo === null)
+    .sort((a, b) => score(b) - score(a))
+    .slice(0, topN);
 }
 
 export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Policy, input: DigestInput = {}): SituationDigest {
@@ -58,16 +71,10 @@ export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Pol
   ];
 
   // -- topic: interest + projects valid entries, confidence x recency
-  const score = (e: { confidence: number; updatedAt: string }) =>
-    e.confidence * 0.7 + (1 / (1 + Math.max(0, Date.now() - Date.parse(e.updatedAt)) / 86_400_000)) * 0.3;
-  const topicEntries = [...doc.partitions.interest!.entries, ...doc.partitions.projects!.entries]
-    .filter((e) => e.validTo === null)
-    .sort((a, b) => score(b) - score(a))
-    .slice(0, topN)
-    .map((e) => {
-      const prefix = e.partition === 'projects' ? '- 进行中: ' : '- 兴趣: ';
-      return fmtEntry(prefix, `${e.topic}/${e.subTopic}: ${e.content}`, { low: e.lowActivity, confidence: e.confidence });
-    });
+  const topicEntries = profileTopicEntries(doc, topN).map((e) => {
+    const prefix = e.partition === 'projects' ? '- 进行中: ' : '- 兴趣: ';
+    return fmtEntry(prefix, `${e.topic}/${e.subTopic}: ${e.content}`, { low: e.lowActivity, confidence: e.confidence });
+  });
 
   // -- wander: high-confidence interests
   const wanderEntries = doc.partitions.interest!.entries

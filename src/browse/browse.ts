@@ -18,6 +18,7 @@ import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { loadJson, saveJson } from '../vault/vault.js';
 import { activeSeeds, loadPool, normalizeCategory, seedsFilePath } from '../seeds/pool.js';
+import { loadPreference, preferenceFilePath, preferenceWeight, type PrefState } from './preference.js';
 
 const WATCH_THROTTLE_MS = 6 * 3600_000;
 const UA = { 'User-Agent': 'dsh-heartbeat/2.0 (+local; personal companion)' };
@@ -185,13 +186,41 @@ function onCooldown(state: BrowseState, focus: string, cooldownDays: number, now
   return last > now - cooldownDays * 86_400_000;
 }
 
-/** Round-robin: least-recently-used non-cooling focus wins. */
-export function pickFocus(state: BrowseState, interests: InterestsConfig, now: number): string | null {
+/**
+ * Focus pick (2026-10-06): round-robin recency as the base, preference rate as
+ * a multiplier. Ordering key = effective age = realAgeSinceLastUse × weight —
+ * a favorite's age "grows" faster, so it reaches the pick threshold sooner and
+ * is wandered up to W_MAX times as often. Lockdown-proof by construction:
+ *   - cooldown (above) keeps every topic rotating no matter the weight;
+ *   - weight lives in [W_MIN, W_MAX] (preference.ts);
+ *   - hard starvation floor: any topic untouched ≥ STARVATION_DAYS ignores
+ *     weighting entirely and the oldest real age wins.
+ * Without a preference state the behavior is exactly the old pure LRU.
+ */
+export const STARVATION_DAYS = 14;
+
+export function pickFocus(
+  state: BrowseState,
+  interests: InterestsConfig,
+  now: number,
+  pref?: PrefState,
+): string | null {
   const sc = interests._schedule ?? {};
   const cooldown = sc.focus_cooldown_days ?? 3;
   const pool = (interests.interests ?? []).filter((t) => !onCooldown(state, t, cooldown, now));
   if (pool.length === 0) return null;
-  pool.sort((a, b) => (state.wander.focusHistory[a] ?? 0) - (state.wander.focusHistory[b] ?? 0));
+  if (!pref) {
+    pool.sort((a, b) => (state.wander.focusHistory[a] ?? 0) - (state.wander.focusHistory[b] ?? 0));
+    return pool[0]!;
+  }
+  const age = (t: string): number => now - (state.wander.focusHistory[t] ?? 0);
+  const starved = pool.filter((t) => age(t) >= STARVATION_DAYS * 86_400_000);
+  if (starved.length > 0) {
+    starved.sort((a, b) => age(b) - age(a)); // oldest real age wins
+    return starved[0]!;
+  }
+  const effAge = (t: string): number => age(t) * preferenceWeight(pref, t, now);
+  pool.sort((a, b) => effAge(b) - effAge(a));
   return pool[0]!;
 }
 
@@ -216,7 +245,7 @@ export function adviseWander(
   if (now.getTime() - state.wander.last_wander_at < minGap) {
     return { focus: null, query: null, skipped: 'min-interval' };
   }
-  const focus = pickFocus(state, interests, now.getTime());
+  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir)));
   if (!focus) return { focus: null, query: null, skipped: 'no-focus' };
   return { focus, query: `${focus} 2026 最新`, skipped: null };
 }
@@ -291,7 +320,7 @@ export function adviseRefillWander(
     return { focus: null, query: null, skipped: `topic-stock-ok(${topicCount})`, topicCount, refillsToday };
   }
   const interests = loadInterests(paths);
-  const focus = pickFocus(state, interests, now.getTime()); // 3-day cooldown still applies
+  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir))); // 3-day cooldown still applies
   if (!focus) {
     return { focus: null, query: null, skipped: 'no-focus', topicCount, refillsToday };
   }

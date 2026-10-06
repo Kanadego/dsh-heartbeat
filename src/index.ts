@@ -23,6 +23,7 @@ import { StatusReader } from './statusbar/store.js';
 import { renderStatusText } from './statusbar/track.js';
 import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
 import { buildLedgerTool } from './ledger/tool.js';
+import { buildSeedReportTool, reportFilePath } from './seeds/report.js';
 import { ledgerFilePath } from './ledger/ledger.js';
 
 export const name = 'heartbeat';
@@ -67,6 +68,8 @@ export const Config = z.object({
   tokenSaver: z.boolean().default(false),
   /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
   ledgerTool: z.boolean().default(true),
+  /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
+  seedReportTool: z.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
   extraTools: z.string().default(''),
 });
@@ -83,6 +86,7 @@ export interface HeartbeatConfig {
   idleMode?: boolean;
   tokenSaver?: boolean;
   ledgerTool?: boolean;
+  seedReportTool?: boolean;
   extraTools?: string;
 }
 
@@ -306,6 +310,28 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
         audit({ event: 'ledger_tool_registered' });
       } catch (e) {
         audit({ event: 'ledger_tool_register_failed', error: String(e).slice(0, 160) });
+      }
+    });
+  }
+
+  // ── Seed report tool (v1.9.0): the persona files ONE report per delivery ─
+  // spoken / seed_ids / profile_ids / reason — the unified bookkeeping channel
+  // that replaced containment-match attribution. Same global-layer pattern as
+  // the ledger tool; the engine room never sees it.
+  if (config.seedReportTool !== false) {
+    ctx.inject(['tools'], (scoped: unknown) => {
+      const audit = (entry: Record<string, unknown>): void => {
+        try {
+          appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+        } catch { /* audit must never break startup */ }
+      };
+      try {
+        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
+        if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
+        tools.register(buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+        audit({ event: 'seed_report_tool_registered' });
+      } catch (e) {
+        audit({ event: 'seed_report_tool_register_failed', error: String(e).slice(0, 160) });
       }
     });
   }

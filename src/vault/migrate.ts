@@ -16,7 +16,6 @@ import {
   createDecipheriv,
   randomBytes,
   scryptSync,
-  timingSafeEqual,
 } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
@@ -24,7 +23,17 @@ import { isEncrypted, loadEncryptedText, saveEncryptedText } from './vault.js';
 
 export const MIGRATE_MAGIC = 'HBMIG1';
 export const MIGRATE_VERSION = 1;
-const KDF_N = 163_84; // scrypt cost (Node default)
+/** scrypt cost for NEW containers (2^14 = Node's default, 16 MiB of work).
+ *  Reading is parameterised by the container's own kdf.N, so raising this
+ *  never orphans an existing export. */
+const KDF_N = 163_84;
+/** Hard bounds for a container-supplied N: a hostile/broken container must not
+ *  be able to make the import allocate unbounded memory. */
+const KDF_N_MIN = 1 << 12; // 2^12 = 4 MiB
+const KDF_N_MAX = 1 << 16; // 2^16 = 64 MiB
+/** Node's scrypt maxmem defaults to 32 MiB, which N=2^15 already exceeds — a
+ *  legal container with a larger N would fail without an explicit cap. */
+const SCRYPT_MAXMEM = 128 * 1024 * 1024;
 const KEY_LEN = 32;
 
 /** Memory-relevant runtime files (dataDir-relative). Deliberately NOT here:
@@ -41,6 +50,9 @@ export const MIGRATE_FILES = [
   'seeds.jsonl',
   'ledger.md',
   'cursors.json',
+  // v1.9.0: persona report log + topic preference stats
+  'seed_report.jsonl',
+  'preference.json',
 ];
 
 export interface MigrateEntry {
@@ -105,8 +117,25 @@ export function collectMigrationEntries(guard: PathGuard, paths: WorkspacePaths)
   return { entries, progress: { packed, missing } };
 }
 
-function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, KEY_LEN, { N: KDF_N, r: 8, p: 1 });
+/** Derive the key with the container's OWN cost parameter. `n` must already
+ *  have passed assertKdfN (export uses the current default). */
+function deriveKey(passphrase: string, salt: Buffer, n: number): Buffer {
+  return scryptSync(passphrase, salt, KEY_LEN, { N: n, r: 8, p: 1, maxmem: SCRYPT_MAXMEM });
+}
+
+/** Validate the scrypt cost carried by a container. A missing/absurd N is a
+ *  BROKEN container — reported as such, never as "wrong passphrase" (before
+ *  2026-10-06 the N in the container was ignored and the two were the same
+ *  error, so raising the cost would have orphaned every old export). */
+function assertKdfN(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0 || (n & (n - 1)) !== 0) {
+    throw new Error('migrate: container has invalid kdf parameters (N must be a power of two)');
+  }
+  if (n < KDF_N_MIN || n > KDF_N_MAX) {
+    throw new Error(`migrate: container kdf N ${n} is outside the supported range [${KDF_N_MIN}, ${KDF_N_MAX}]`);
+  }
+  return n;
 }
 
 /** Build the container file content. Everything sensitive lives inside the
@@ -115,7 +144,7 @@ export function encryptContainer(entries: MigrateEntry[], passphrase: string, no
   if (!passphrase) throw new Error('migrate: passphrase must not be empty');
   const salt = randomBytes(16);
   const iv = randomBytes(12);
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, KDF_N);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const plain = Buffer.from(JSON.stringify({ version: MIGRATE_VERSION, createdAt: now.toISOString(), files: entries }), 'utf8');
   const data = Buffer.concat([cipher.update(plain), cipher.final()]);
@@ -132,18 +161,19 @@ export function encryptContainer(entries: MigrateEntry[], passphrase: string, no
 /** Parse + decrypt a container. Throws (loudly) on a wrong passphrase or a
  * corrupted file — never returns partial data. */
 export function decryptContainer(text: string, passphrase: string): { createdAt: string; files: MigrateEntry[] } {
-  let outer: { magic?: string; kdf?: { salt?: string }; iv?: string; tag?: string; data?: string };
+  let outer: { magic?: string; kdf?: { salt?: string; N?: unknown }; iv?: string; tag?: string; data?: string };
   try {
     outer = JSON.parse(text);
   } catch {
     throw new Error('migrate: not a migration container (bad JSON)');
   }
   if (outer.magic !== MIGRATE_MAGIC) throw new Error('migrate: not a migration container (bad magic)');
+  const n = assertKdfN(outer.kdf?.N);
   const salt = Buffer.from(String(outer.kdf?.salt ?? ''), 'hex');
   const iv = Buffer.from(String(outer.iv ?? ''), 'hex');
   const tag = Buffer.from(String(outer.tag ?? ''), 'hex');
   const data = Buffer.from(String(outer.data ?? ''), 'base64');
-  const key = deriveKey(passphrase, salt);
+  const key = deriveKey(passphrase, salt, n);
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
   let plain: Buffer;
@@ -155,11 +185,6 @@ export function decryptContainer(text: string, passphrase: string): { createdAt:
   const inner = JSON.parse(plain.toString('utf8')) as { version: number; createdAt: string; files: MigrateEntry[] };
   if (inner.version !== MIGRATE_VERSION) throw new Error(`migrate: unsupported container version ${inner.version}`);
   if (!Array.isArray(inner.files)) throw new Error('migrate: container has no file list');
-  // Constant-time-ish sanity on the passphrase result is implicit in GCM auth;
-  // timingSafeEqual is used for the version check to keep the import path
-  // uniform without importing more crypto surface.
-  const v = Buffer.from([inner.version]);
-  timingSafeEqual(v, Buffer.from([MIGRATE_VERSION]));
   return { createdAt: inner.createdAt, files: inner.files };
 }
 
@@ -178,16 +203,19 @@ export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, f
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14);
   for (const f of files) {
     const rel = String(f.path ?? '');
+    // String-level rejection BEFORE the path is resolved: the guard's realpath
+    // check already refuses escapes, but an import must not depend on another
+    // module staying correct.
+    if (!rel || rel.includes('..') || path.isAbsolute(rel)) {
+      skipped.push(rel);
+      continue;
+    }
     const abs = path.join(paths.dataDir, rel);
     let absCanon: string;
     try {
       absCanon = guard.assert(abs);
     } catch {
       skipped.push(rel); // path refused by the guard — never write it
-      continue;
-    }
-    if (rel.includes('..') || path.isAbsolute(rel)) {
-      skipped.push(rel);
       continue;
     }
     fs.mkdirSync(path.dirname(absCanon), { recursive: true });

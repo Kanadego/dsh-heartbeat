@@ -35,6 +35,7 @@
       "promise": 90
     },
     "coldBenchDays": 21,
+    "archiveCap": 50,
     "retireAfterUsed": 2,
     "scoreWeights": {
       "freshness": 0.4,

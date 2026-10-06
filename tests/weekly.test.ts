@@ -14,6 +14,7 @@ import type { SeedDb } from '../src/seeds/types.js';
 import { collectWeeklyFacts } from '../src/weekly/collect.js';
 import {
   weeklyDue,
+  ensureWeeklyAnchor,
   saveWeeklyReport,
   listWeeklyReports,
   readWeeklyReport,
@@ -42,10 +43,21 @@ after(() => {
 
 const policy = () => loadPolicy(guard, workspace().configDir, workspace().settingsDir);
 
-test('weeklyDue: never generated is due; freshly saved is not; 8 days later is', () => {
+test('weeklyDue: a fresh install is anchored (waits a full week), a saved report resets the clock', () => {
   const now = Date.parse('2026-10-05T12:00:00');
   const dataDir = workspace().dataDir;
+  // raw predicate: no anchor yet = "due" — the orchestrator always anchors first
   assert.equal(weeklyDue(guard, dataDir, now), true);
+  // v1.9.0: the first maintenance beat anchors instead of generating, so the
+  // first report lands ~7 days after installation (what the release notes say)
+  assert.equal(ensureWeeklyAnchor(guard, dataDir, now), true);
+  assert.equal(weeklyDue(guard, dataDir, now), false);
+  assert.equal(weeklyDue(guard, dataDir, now + 6 * 86_400_000), false);
+  assert.equal(weeklyDue(guard, dataDir, now + 8 * 86_400_000), true);
+  // idempotent: a later beat must not push the anchor forward
+  assert.equal(ensureWeeklyAnchor(guard, dataDir, now + 3 * 86_400_000), false);
+  assert.equal(weeklyDue(guard, dataDir, now + 8 * 86_400_000), true);
+
   saveWeeklyReport(guard, dataDir, {
     start: new Date(now - WEEKLY_INTERVAL_MS).toISOString(),
     end: new Date(now).toISOString(),
@@ -181,4 +193,12 @@ test('buildWeeklyPrompt: narrator rules and facts are both present', () => {
   assert.ok(prompt.includes('本周事实'));
   assert.ok(prompt.includes('windowStart'));
   void weeklyDirPath;
+});
+
+test('v1.9.0: unaccounted deliveries surface in the report instead of hiding', () => {
+  const now = Date.parse('2026-10-05T12:00:00');
+  const facts = collectWeeklyFacts(guard, workspace(), policy(), now);
+  assert.equal(facts.reports.missing, 0);
+  const text = renderTemplateReport({ ...facts, reports: { ...facts.reports, missing: 2 } });
+  assert.ok(text.includes('2 次投递没等到报账'));
 });

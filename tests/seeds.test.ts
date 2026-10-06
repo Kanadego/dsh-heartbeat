@@ -22,6 +22,9 @@ import {
   seedsFilePath,
   surfaceSeed,
   archiveSeedById,
+  deleteSeed,
+  restoreSeed,
+  type SeedAuditFn,
 } from '../src/seeds/pool.js';
 
 const DAY = 86_400_000;
@@ -252,3 +255,193 @@ test('spec ④: chat seed retires after ONE surfacing without newer evidence', a
   const report = gcPool(guard, file, policy, now + 7200_000);
   assert.equal(report.consumed, 1);
 });
+
+test('v1.9.0 archive cap: gc trims the archive area beyond seeds.archiveCap, oldest-retired first', () => {
+  const cap = policy.seeds.archiveCap;
+  // 3 fresh actives + cap+5 archived rows with staggered retiredAt
+  for (let i = 0; i < 3; i++) addSeed(guard, file, policy, { text: `活跃素材 ${i}`, source: 'browse' }, now + i);
+  const db0 = loadPool(guard, file);
+  const actives = activeSeeds(db0);
+  for (let i = 0; i < cap + 5; i++) {
+    const s = actives[i % actives.length]!;
+    db0.seeds.push({
+      ...s,
+      id: `s9${String(i).padStart(3, '0')}`,
+      status: 'archived',
+      retireReason: 'expired',
+      retiredAt: new Date(now - (cap + 5 - i) * 1000).toISOString(), // older i = older retirement
+    });
+  }
+  savePool(guard, file, db0);
+
+  const report = gcPool(guard, file, policy, now);
+  assert.equal(report.archiveTrimmed, 5);
+  const db = loadPool(guard, file);
+  const archived = archivedSeeds(db);
+  assert.equal(archived.length, cap);
+  // survivors are the NEWEST retired; the five oldest (x0..x4) are gone
+  assert.ok(!archived.some((s) => ['s90000', 's90001', 's90002', 's90003', 's90004'].includes(s.id)));
+  assert.ok(archived.some((s) => s.id === `s9${String(cap + 4).padStart(3, '0')}`));
+  // active area untouched
+  assert.equal(activeSeeds(db).length, 3);
+});
+
+test('v1.9.0 archive cap: at or under the cap gc trims nothing', () => {
+  const cap = policy.seeds.archiveCap;
+  const s = addSeed(guard, file, policy, { text: '归档一条', source: 'browse' }, now).seed;
+  const db0 = loadPool(guard, file);
+  const a = db0.seeds.find((x) => x.id === s.id)!;
+  a.status = 'archived';
+  a.retireReason = 'expired';
+  a.retiredAt = new Date(now).toISOString();
+  savePool(guard, file, db0);
+  const report = gcPool(guard, file, policy, now + 1000);
+  assert.equal(report.archiveTrimmed, 0);
+  assert.equal(archivedSeeds(loadPool(guard, file)).length, 1);
+  assert.ok(cap >= 1);
+});
+
+// ── v1.9.0: seed lifecycle audit ────────────────────────────────────────
+// The pool used to mutate in silence. Every mutator now reports what it did
+// through an optional sink; these tests pin the event names and payloads so a
+// future refactor cannot quietly drop the trail again.
+
+function collector(): { events: Record<string, unknown>[]; sink: SeedAuditFn } {
+  const events: Record<string, unknown>[] = [];
+  return { events, sink: (entry) => { events.push(entry); } };
+}
+
+const eventsNamed = (events: Record<string, unknown>[], name: string) => events.filter((e) => e.event === name);
+
+test('audit: add reports the new seed, duplicate reports nothing, cap eviction is named', () => {
+  const { events, sink } = collector();
+  const r = addSeed(guard, file, policy, { text: '审计一条', tag: 'promise', source: 'chat' }, now, sink);
+  const added = eventsNamed(events, 'seed_added');
+  assert.equal(added.length, 1);
+  assert.equal(added[0]!.id, r.seed.id);
+  assert.equal(added[0]!.kind, 'added');
+  assert.equal(added[0]!.tag, 'promise');
+  assert.equal(added[0]!.source, 'chat');
+  assert.equal(added[0]!.category, 'chat');
+  // no text in the audit line: heartbeat.jsonl is plaintext by charter
+  assert.equal(JSON.stringify(events).includes('审计一条'), false);
+
+  const dup = addSeed(guard, file, policy, { text: '审计一条', tag: 'promise', source: 'chat' }, now + 1, sink);
+  assert.equal(dup.kind, 'duplicate');
+  assert.equal(events.length, 1);
+
+  const small: Policy = { ...policy, seeds: { ...policy.seeds, maxActive: 1 } };
+  const { events: ev2, sink: sink2 } = collector();
+  addSeed(guard, file, small, { text: '留下的', source: 'browse' }, now, sink2);
+  addSeed(guard, file, small, { text: '挤走一个', source: 'browse' }, now + 1, sink2);
+  const retired = eventsNamed(ev2, 'seed_retired');
+  assert.equal(retired.length, 1);
+  assert.equal(retired[0]!.reason, 'pool_cap');
+  assert.equal(retired[0]!.via, 'add');
+});
+
+test('audit: merge names the absorbing seed and every absorbed row', () => {
+  const { events, sink } = collector();
+  const first = addSeed(guard, file, policy, { text: '话题最旧', topic: '审计', source: 'browse' }, now, sink).seed;
+  // two more same-topic actives, so this merge collapses two rows into the kept one
+  const db0 = loadPool(guard, file);
+  const row = db0.seeds.find((s) => s.id === first.id)!;
+  db0.seeds.push({ ...row, id: 's777', text: '话题中旧' }, { ...row, id: 's778', text: '话题中旧2' });
+  savePool(guard, file, db0);
+
+  events.length = 0;
+  const merged = addSeed(guard, file, policy, { text: '话题最新', topic: '审计', source: 'browse' }, now + 2, sink);
+  assert.equal(merged.kind, 'merged');
+  const added = eventsNamed(events, 'seed_added');
+  assert.equal(added.length, 1);
+  assert.equal(added[0]!.kind, 'merged');
+  assert.equal(added[0]!.mergedFrom, 2);
+  const retired = eventsNamed(events, 'seed_retired');
+  assert.equal(retired.length, 2);
+  for (const e of retired) {
+    assert.equal(e.reason, 'completed');
+    assert.equal(e.via, 'merge');
+    assert.equal(e.into, merged.seed.id);
+  }
+});
+
+test('audit: gc names every retirement reason and the trimmed archive rows', () => {
+  const { events, sink } = collector();
+  addSeed(guard, file, policy, { text: '过期新闻', tag: 'news', source: 'browse' }, now, sink);
+  addSeed(guard, file, policy, { text: '冷板凳', tag: 'promise', source: 'browse' }, now, sink);
+  const used = addSeed(guard, file, policy, { text: '用完了', tag: 'scene', source: 'browse' }, now, sink);
+  const db = loadPool(guard, file);
+  const u = db.seeds.find((s) => s.id === used.seed.id)!;
+  u.used = 2;
+  u.lastUsedAt = new Date(now).toISOString();
+  savePool(guard, file, db);
+  events.length = 0;
+
+  gcPool(guard, file, policy, now + 22 * DAY, sink);
+  const retired = eventsNamed(events, 'seed_retired');
+  const reasons = retired.map((e) => e.reason).sort();
+  assert.deepEqual(reasons, ['cold_bench', 'consumed', 'expired']);
+  assert.ok(retired.every((e) => e.via === 'gc'));
+});
+
+test('audit: archive trimming names the rows it deleted (the only trace left)', () => {
+  const cap = policy.seeds.archiveCap;
+  for (let i = 0; i < 2; i++) addSeed(guard, file, policy, { text: `审计活跃 ${i}`, source: 'browse' }, now + i);
+  const db0 = loadPool(guard, file);
+  const base = activeSeeds(db0)[0]!;
+  for (let i = 0; i < cap + 3; i++) {
+    db0.seeds.push({
+      ...base,
+      id: `s8${String(i).padStart(3, '0')}`,
+      status: 'archived',
+      retireReason: 'expired',
+      retiredAt: new Date(now - (cap + 3 - i) * 1000).toISOString(),
+    });
+  }
+  savePool(guard, file, db0);
+  const { events, sink } = collector();
+  const report = gcPool(guard, file, policy, now, sink);
+  assert.equal(report.archiveTrimmed, 3);
+  const trimmed = eventsNamed(events, 'seed_archive_trimmed');
+  assert.equal(trimmed.length, 1);
+  assert.equal(trimmed[0]!.count, 3);
+  assert.deepEqual(trimmed[0]!.ids, ['s8000', 's8001', 's8002']);
+  // trimmed rows leave no other record behind
+  assert.equal(archivedSeeds(loadPool(guard, file)).length, cap);
+});
+
+test('audit: surface / manual archive / restore / delete each report their own event', () => {
+  const { events, sink } = collector();
+  const chat = addSeed(guard, file, policy, { text: '一次用完', source: 'chat' }, now, sink);
+  surfaceSeed(guard, file, policy, chat.seed.id, now + 1000, sink);
+  const surfaced = eventsNamed(events, 'seed_retired');
+  assert.equal(surfaced.length, 1);
+  assert.equal(surfaced[0]!.reason, 'consumed');
+  assert.equal(surfaced[0]!.via, 'surface');
+
+  const s2 = addSeed(guard, file, policy, { text: '手动归档', source: 'browse' }, now + 2000, sink);
+  archiveSeedById(guard, file, s2.seed.id, 'completed', now + 3000, sink);
+  const manual = eventsNamed(events, 'seed_retired').at(-1)!;
+  assert.equal(manual.id, s2.seed.id);
+  assert.equal(manual.via, 'manual');
+  assert.equal(manual.reason, 'completed');
+
+  restoreSeed(guard, file, policy, s2.seed.id, now + 4000, sink);
+  assert.deepEqual(eventsNamed(events, 'seed_restored').at(-1), { event: 'seed_restored', id: s2.seed.id });
+
+  assert.equal(deleteSeed(guard, file, s2.seed.id, sink), true);
+  assert.deepEqual(eventsNamed(events, 'seed_deleted').at(-1), { event: 'seed_deleted', id: s2.seed.id });
+  // deleting a missing row reports nothing (nothing happened)
+  const before = events.length;
+  assert.equal(deleteSeed(guard, file, 's99999', sink), false);
+  assert.equal(events.length, before);
+});
+
+test('audit: a throwing sink never breaks the pool mutation', () => {
+  const boom: SeedAuditFn = () => { throw new Error('disk full'); };
+  const r = addSeed(guard, file, policy, { text: '审计失败也要写入', source: 'browse' }, now, boom);
+  assert.equal(r.kind, 'added');
+  assert.equal(activeSeeds(loadPool(guard, file)).length, 1);
+  assert.equal(gcPool(guard, file, policy, now + 1, boom).activeAfter, 1);
+});
+
