@@ -11,7 +11,7 @@ import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { loadProfile, profileFilePath } from './store.js';
 import type { ProfileDoc, ProfileEntry } from './types.js';
-import { readText as vaultReadText } from '../vault/vault.js';
+import { summarizeRhythm } from '../rhythm/rhythm.js';
 import { pendingOlderThan } from '../ledger/ledger.js';
 import { ledgerFilePath } from '../ledger/ledger.js';
 
@@ -52,15 +52,14 @@ export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Pol
   const topN = input.topN ?? 8;
 
   // -- tact: rhythm summary + comm high-confidence + window class (B6)
-  const rhythm = vaultReadText(guard, paths.dataDir + '/profile_rhythm.json', '');
+  // 第 86 条: `daysSampled`/`peakHours` are `summarizeRhythm()`'s OUTPUT and are
+  // never written into profile_rhythm.json (that file holds histogram/days/
+  // lastDecayAt only), so reading them off the raw JSON always produced
+  // "作息未知（样本不足）". Compute the summary from the histogram instead.
+  const summary = summarizeRhythm(paths);
   let rhythmLine = '作息未知（样本不足）';
-  try {
-    const r = JSON.parse(rhythm) as { daysSampled?: number; peakHours?: string[] };
-    if (r.daysSampled && r.peakHours) {
-      rhythmLine = `近期活跃时段: ${r.peakHours.slice(0, 4).join('、')}（样本 ${r.daysSampled} 天）`;
-    }
-  } catch {
-    // no rhythm yet
+  if (summary.daysSampled > 0 && summary.peakHours.length > 0) {
+    rhythmLine = `近期活跃时段: ${summary.peakHours.slice(0, 4).join('、')}（样本 ${summary.daysSampled} 天）`;
   }
   const comm = doc.partitions.comm!.entries
     .filter((e) => e.validTo === null && e.confidence > 0.5)

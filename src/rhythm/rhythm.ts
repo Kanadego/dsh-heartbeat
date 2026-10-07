@@ -16,6 +16,14 @@ export interface RhythmFile {
 
 const DAY_MS = 86_400_000;
 const TAU_DAYS = 10; // decay constant: ~10d half-life-ish
+/** H-70: below this a cell is indistinguishable from noise. Exponential decay
+ *  never reaches zero on its own, so hours sampled once, weeks ago, would keep
+ *  outranking an empty history. */
+const CELL_EPSILON = 1e-3;
+/** H-70: a "peak hour" must be absolutely sampled AND visible against the best
+ *  hour — `filter(active > 0)` alone ranked cells that decayed to 0.0001. */
+const PEAK_MIN_ACTIVE = 0.25;
+const PEAK_MIN_SHARE = 0.05;
 
 function rhythmFilePath(paths: { dataDir: string }): string {
   return path.join(paths.dataDir, 'profile_rhythm.json');
@@ -43,6 +51,9 @@ export function recordPresence(paths: { dataDir: string }, env: EnvSnapshot, now
       cell.active *= decayFactor;
       cell.present *= decayFactor;
       cell.away *= decayFactor;
+      if (cell.active < CELL_EPSILON) cell.active = 0;
+      if (cell.present < CELL_EPSILON) cell.present = 0;
+      if (cell.away < CELL_EPSILON) cell.away = 0;
     }
   }
   state.lastDecayAt = new Date(now).toISOString();
@@ -78,8 +89,12 @@ export function summarizeRhythm(paths: { dataDir: string }): RhythmSummary {
     }
   }
   score.sort((a, b) => b.active - a.active);
+  const best = score[0]?.active ?? 0;
   return {
     daysSampled: state.days.length,
-    peakHours: score.filter((s) => s.active > 0).slice(0, 6).map((s) => s.key),
+    peakHours: score
+      .filter((s) => s.active >= PEAK_MIN_ACTIVE && s.active >= best * PEAK_MIN_SHARE)
+      .slice(0, 6)
+      .map((s) => s.key),
   };
 }

@@ -46,6 +46,21 @@ import type { Policy } from './config/schema.js';
  * under 0.1.5's strict cordis service resolution — see installHeartbeatRpc). */
 export const RPC_ROUTE_PATH = '/api/heartbeat';
 
+/**
+ * H-41 (2026-10-07): the endpoints that change or expose state on disk. They
+ * are only reachable through the host's `/api` gate — this plugin holds no
+ * credential of its own — so when that gate cannot be found they are refused
+ * rather than served unauthenticated (see installHeartbeatRpc).
+ */
+const DESTRUCTIVE_ENDPOINTS = new Set([
+  'seeds.delete',
+  'migrate.import',
+  'bindings.remove',
+  'config.set',
+  'profile.export',
+  'interests.remove',
+]);
+
 interface RpcDeps {
   ctx: OrchestratorDeps['ctx'] & {
     inject(services: string[], callback: (scoped: unknown) => void): void;
@@ -493,10 +508,35 @@ export function installHeartbeatRpc(
 
     const endpoints = buildEndpoints(deps, isLive);
 
+    // ── H-41 (2026-10-07): explicit dependency on the host's /api gate ────
+    // This route is mounted under the host's `/api` prefix, and that prefix's
+    // check is the ONLY authentication it has — the plugin keeps no credential
+    // of its own. The host implements it as `connection.admit(req)`, which
+    // returns `requestRejection(req)`'s verdict (Host/Origin fence + the
+    // browser-auth secret; the `/api` prefix route calls it before dispatching,
+    // so this exact path can never be reached without it). If a future host
+    // drops or renames that check, the destructive endpoints above would be
+    // reachable by anything that can POST to loopback — so fail closed on them
+    // instead of guessing, and say so in the audit log once at registration.
+    const gate = remoteCtx.connection as unknown as { admit?: unknown; requestRejection?: unknown };
+    const hostGuarded = typeof gate.admit === 'function' || typeof gate.requestRejection === 'function';
+    if (!hostGuarded) {
+      try {
+        appendAuditLine(deps.guard.assert(deps.paths.logsDir + '/heartbeat.jsonl'), {
+          event: 'rpc_host_gate_missing',
+          detail: 'connection.admit/requestRejection absent; destructive endpoints disabled',
+          destructive: [...DESTRUCTIVE_ENDPOINTS],
+        });
+      } catch { /* 审计失败不影响注册 */ }
+    }
+
     const handler = async (endpoint: unknown, payload: unknown): Promise<RpcResult> => {
       const p = (payload ?? {}) as Record<string, unknown>;
       const fn = typeof endpoint === 'string' ? endpoints[endpoint] : undefined;
       if (!fn) return err('bad-request', `unknown endpoint ${JSON.stringify(endpoint)}`);
+      if (!hostGuarded && DESTRUCTIVE_ENDPOINTS.has(endpoint as string)) {
+        return err('forbidden', `host gate unavailable; ${endpoint} is refused (H-41)`);
+      }
       try {
         return await fn(p);
       } catch (e) {

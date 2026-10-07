@@ -75,6 +75,9 @@ beforeEach(() => {
   let captured: Route | undefined;
   const scoped = {
     connection: {
+      // H-41: the host's /api gate (`connection.admit` → `requestRejection`).
+      // Its presence is what lets the destructive endpoints serve at all.
+      admit() { /* host gate */ },
       fetch: {
         register(r: Route) { captured = r; return () => { /* dispose */ }; },
       },
@@ -264,4 +267,45 @@ test('seeds.archive with an unknown id is a not-found result', async () => {
   const r = await result({ endpoint: 'seeds.archive', id: 's-nope' });
   assert.equal(r.ok, false);
   assert.equal(r.error!.code, 'not-found');
+});
+
+// ── H-41: the host gate is a declared dependency, not an assumption ──────
+
+test('H-41: without the host gate the destructive endpoints are refused, read-only ones still serve', async () => {
+  let captured: Route | undefined;
+  const scoped = {
+    connection: {
+      // No `admit` / `requestRejection` — a host that dropped the /api gate.
+      fetch: { register(r: Route) { captured = r; return () => { /* dispose */ }; } },
+    },
+    agents: { get: () => undefined },
+    effect(fn: () => unknown) { fn(); return () => { /* dispose */ }; },
+  };
+  const ctx = {
+    inject(_services: string[], callback: (s: unknown) => void) { callback(scoped); },
+    logger: { info() { /* quiet */ } },
+  };
+  const ui = { get: () => ({ ...UI_DEFAULTS }), set: () => { /* unused */ } };
+  installHeartbeatRpc(ctx as never, { paths: workspace(), guard, policy, ui } as never);
+  assert.ok(captured, 'the route still registers so the read-only card keeps working');
+
+  const post = async (payload: Record<string, unknown>): Promise<RpcResult> => {
+    const res = await captured!.fetch(new Request('http://127.0.0.1/api/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'client-request', rpcId: 'r1', payload }),
+    }));
+    const body = (await res.json()) as { result: RpcResult };
+    return body.result;
+  };
+
+  const refused = await post({ endpoint: 'seeds.delete', id: 's-nope' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error!.code, 'forbidden');
+  assert.match(refused.error!.message, /H-41/);
+
+  const allowed = await post({ endpoint: 'seeds.list' });
+  assert.equal(allowed.ok, true);
+
+  const audit = fs.readFileSync(path.join(workspace().logsDir, 'heartbeat.jsonl'), 'utf8');
+  assert.match(audit, /rpc_host_gate_missing/);
 });

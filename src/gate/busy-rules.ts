@@ -34,7 +34,10 @@ export function loadBusyRules(configDir: string): BusyRules {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(configDir, 'busy-rules.json'), 'utf8')) as BusyRules;
     if (!raw.busy || !raw.idle) return FALLBACK_RULES;
-    return raw;
+    // H-68 (2026-10-07): the `rules` block used to have no reader at all, so a
+    // hand-edited threshold silently did nothing. Callers read from here now,
+    // and a missing key falls back to the factory value instead of undefined.
+    return { busy: raw.busy, idle: raw.idle, rules: { ...FALLBACK_RULES.rules, ...(raw.rules ?? {}) } };
   } catch {
     return FALLBACK_RULES;
   }

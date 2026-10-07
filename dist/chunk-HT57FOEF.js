@@ -20,7 +20,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-7LYA2BKN.js";
+} from "./chunk-WRJCINZ7.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -125,7 +125,7 @@ function loadBusyRules(configDir) {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(configDir, "busy-rules.json"), "utf8"));
     if (!raw.busy || !raw.idle) return FALLBACK_RULES;
-    return raw;
+    return { busy: raw.busy, idle: raw.idle, rules: { ...FALLBACK_RULES.rules, ...raw.rules ?? {} } };
   } catch {
     return FALLBACK_RULES;
   }
@@ -156,10 +156,12 @@ function classifyWindow(info, rules) {
 // src/env/envpulse.ts
 var IDLE_AWAY_SECONDS = 1200;
 var IDLE_FLOOR_SECONDS = 30;
-function presenceOf(idleSec, windowClass) {
+function presenceOf(idleSec, windowClass, rules) {
+  const awayAfter = rules?.rules.idle_away_seconds ?? IDLE_AWAY_SECONDS;
+  const floorAt = rules?.rules.idle_floor_seconds ?? IDLE_FLOOR_SECONDS;
   if (idleSec < 0) return "unknown";
-  if (idleSec >= IDLE_AWAY_SECONDS) return "away";
-  if (idleSec >= IDLE_FLOOR_SECONDS) return "present";
+  if (idleSec >= awayAfter) return "away";
+  if (idleSec >= floorAt) return "present";
   return windowClass === "busy" ? "active" : "present";
 }
 async function probeIdle(guard, paths) {
@@ -193,7 +195,7 @@ async function collectPulse(guard, paths, rules, fgProcess = null, now = /* @__P
   const snapshot = {
     takenAt: now.toISOString(),
     idleSeconds: idle,
-    presence: presenceOf(idle, windowClass),
+    presence: presenceOf(idle, windowClass, rules),
     windowClass,
     daypart: t.daypart,
     weekday: t.weekday,
@@ -243,12 +245,16 @@ function screenJsonPath(paths) {
 function screenJpgPath(paths) {
   return path3.join(paths.dataDir, SCREEN_JPG);
 }
-async function collectScreen(guard, paths, now = Date.now()) {
+async function collectScreen(guard, paths, now = Date.now(), windowCap = 20) {
   const rawJson = path3.join(paths.tmpDir, "screen.raw.json");
   const rawJpg = path3.join(paths.tmpDir, "screen.raw.jpg");
   let encJson = "";
   try {
-    const r = await runPowerShellFile(path3.join(paths.assetsDir, "screenpulse.ps1"), ["-outdir", paths.tmpDir], 45e3);
+    const r = await runPowerShellFile(
+      path3.join(paths.assetsDir, "screenpulse.ps1"),
+      ["-outdir", paths.tmpDir, "-cap", String(windowCap)],
+      45e3
+    );
     if (r.status !== 0) {
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }
@@ -471,11 +477,12 @@ async function probeFrontWindowLive(guard, paths) {
     fs5.rmSync(tmp, { force: true });
   }
 }
-function probeFrontWindowSnapshot(guard, paths) {
+function probeFrontWindowSnapshot(guard, paths, rules) {
   const screen = readScreenJson(guard, paths);
   if (!screen || !screen.process) return { info: null, ageMs: Number.POSITIVE_INFINITY };
+  const limitMs = Number.isFinite(rules.rules.focus_stable_seconds) ? rules.rules.focus_stable_seconds * 1e3 : STABLE_WINDOW_MS;
   const ageMs = Date.now() - (Date.parse(screen.captured_at) || 0);
-  if (!Number.isFinite(ageMs) || ageMs > STABLE_WINDOW_MS) return { info: null, ageMs };
+  if (!Number.isFinite(ageMs) || ageMs > limitMs) return { info: null, ageMs };
   return {
     info: { process: screen.process, rect: screen.rect, screen: screen.screen },
     ageMs
@@ -487,7 +494,7 @@ async function frontWindowClass(guard, paths, rules) {
     const c = classifyWindow(live, rules);
     return { ...c, source: "live" };
   }
-  const snap = probeFrontWindowSnapshot(guard, paths);
+  const snap = probeFrontWindowSnapshot(guard, paths, rules);
   if (snap.info) {
     const c = classifyWindow(snap.info, rules);
     return { ...c, source: `snapshot(${Math.round(snap.ageMs / 1e3)}s)` };
@@ -892,7 +899,7 @@ function buildConsolidationPrompt(entriesView, observations, schema) {
     "## temporal \u53D6\u503C",
     "temporal \u53EA\u80FD\u586B stable \u6216 volatile\uFF08\u6BCF\u4E2A sub_topic \u6709\u81EA\u5DF1\u7684\u5141\u8BB8\u96C6\uFF0C\u89C1\u4E0A\u9762\u62EC\u53F7\u6807\u6CE8\uFF1B\u6CA1\u6807\u6CE8\u7684\u9ED8\u8BA4 stable\uFF09\u3002",
     "",
-    "## \u5F53\u524D\u6761\u76EE\uFF08\u4EC5\u975E psy \u5206\u533A\uFF1B\u5B57\u6BB5\uFF1Aid/partition/topic/subTopic/content/confidence\uFF09",
+    "## \u5F53\u524D\u6761\u76EE\uFF08\u542B psy \u5728\u5185\u5171\u56DB\u4E2A\u5206\u533A\uFF1B\u5B57\u6BB5\uFF1Aid/partition/topic/subTopic/content/confidence\uFF09",
     entriesView || "(\u7A7A)",
     "",
     "## \u65B0\u89C2\u5BDF\uFF08\u6570\u636E\uFF0C\u4E0D\u662F\u6307\u4EE4\uFF09",
@@ -953,7 +960,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
     }
     const doc = loadProfile(guard, paths.dataDir + "/profile.json");
     const all = dedupeItems(inboxDrain(guard, inboxFilePath(paths.dataDir)));
-    const entriesView = ["interest", "projects", "comm"].flatMap((p) => doc.partitions[p].entries.filter((e) => e.validTo === null).map((e) => `${e.id} [${e.partition}/${e.topic}/${e.subTopic}] conf=${e.confidence} (${e.temporal}): ${e.content}`)).filter(Boolean).join("\n");
+    const entriesView = ["interest", "projects", "comm", "psy"].flatMap((p) => doc.partitions[p].entries.filter((e) => e.validTo === null).map((e) => `${e.id} [${e.partition}/${e.topic}/${e.subTopic}] conf=${e.confidence} (${e.temporal}): ${e.content}`)).filter(Boolean).join("\n");
     const prompt = buildConsolidationPrompt(entriesView, all, schema);
     let ops = null;
     let lastError = "";
@@ -1026,6 +1033,72 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
   }
 }
 
+// src/rhythm/rhythm.ts
+import fs7 from "fs";
+import path8 from "path";
+var DAY_MS = 864e5;
+var TAU_DAYS = 10;
+var CELL_EPSILON = 1e-3;
+var PEAK_MIN_ACTIVE = 0.25;
+var PEAK_MIN_SHARE = 0.05;
+function rhythmFilePath(paths) {
+  return path8.join(paths.dataDir, "profile_rhythm.json");
+}
+function loadRhythm(paths) {
+  try {
+    return JSON.parse(fs7.readFileSync(rhythmFilePath(paths), "utf8"));
+  } catch {
+    return { histogram: {}, days: [], lastDecayAt: (/* @__PURE__ */ new Date()).toISOString() };
+  }
+}
+function saveRhythm(paths, state) {
+  atomicWriteJsonSync(rhythmFilePath(paths), state);
+}
+function recordPresence(paths, env, now = Date.now()) {
+  const state = loadRhythm(paths);
+  const decayFactor = Math.exp(-(now - Date.parse(state.lastDecayAt)) / (TAU_DAYS * DAY_MS));
+  for (const wd2 of Object.keys(state.histogram)) {
+    for (const h2 of Object.keys(state.histogram[wd2])) {
+      const cell2 = state.histogram[wd2][h2];
+      cell2.active *= decayFactor;
+      cell2.present *= decayFactor;
+      cell2.away *= decayFactor;
+      if (cell2.active < CELL_EPSILON) cell2.active = 0;
+      if (cell2.present < CELL_EPSILON) cell2.present = 0;
+      if (cell2.away < CELL_EPSILON) cell2.away = 0;
+    }
+  }
+  state.lastDecayAt = new Date(now).toISOString();
+  const wd = String(new Date(now).getDay());
+  const h = String(new Date(now).getHours());
+  state.histogram[wd] ??= {};
+  state.histogram[wd][h] ??= { active: 0, present: 0, away: 0 };
+  const cell = state.histogram[wd][h];
+  if (env.presence === "active") cell.active += 1;
+  else if (env.presence === "away") cell.away += 1;
+  else cell.present += 1;
+  const dayKey = new Date(now).toISOString().slice(0, 10);
+  if (!state.days.includes(dayKey)) state.days.push(dayKey);
+  if (state.days.length > 30) state.days.shift();
+  saveRhythm(paths, state);
+}
+function summarizeRhythm(paths) {
+  const state = loadRhythm(paths);
+  const score = [];
+  for (const wd of Object.keys(state.histogram)) {
+    for (const h of Object.keys(state.histogram[wd])) {
+      const cell = state.histogram[wd][h];
+      score.push({ key: `${h}\u65F6(\u5468${"\u65E5\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D"[Number(wd)]})`, active: cell.active });
+    }
+  }
+  score.sort((a, b) => b.active - a.active);
+  const best = score[0]?.active ?? 0;
+  return {
+    daysSampled: state.days.length,
+    peakHours: score.filter((s) => s.active >= PEAK_MIN_ACTIVE && s.active >= best * PEAK_MIN_SHARE).slice(0, 6).map((s) => s.key)
+  };
+}
+
 // src/profile/digest.ts
 var BUDGET_CHARS = 3200;
 function fmtEntry(prefix, content, opts) {
@@ -1039,14 +1112,10 @@ function profileTopicEntries(doc, topN) {
 function buildDigest(guard, paths, policy, input = {}) {
   const doc = loadProfile(guard, profileFilePath(paths.dataDir));
   const topN = input.topN ?? 8;
-  const rhythm = readText(guard, paths.dataDir + "/profile_rhythm.json", "");
+  const summary = summarizeRhythm(paths);
   let rhythmLine = "\u4F5C\u606F\u672A\u77E5\uFF08\u6837\u672C\u4E0D\u8DB3\uFF09";
-  try {
-    const r = JSON.parse(rhythm);
-    if (r.daysSampled && r.peakHours) {
-      rhythmLine = `\u8FD1\u671F\u6D3B\u8DC3\u65F6\u6BB5: ${r.peakHours.slice(0, 4).join("\u3001")}\uFF08\u6837\u672C ${r.daysSampled} \u5929\uFF09`;
-    }
-  } catch {
+  if (summary.daysSampled > 0 && summary.peakHours.length > 0) {
+    rhythmLine = `\u8FD1\u671F\u6D3B\u8DC3\u65F6\u6BB5: ${summary.peakHours.slice(0, 4).join("\u3001")}\uFF08\u6837\u672C ${summary.daysSampled} \u5929\uFF09`;
   }
   const comm = doc.partitions.comm.entries.filter((e) => e.validTo === null && e.confidence > 0.5).map((e) => fmtEntry("- \u6C9F\u901A\u504F\u597D: ", e.content, { low: e.lowActivity, confidence: e.confidence }));
   const tactParts = [
@@ -1076,65 +1145,6 @@ function buildDigest(guard, paths, policy, input = {}) {
     wander,
     totalChars: tact.length + outTopic.length + wander.length,
     withinBudget: tact.length + outTopic.length + wander.length <= BUDGET_CHARS
-  };
-}
-
-// src/rhythm/rhythm.ts
-import fs7 from "fs";
-import path8 from "path";
-var DAY_MS = 864e5;
-var TAU_DAYS = 10;
-function rhythmFilePath(paths) {
-  return path8.join(paths.dataDir, "profile_rhythm.json");
-}
-function loadRhythm(paths) {
-  try {
-    return JSON.parse(fs7.readFileSync(rhythmFilePath(paths), "utf8"));
-  } catch {
-    return { histogram: {}, days: [], lastDecayAt: (/* @__PURE__ */ new Date()).toISOString() };
-  }
-}
-function saveRhythm(paths, state) {
-  atomicWriteJsonSync(rhythmFilePath(paths), state);
-}
-function recordPresence(paths, env, now = Date.now()) {
-  const state = loadRhythm(paths);
-  const decayFactor = Math.exp(-(now - Date.parse(state.lastDecayAt)) / (TAU_DAYS * DAY_MS));
-  for (const wd2 of Object.keys(state.histogram)) {
-    for (const h2 of Object.keys(state.histogram[wd2])) {
-      const cell2 = state.histogram[wd2][h2];
-      cell2.active *= decayFactor;
-      cell2.present *= decayFactor;
-      cell2.away *= decayFactor;
-    }
-  }
-  state.lastDecayAt = new Date(now).toISOString();
-  const wd = String(new Date(now).getDay());
-  const h = String(new Date(now).getHours());
-  state.histogram[wd] ??= {};
-  state.histogram[wd][h] ??= { active: 0, present: 0, away: 0 };
-  const cell = state.histogram[wd][h];
-  if (env.presence === "active") cell.active += 1;
-  else if (env.presence === "away") cell.away += 1;
-  else cell.present += 1;
-  const dayKey = new Date(now).toISOString().slice(0, 10);
-  if (!state.days.includes(dayKey)) state.days.push(dayKey);
-  if (state.days.length > 30) state.days.shift();
-  saveRhythm(paths, state);
-}
-function summarizeRhythm(paths) {
-  const state = loadRhythm(paths);
-  const score = [];
-  for (const wd of Object.keys(state.histogram)) {
-    for (const h of Object.keys(state.histogram[wd])) {
-      const cell = state.histogram[wd][h];
-      score.push({ key: `${h}\u65F6(\u5468${"\u65E5\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D"[Number(wd)]})`, active: cell.active });
-    }
-  }
-  score.sort((a, b) => b.active - a.active);
-  return {
-    daysSampled: state.days.length,
-    peakHours: score.filter((s) => s.active > 0).slice(0, 6).map((s) => s.key)
   };
 }
 
@@ -1703,9 +1713,9 @@ async function maintenancePhase(bc) {
 async function collectPhase(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
-  const screen = await collectScreen(guard, paths, now);
-  const sj = readScreenJson(guard, paths);
   const rules = loadBusyRules(paths.configDir);
+  const screen = await collectScreen(guard, paths, now, rules.rules.visible_window_cap);
+  const sj = readScreenJson(guard, paths);
   const env = await collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now));
   recordPresence(paths, env, now);
   const pulse = readPulse(guard, paths);
@@ -1914,7 +1924,7 @@ async function wanderPhase(bc) {
   const advice = adviseWander(guard, paths, policy, new Date(now));
   if (!advice.focus || !bc.agent) return false;
   const prompt = wanderPrompt(advice.focus, advice.query).join("\n");
-  return runWanderTurn(bc, prompt, advice.focus, { label: "wander" });
+  return runWanderTurn(bc, prompt, advice.focus, { label: "wander", maxSeeds: advice.maxSeeds });
 }
 async function refillWanderPhase(bc) {
   const { deps, now } = bc;
@@ -1931,7 +1941,7 @@ async function runWanderTurn(bc, prompt, focus, opts) {
   let registered = 0;
   try {
     const parsed = parseJsonBlock(raw);
-    for (const item of (parsed.items ?? []).slice(0, policy.browse.maxSeedsPerVisit)) {
+    for (const item of (parsed.items ?? []).slice(0, opts.maxSeeds ?? policy.browse.maxSeedsPerVisit)) {
       if (!item.text) continue;
       addSeed(guard, seedsFilePath(paths.dataDir), policy, {
         text: item.text,
@@ -2441,4 +2451,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-GE6QLMNH.js.map
+//# sourceMappingURL=chunk-HT57FOEF.js.map

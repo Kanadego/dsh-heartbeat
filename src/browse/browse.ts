@@ -42,11 +42,15 @@ export interface BrowseState {
     last_wander_at: number;
     /** Spec ⑥: refill wanders per LOCAL day, e.g. "2026-09-18" -> 1. */
     refillCount?: Record<string, number>;
+    /** H-69: non-refill wander sessions per LOCAL day (the `daily_sessions`
+     *  budget). Refills keep their own counter above — they deliberately bypass
+     *  the wander window and therefore must not eat the session budget. */
+    sessionCount?: Record<string, number>;
   };
 }
 
 export function emptyBrowseState(): BrowseState {
-  return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
+  return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {}, sessionCount: {} } };
 }
 
 export function browseStatePath(paths: WorkspacePaths): string {
@@ -81,6 +85,7 @@ export function normalizeBrowseState(raw: unknown): BrowseState {
   out.wander.focusHistory = numberRecord(w.focusHistory);
   out.wander.focusCount = numberRecord(w.focusCount);
   out.wander.refillCount = numberRecord(w.refillCount);
+  out.wander.sessionCount = numberRecord(w.sessionCount);
   if (typeof w.last_wander_at === 'number' && Number.isFinite(w.last_wander_at)) out.wander.last_wander_at = w.last_wander_at;
   return out;
 }
@@ -104,6 +109,43 @@ export interface WanderAdvice {
   focus: string | null;
   query: string | null;
   skipped: string | null;
+  /** H-69: focuses this session was allowed to examine (`focus_per_session`);
+   *  `focus` is the first of them. The phase still runs one model turn per
+   *  focus, so >1 only widens the candidate list the caller may use. */
+  candidates?: string[];
+  /** H-69: per-focus seed cap (`max_seeds_per_focus`, defaulting to
+   *  `policy.browse.maxSeedsPerVisit`). The registration loop reads this. */
+  maxSeeds?: number;
+}
+
+export interface WanderSchedule {
+  windows: { start: string; end: string }[];
+  minIntervalHours: number;
+  maxSeedsPerFocus: number;
+  /** Wander sessions per local day; 0 = no daily cap. */
+  dailySessions: number;
+  focusPerSession: number;
+  focusCooldownDays: number;
+}
+
+/**
+ * H-69 (2026-10-07): `interests._schedule` is the block the settings card edits
+ * and, as the user layer, it REPLACES the factory copy — so it wins wherever it
+ * overlaps `policy.browse`, which is the compiled-in default. Every key here
+ * has a reader now; `min_interval_hours`, `max_seeds_per_focus` and
+ * `daily_sessions` used to be dead wiring whose factory values happened to
+ * match policy's, which is exactly why nobody noticed they did nothing.
+ */
+export function resolveSchedule(interests: InterestsConfig, policy: Policy): WanderSchedule {
+  const sc = interests._schedule ?? {};
+  return {
+    windows: sc.windows?.length ? sc.windows : (policy.browse.windows as { start: string; end: string }[]),
+    minIntervalHours: sc.min_interval_hours ?? policy.browse.minIntervalHours,
+    maxSeedsPerFocus: sc.max_seeds_per_focus ?? policy.browse.maxSeedsPerVisit,
+    dailySessions: sc.daily_sessions ?? 0,
+    focusPerSession: Math.max(1, sc.focus_per_session ?? 1),
+    focusCooldownDays: sc.focus_cooldown_days ?? 3,
+  };
 }
 
 export function inWanderWindow(now: Date, windows: { start: string; end: string }[]): string | null {
@@ -166,21 +208,37 @@ export function adviseWander(
 ): WanderAdvice {
   const state = loadState(guard, paths);
   const interests = loadInterests(paths);
-  const windows = interests._schedule?.windows?.length
-    ? interests._schedule.windows
-    : (policy.browse.windows as { start: string; end: string }[]);
-  const win = inWanderWindow(now, windows);
+  const sched = resolveSchedule(interests, policy);
+  const budget = { maxSeeds: sched.maxSeedsPerFocus };
+  const win = inWanderWindow(now, sched.windows);
   if (!win) {
     const hh = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    return { focus: null, query: null, skipped: `window(now=${hh})` };
+    return { focus: null, query: null, skipped: `window(now=${hh})`, ...budget };
   }
-  const minGap = policy.browse.minIntervalHours * 3600_000;
+  // H-69: `daily_sessions` — same LOCAL-day budget shape as the refill quota.
+  const today = localDayKey(now);
+  const sessionsToday = state.wander.sessionCount?.[today] ?? 0;
+  if (sched.dailySessions > 0 && sessionsToday >= sched.dailySessions) {
+    return { focus: null, query: null, skipped: `daily-sessions(${sessionsToday})`, ...budget };
+  }
+  const minGap = sched.minIntervalHours * 3600_000;
   if (now.getTime() - state.wander.last_wander_at < minGap) {
-    return { focus: null, query: null, skipped: 'min-interval' };
+    return { focus: null, query: null, skipped: 'min-interval', ...budget };
   }
-  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir)));
-  if (!focus) return { focus: null, query: null, skipped: 'no-focus' };
-  return { focus, query: `${focus} 2026 最新`, skipped: null };
+  // H-69: `focus_per_session` candidates, drawn without replacement so one
+  // session never offers the same focus twice.
+  const pref = loadPreference(guard, preferenceFilePath(paths.dataDir));
+  const pool = interests.interests ?? [];
+  const candidates: string[] = [];
+  for (let i = 0; i < sched.focusPerSession; i++) {
+    const rest = pool.filter((t) => !candidates.includes(t));
+    if (rest.length === 0) break;
+    const picked = pickFocus(state, { ...interests, interests: rest }, now.getTime(), pref);
+    if (!picked) break;
+    candidates.push(picked);
+  }
+  if (candidates.length === 0) return { focus: null, query: null, skipped: 'no-focus', ...budget };
+  return { focus: candidates[0]!, query: `${candidates[0]!} 2026 最新`, skipped: null, candidates, ...budget };
 }
 
 /**
@@ -200,6 +258,14 @@ export function completeWander(
   state.wander.focusHistory[focus] = now;
   state.wander.focusCount[focus] = (state.wander.focusCount[focus] ?? 0) + 1;
   state.wander.last_wander_at = now;
+  if (!opts.refill) {
+    // H-69: count this session against the `daily_sessions` budget. Refills
+    // are their own channel (they deliberately bypass the window and the min
+    // interval) and stay on refillCount alone.
+    const day = localDayKey(new Date(now));
+    state.wander.sessionCount = state.wander.sessionCount ?? {};
+    state.wander.sessionCount[day] = (state.wander.sessionCount[day] ?? 0) + 1;
+  }
   let refillsToday: number | undefined;
   if (opts.refill) {
     const today = localDayKey(new Date(now));

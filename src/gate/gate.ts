@@ -34,7 +34,10 @@ export type GateDecision =
   | { verdict: 'SILENT'; reason: string }
   | { verdict: 'SPEAK'; sentToday: number; cap: number; window: { cls: string; why: string; source: string } };
 
-const STABLE_WINDOW_MS = 15_000; // v0.9.2: snapshots older than 15s are not trusted
+// Fallback only — H-68 (2026-10-07): the live value is
+// `busy-rules.json` → `rules.focus_stable_seconds` (v0.9.2: a stale snapshot
+// must not decide what the user is focused on).
+const STABLE_WINDOW_MS = 15_000;
 
 export function sentFilePath(paths: WorkspacePaths): string {
   return path.join(paths.dataDir, 'sent.json');
@@ -114,15 +117,20 @@ async function probeFrontWindowLive(guard: PathGuard, paths: WorkspacePaths): Pr
   }
 }
 
-/** Fallback: the beat's screen.json snapshot, but only if fresh (< 15s). */
+/** Fallback: the beat's screen.json snapshot, but only if fresh enough. */
 function probeFrontWindowSnapshot(
   guard: PathGuard,
   paths: WorkspacePaths,
+  rules: BusyRules,
 ): { info: WindowInfo | null; ageMs: number } {
   const screen = readScreenJson(guard, paths);
   if (!screen || !screen.process) return { info: null, ageMs: Number.POSITIVE_INFINITY };
+  // H-68: freshness window from the config file, falling back to the constant.
+  const limitMs = Number.isFinite(rules.rules.focus_stable_seconds)
+    ? rules.rules.focus_stable_seconds * 1000
+    : STABLE_WINDOW_MS;
   const ageMs = Date.now() - (Date.parse(screen.captured_at) || 0);
-  if (!Number.isFinite(ageMs) || ageMs > STABLE_WINDOW_MS) return { info: null, ageMs };
+  if (!Number.isFinite(ageMs) || ageMs > limitMs) return { info: null, ageMs };
   return {
     info: { process: screen.process, rect: screen.rect, screen: screen.screen },
     ageMs,
@@ -139,7 +147,7 @@ async function frontWindowClass(
     const c = classifyWindow(live, rules);
     return { ...c, source: 'live' };
   }
-  const snap = probeFrontWindowSnapshot(guard, paths);
+  const snap = probeFrontWindowSnapshot(guard, paths, rules);
   if (snap.info) {
     const c = classifyWindow(snap.info, rules);
     return { ...c, source: `snapshot(${Math.round(snap.ageMs / 1000)}s)` };
