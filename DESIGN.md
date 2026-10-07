@@ -666,7 +666,8 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 **排障第一现场永远是 `data/logs/heartbeat.jsonl`**：JSONL，一行一个事件，带 UTC 时间戳。先 `Get-Content -Tail 50`，再按事件名筛：
 
 ```powershell
-Get-Content D:\AIagent\dsh-heartbeat-v2\data\logs\heartbeat.jsonl -Tail 200 |
+# 在仓库根目录执行
+Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
   Select-String 'beat_error|spoke_failed|consolidation_failed|rpc_host_gate_missing'
 ```
 
@@ -785,7 +786,7 @@ Get-Content D:\AIagent\dsh-heartbeat-v2\data\logs\heartbeat.jsonl -Tail 200 |
 `dist/cli/index.js` 是独立进程，直接读写 `data/`：
 
 ```powershell
-node C:\Users\<你>\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\index.js status
+node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\index.js status
 ```
 
 | 命令 | 用途 |
@@ -875,7 +876,7 @@ node C:\Users\<你>\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\index.
 `file:` 协议安装是**目录拷贝**（C10），所以改完源码要做两件事：**构建**，然后**把产物同步进 profile 的那份副本**。
 
 ```powershell
-$repo = 'D:\AIagent\dsh-heartbeat-v2'
+$repo = 'C:\code\dsh-heartbeat'
 $mir  = "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat"
 
 npm run build
@@ -893,7 +894,6 @@ Copy-Item "$repo\package.json","$repo\README.md","$repo\client.js" $mir -Force
 
 ```powershell
 # 用一份单独的 data 目录跑 CLI，不碰正在运行的那份
-$env:HEARTBEAT_DATA_DIR = 'D:\AIagent\dsh-heartbeat-v2\data'
 node dist\cli\index.js status
 ```
 
