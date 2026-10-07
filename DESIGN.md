@@ -912,7 +912,9 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 ### 10.1 隔离与陷阱
 
-测试通过 `HEARTBEAT_DATA_DIR` 指到临时目录（`mkdtemp`），跑完删掉。**但 `workspace().configDir` 指向仓库里真实的 `config/`**——沙箱只隔离 `data/`。所以：
+测试通过 `HEARTBEAT_DATA_DIR` 指到临时目录，跑完删掉。沙箱一律用 `tests/_sandbox.ts` 的 `sandboxDir(prefix)` 创建，**不要直接 `fs.mkdtempSync`**——它把目录登记进一个进程级集合，测试进程退出时整批 `rmSync`。「每个用例建一个、文件级 `after` 只删最后一个」的写法会持续泄漏：2026-09-06 到 10-07 之间 `%TEMP%\hb-*` 攒了 16028 个空目录、约 4.4 MB。
+
+**但 `workspace().configDir` 指向仓库里真实的 `config/`**——沙箱只隔离 `data/`。所以：
 
 > 任何写 `config/` 的测试，**必须自己备份并在 `t.after` 里还原**。踩过一次：一个测试往 `config/profile-schema.json` 里写了 `'not json'` 没还原，之后连着两个测试莫名失败。
 
@@ -920,7 +922,7 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 | 组 | 文件 |
 |---|---|
-| core 地基 | `path-guard` / `atomic-fs` / `audit-log` / `material` / `bindings` |
+| core 地基 | `_sandbox`（沙箱工厂）/ `path-guard` / `atomic-fs` / `audit-log` / `material` / `bindings` |
 | 编排与通道 | `orchestrator`（引擎室、游标、文本抽取、正身）/ `rpc`（信封、端点、宿主闸门） |
 | 素材与偏好 | `seeds` / `seeds-report`（投递报账）/ `preference` / `burn-list` |
 | 画像 | `profile-store` / `profile-flow` / `profile-snapshot` |

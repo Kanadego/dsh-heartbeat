@@ -1,10 +1,10 @@
 // Deterministic eviction rules (design doc §4.2) - the core of M2.
 // Time is injected so every rule is testable without waiting.
 
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
@@ -35,7 +35,7 @@ let policy: Policy;
 let now: number;
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-seeds-'));
+  sandbox = sandboxDir('hb-seeds-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();

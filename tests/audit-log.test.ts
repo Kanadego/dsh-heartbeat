@@ -1,7 +1,7 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { appendAuditLine, readAuditLines, pruneAuditFile } from '../src/core/audit-log.js';
 
@@ -9,7 +9,7 @@ let dir = '';
 let file = '';
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-audit-'));
+  dir = sandboxDir('hb-audit-');
   file = path.join(dir, 'heartbeat.jsonl');
 });
 

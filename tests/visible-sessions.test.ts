@@ -1,3 +1,4 @@
+import { sandboxDir } from './_sandbox.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import { loadVisibleSessionIds } from '../src/rpc.js';
 
 function writeRegistry(registry: unknown): string {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hb-vis-')), 'workspace.json');
+  const file = path.join(sandboxDir('hb-vis-'), 'workspace.json');
   fs.writeFileSync(file, JSON.stringify(registry), 'utf8');
   return file;
 }
@@ -42,7 +43,7 @@ test('loadVisibleSessionIds: fails open on missing or corrupt registry', () => {
   assert.equal(missing.registryFound, false);
   assert.equal(missing.visible.size, 0);
 
-  const corrupt = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hb-vis-')), 'workspace.json');
+  const corrupt = path.join(sandboxDir('hb-vis-'), 'workspace.json');
   fs.writeFileSync(corrupt, '{not json', 'utf8');
   const broken = loadVisibleSessionIds(corrupt);
   assert.equal(broken.registryFound, false);

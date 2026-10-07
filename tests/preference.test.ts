@@ -1,9 +1,9 @@
 // Topic preference (2026-10-06): delivered/adopted counters, weight bounds +
 // smoothing + decay, and the lockdown-proof pickFocus weighting.
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard, type PathGuard } from '../src/core/path-guard.js';
@@ -24,7 +24,7 @@ let guard: PathGuard;
 let prefFile: string;
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-pref-'));
+  sandbox = sandboxDir('hb-pref-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   const paths = initWorkspace();
