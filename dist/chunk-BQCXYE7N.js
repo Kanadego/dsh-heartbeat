@@ -1,7 +1,10 @@
 import {
+  withFileLock
+} from "./chunk-IV2ZWQA3.js";
+import {
   loadEncryptedText,
   saveEncryptedText
-} from "./chunk-IFTFDHZX.js";
+} from "./chunk-7TW6DD6Q.js";
 
 // src/profile/inbox.ts
 import fs from "fs";
@@ -16,6 +19,9 @@ function truncateNote(note) {
   return oneLine.length > MAX_NOTE_CHARS ? oneLine.slice(0, MAX_NOTE_CHARS) + "\u2026" : oneLine;
 }
 function inboxAppend(guard, file, item) {
+  return withFileLock(file, () => inboxAppendLocked(guard, file, item));
+}
+function inboxAppendLocked(guard, file, item) {
   const full = {
     id: item.id ?? randomUUID().slice(0, 8),
     kind: item.kind,
@@ -24,6 +30,15 @@ function inboxAppend(guard, file, item) {
     note: truncateNote(item.note)
   };
   const prev = loadEncryptedText(guard, file) ?? "";
+  for (const line of prev.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const existing = JSON.parse(trimmed);
+      if (existing.kind === full.kind && existing.ref === full.ref) return existing;
+    } catch {
+    }
+  }
   saveEncryptedText(guard, file, prev + JSON.stringify(full) + "\n");
   return full;
 }
@@ -95,4 +110,4 @@ export {
   inboxHealthCheck,
   inboxFileExists
 };
-//# sourceMappingURL=chunk-63FUJLIF.js.map
+//# sourceMappingURL=chunk-BQCXYE7N.js.map

@@ -1,7 +1,10 @@
 import {
+  withFileLock
+} from "./chunk-IV2ZWQA3.js";
+import {
   loadEncryptedText,
   saveEncryptedText
-} from "./chunk-IFTFDHZX.js";
+} from "./chunk-7TW6DD6Q.js";
 
 // src/seeds/pool.ts
 import path from "path";
@@ -69,6 +72,9 @@ function savePool(guard, file, db) {
   const body = db.seeds.map((s) => JSON.stringify(s)).join("\n");
   saveEncryptedText(guard, file, body ? body + "\n" : "");
 }
+function update(guard, file, fn) {
+  return withFileLock(file, () => fn(loadPool(guard, file)));
+}
 var activeSeeds = (db) => db.seeds.filter((s) => s.status === "active");
 var archivedSeeds = (db) => db.seeds.filter((s) => s.status === "archived");
 function evictionScore(seed, policy, now) {
@@ -103,7 +109,14 @@ function archiveSeed(seed, reason, now) {
 function retireLimit(s, policy) {
   return normalizeCategory(s.category) === "chat" ? 1 : policy.seeds.retireAfterUsed;
 }
+function isConsumed(s, policy, prevUsedAt, sinceEvidence) {
+  if (s.used < retireLimit(s, policy)) return false;
+  return !(prevUsedAt > 0 && sinceEvidence > prevUsedAt);
+}
 function addSeed(guard, file, policy, input, now = Date.now(), audit = NO_AUDIT) {
+  return withFileLock(file, () => addSeedLocked(guard, file, policy, input, now, audit));
+}
+function addSeedLocked(guard, file, policy, input, now, audit) {
   const db = loadPool(guard, file);
   const text = input.text.trim();
   if (!text) throw new Error("seed text must not be empty");
@@ -189,84 +202,97 @@ function addSeed(guard, file, policy, input, now = Date.now(), audit = NO_AUDIT)
   return { kind: "added", seed, evicted };
 }
 function gcPool(guard, file, policy, now = Date.now(), audit = NO_AUDIT) {
-  const db = loadPool(guard, file);
-  const report = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0, archiveTrimmed: 0 };
-  for (const s of activeSeeds(db)) {
-    const ageMs = now - parseIso(s.bornAt);
-    const sinceEvidence = parseIso(s.lastEvidenceAt);
-    const sinceUsed = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
-    if (s.used >= retireLimit(s, policy) && sinceEvidence <= sinceUsed) {
-      archiveSeed(s, "consumed", now);
-      report.consumed += 1;
-      emit(audit, { event: "seed_retired", id: s.id, reason: "consumed", via: "gc", used: s.used });
-    } else if (now > parseIso(s.expiresAt)) {
-      archiveSeed(s, "expired", now);
-      report.expired += 1;
-      emit(audit, { event: "seed_retired", id: s.id, reason: "expired", via: "gc", used: s.used });
-    } else if (s.used === 0 && ageMs >= policy.seeds.coldBenchDays * DAY_MS) {
-      archiveSeed(s, "cold_bench", now);
-      report.coldBench += 1;
-      emit(audit, { event: "seed_retired", id: s.id, reason: "cold_bench", via: "gc", used: s.used });
+  return update(guard, file, (db) => {
+    const report = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0, archiveTrimmed: 0 };
+    for (const s of activeSeeds(db)) {
+      const ageMs = now - parseIso(s.bornAt);
+      const sinceEvidence = parseIso(s.lastEvidenceAt);
+      const sinceUsed = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
+      if (isConsumed(s, policy, sinceUsed, sinceEvidence)) {
+        archiveSeed(s, "consumed", now);
+        report.consumed += 1;
+        emit(audit, { event: "seed_retired", id: s.id, reason: "consumed", via: "gc", used: s.used });
+      } else if (now > parseIso(s.expiresAt)) {
+        archiveSeed(s, "expired", now);
+        report.expired += 1;
+        emit(audit, { event: "seed_retired", id: s.id, reason: "expired", via: "gc", used: s.used });
+      } else if (s.used === 0 && ageMs >= policy.seeds.coldBenchDays * DAY_MS) {
+        archiveSeed(s, "cold_bench", now);
+        report.coldBench += 1;
+        emit(audit, { event: "seed_retired", id: s.id, reason: "cold_bench", via: "gc", used: s.used });
+      }
     }
-  }
-  const archived = db.seeds.filter((s) => s.status === "archived");
-  if (archived.length > policy.seeds.archiveCap) {
-    const drop = [...archived].sort((a, b) => parseIso(a.retiredAt ?? "") - parseIso(b.retiredAt ?? "")).slice(0, archived.length - policy.seeds.archiveCap);
-    const dropped = new Set(drop.map((s) => s.id));
-    db.seeds = db.seeds.filter((s) => !dropped.has(s.id));
-    report.archiveTrimmed = drop.length;
-    emit(audit, { event: "seed_archive_trimmed", count: drop.length, ids: drop.slice(0, 50).map((s) => s.id) });
-  }
-  report.activeAfter = activeSeeds(db).length;
-  savePool(guard, file, db);
-  return report;
+    const archived = db.seeds.filter((s) => s.status === "archived");
+    if (archived.length > policy.seeds.archiveCap) {
+      const drop = [...archived].sort((a, b) => parseIso(a.retiredAt ?? "") - parseIso(b.retiredAt ?? "")).slice(0, archived.length - policy.seeds.archiveCap);
+      const dropped = new Set(drop.map((s) => s.id));
+      db.seeds = db.seeds.filter((s) => !dropped.has(s.id));
+      report.archiveTrimmed = drop.length;
+      emit(audit, { event: "seed_archive_trimmed", count: drop.length, ids: drop.slice(0, 50).map((s) => s.id) });
+    }
+    report.activeAfter = activeSeeds(db).length;
+    savePool(guard, file, db);
+    return report;
+  });
 }
 function surfaceSeed(guard, file, policy, id, now = Date.now(), audit = NO_AUDIT) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "active");
-  if (!s) return null;
-  s.used += 1;
-  s.lastUsedAt = new Date(now).toISOString();
-  if (s.used >= retireLimit(s, policy) && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
-    archiveSeed(s, "consumed", now);
-    emit(audit, { event: "seed_retired", id: s.id, reason: "consumed", via: "surface", used: s.used });
-  }
-  savePool(guard, file, db);
-  return s;
+  return update(guard, file, (db) => {
+    const s = db.seeds.find((x) => x.id === id && x.status === "active");
+    if (!s) return null;
+    const prevUsedAt = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
+    s.used += 1;
+    s.lastUsedAt = new Date(now).toISOString();
+    if (isConsumed(s, policy, prevUsedAt, parseIso(s.lastEvidenceAt))) {
+      archiveSeed(s, "consumed", now);
+      emit(audit, { event: "seed_retired", id: s.id, reason: "consumed", via: "surface", used: s.used });
+    }
+    savePool(guard, file, db);
+    return s;
+  });
 }
 function archiveSeedById(guard, file, id, reason = "completed", now = Date.now(), audit = NO_AUDIT) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "active");
-  if (!s) return null;
-  archiveSeed(s, reason, now);
-  emit(audit, { event: "seed_retired", id: s.id, reason, via: "manual" });
-  savePool(guard, file, db);
-  return s;
+  return update(guard, file, (db) => {
+    const s = db.seeds.find((x) => x.id === id && x.status === "active");
+    if (!s) return null;
+    archiveSeed(s, reason, now);
+    emit(audit, { event: "seed_retired", id: s.id, reason, via: "manual" });
+    savePool(guard, file, db);
+    return s;
+  });
 }
 function restoreSeed(guard, file, policy, id, now = Date.now(), audit = NO_AUDIT) {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === "archived");
-  if (!s) return { ok: false, reason: "archived seed not found" };
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
-  }
-  s.status = "active";
-  s.retireReason = void 0;
-  s.retiredAt = void 0;
-  s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
-  s.lastEvidenceAt = new Date(now).toISOString();
-  emit(audit, { event: "seed_restored", id: s.id });
-  savePool(guard, file, db);
-  return { ok: true, seed: s };
+  return update(guard, file, (db) => {
+    const s = db.seeds.find((x) => x.id === id && x.status === "archived");
+    if (!s) return { ok: false, reason: "archived seed not found" };
+    const category = normalizeCategory(s.category);
+    const catCap = SEED_CATEGORY_CAPS[category];
+    const inCategory = activeSeeds(db).filter((x) => normalizeCategory(x.category) === category).length;
+    if (inCategory >= catCap) {
+      return { ok: false, reason: `category full (${category}: ${catCap}); archive something in it first` };
+    }
+    if (activeSeeds(db).length >= policy.seeds.maxActive) {
+      return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
+    }
+    s.status = "active";
+    s.retireReason = void 0;
+    s.retiredAt = void 0;
+    s.bornAt = new Date(now).toISOString();
+    s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
+    s.lastEvidenceAt = new Date(now).toISOString();
+    emit(audit, { event: "seed_restored", id: s.id });
+    savePool(guard, file, db);
+    return { ok: true, seed: s };
+  });
 }
 function deleteSeed(guard, file, id, audit = NO_AUDIT) {
-  const db = loadPool(guard, file);
-  const before = db.seeds.length;
-  db.seeds = db.seeds.filter((x) => x.id !== id);
-  if (db.seeds.length === before) return false;
-  emit(audit, { event: "seed_deleted", id });
-  savePool(guard, file, db);
-  return true;
+  return update(guard, file, (db) => {
+    const before = db.seeds.length;
+    db.seeds = db.seeds.filter((x) => x.id !== id);
+    if (db.seeds.length === before) return false;
+    emit(audit, { event: "seed_deleted", id });
+    savePool(guard, file, db);
+    return true;
+  });
 }
 
 export {
@@ -288,4 +314,4 @@ export {
   restoreSeed,
   deleteSeed
 };
-//# sourceMappingURL=chunk-PQTSXW4F.js.map
+//# sourceMappingURL=chunk-KOOQOMQY.js.map

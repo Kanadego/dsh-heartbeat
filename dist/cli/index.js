@@ -1,28 +1,34 @@
 import {
+  applyMigrationEntries,
+  collectMigrationEntries,
+  decryptContainer,
+  encryptContainer
+} from "../chunk-2NB4QILF.js";
+import {
   BUNDLED_PRESET_ID,
-  adviseWander,
-  appendEntry,
-  browseStatus,
-  checkWatchlist,
-  completeWander,
   conventionalUserPresetRoot,
   createPathGuard,
   describeInstall,
-  ensureRegistered,
   installBundledPreset,
+  loadPolicy,
+  presetStatus
+} from "../chunk-ZLV4NMFX.js";
+import {
+  adviseWander,
+  appendEntry,
+  browseStatus,
+  completeWander,
+  ensureRegistered,
   ledgerFilePath,
   listWeeklyReports,
   loadInterests,
-  loadPolicy,
-  loadWatchlist,
   markDone,
-  presetStatus,
   readLedger,
   readWeeklyReport,
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-2SYXKKZF.js";
+} from "../chunk-7LYA2BKN.js";
 import {
   activeSeeds,
   addSeed,
@@ -32,27 +38,24 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-PQTSXW4F.js";
+} from "../chunk-KOOQOMQY.js";
+import "../chunk-IV2ZWQA3.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath,
   pruneAuditFile,
   rebuildProfile,
-  shredFileSync,
   verifyProfile
-} from "../chunk-VIZNIQLK.js";
-import {
-  applyMigrationEntries,
-  collectMigrationEntries,
-  decryptContainer,
-  encryptContainer
-} from "../chunk-IPOZFZPY.js";
+} from "../chunk-OYVNWB5G.js";
 import {
   initWorkspace,
-  loadEncryptedText,
   writeText
-} from "../chunk-IFTFDHZX.js";
+} from "../chunk-7TW6DD6Q.js";
+import {
+  atomicWriteFileSync,
+  shredFileSync
+} from "../chunk-WRUTATW4.js";
 
 // src/cli/index.ts
 import { spawn } from "child_process";
@@ -67,6 +70,9 @@ var BURN_LIST = [
   { file: "profile.json", note: "\u753B\u50CF\u7269\u5316\u89C6\u56FE" },
   { file: "profile_inbox.jsonl", note: "\u89C2\u5BDF\u6536\u4EF6\u7BB1" },
   { file: "profile_journal.jsonl", note: "\u753B\u50CF\u64CD\u4F5C\u6D41\u6C34" },
+  // H-19: the rotation shards hold the whole profile history and are written
+  // in PLAINTEXT — a burn that leaves them behind leaves the memory readable.
+  { prefix: "profile_journal.archive-", note: "\u753B\u50CF\u6D41\u6C34\u5F52\u6863\u5206\u7247\uFF08\u660E\u6587\uFF1Bjournal \u8F6E\u8F6C\u4EA7\u7269\uFF09" },
   { file: "profile_rhythm.json", note: "\u4F5C\u606F\u805A\u5408\uFF08\u7EAF\u7EDF\u8BA1\uFF09" },
   { file: "screen.json", note: "\u5C4F\u5E55\u5FEB\u7167\uFF08\u52A0\u5BC6\uFF09" },
   { file: "screen.jpg", note: "\u622A\u56FE\uFF08\u52A0\u5BC6\uFF09" },
@@ -76,22 +82,40 @@ var BURN_LIST = [
   { file: "ledger.md", note: "\u8D26\u672C\uFF08\u660E\u6587\uFF0C\u4EBA\u53EF\u8BFB\u662F\u8BBE\u8BA1\u76EE\u6807\uFF09" },
   { file: "envpulse.json", note: "\u73AF\u5883\u6E29\u5EA6\u8BA1\u5FEB\u7167" },
   { file: "gate.json", note: "\u95F8\u95E8\u8FD0\u884C\u65F6\u8BA1\u6570" },
+  // v1.9.0 completion (H-19): these carry memory just as much as the rows
+  // above — the persona report log records WHAT SHE SAID (spoken / seed_ids /
+  // profile_ids / reason), so a burn that skips it is a burn that lies.
+  { file: "profile_snapshot.json", note: "\u753B\u50CF\u5FEB\u7167\uFF08journal \u8F6E\u8F6C\u57FA\u7EBF\uFF09" },
+  { file: "cursors.json", note: "\u89C2\u5BDF\u6E38\u6807\uFF08\u4F1A\u8BDD\u4E8B\u4EF6\u4F4D\u70B9\uFF09" },
+  { file: "seed_report.jsonl", note: "\u6295\u9012\u62A5\u8D26\u65E5\u5FD7\uFF08\u52A0\u5BC6\uFF09" },
+  { file: "preference.json", note: "\u8BDD\u9898\u504F\u597D\u7EDF\u8BA1" },
+  { dir: "weekly", note: "\u5468\u62A5\uFF08\u753B\u50CF\u4E0E\u7D20\u6750\u6563\u6587\uFF09" },
   { dir: "tmp", note: "\u89E3\u9501\u4E34\u65F6\u6587\u4EF6\uFF08\u5D29\u6E83\u6B8B\u7559\u7684\u89E3\u5BC6\u660E\u6587\u662F\u6700\u8BE5\u70E7\u7684\u4E1C\u897F\uFF09" },
   { dir: "logs", note: "\u5BA1\u8BA1\u4E0E\u51B3\u7B56\u65E5\u5FD7" },
   { dir: "exports", note: "\u5BFC\u51FA\u4EA7\u7269" }
 ];
 var SETTINGS_DIR = "settings";
+function prefixMatches(guard, paths, prefix) {
+  try {
+    return fs.readdirSync(guard.assert(paths.dataDir)).filter((f) => f.startsWith(prefix)).sort();
+  } catch {
+    return [];
+  }
+}
 function planBurn(guard, paths, all = false) {
   const plan = [];
   for (const t of BURN_LIST) {
-    const rel = t.file ?? t.dir;
+    const rel = t.file ?? t.dir ?? t.prefix ?? "";
     if (!all && rel === SETTINGS_DIR) continue;
-    const abs = path.join(paths.dataDir, rel);
     let exists = false;
-    try {
-      exists = fs.existsSync(guard.assert(abs));
-    } catch {
-      exists = false;
+    if (t.prefix) {
+      exists = prefixMatches(guard, paths, t.prefix).length > 0;
+    } else {
+      try {
+        exists = fs.existsSync(guard.assert(path.join(paths.dataDir, rel)));
+      } catch {
+        exists = false;
+      }
     }
     plan.push({ target: t, exists });
   }
@@ -105,6 +129,21 @@ function executeBurn(guard, paths, opts = {}) {
   const missing = [];
   const passes = opts.shredPasses ?? 3;
   for (const t of BURN_LIST) {
+    if (t.prefix) {
+      const matches = prefixMatches(guard, paths, t.prefix);
+      if (matches.length === 0) {
+        missing.push(`${t.prefix}*`);
+        continue;
+      }
+      for (const f of matches) {
+        try {
+          shredFileSync(guard.assert(path.join(paths.dataDir, f)), passes);
+          burned.push(f);
+        } catch {
+        }
+      }
+      continue;
+    }
     const rel = t.file ?? t.dir;
     const abs = path.join(paths.dataDir, rel);
     let absCanon;
@@ -159,9 +198,8 @@ function usage() {
     "  ledger done <id|substring>        mark an entry done",
     "  ledger open                       open ledger.md in the default editor",
     "  logs cleanup [--dry-run]          apply log retention now",
-    "  browse status                     browse state summary (watch + wander)",
+    "  browse status                     browse state summary (wander)",
     "  browse dry                        wander adjudication with forced noon window",
-    "  browse watch                      run watchlist check now (network)",
     "  browse done <focus>               CODE-side registration after a wander visit",
     "  bind list                         list session bindings (D13)",
     "  bind add <sessionId> [--observe]  bind a session (deliver by default)",
@@ -194,6 +232,13 @@ function flag(argv, name) {
   const i = argv.indexOf(name);
   return i > -1 ? argv[i + 1] : void 0;
 }
+var SEED_TAGS = ["news", "fandom", "scene", "promise"];
+var SEED_SOURCES = ["chat", "screen", "browse", "hand", "profile"];
+function flagOneOf(argv, name, allowed) {
+  const v = flag(argv, name);
+  if (v === void 0) return void 0;
+  return allowed.includes(v) ? v : void 0;
+}
 async function readLines(prompts) {
   const readline = await import("readline/promises");
   const it = readline.createInterface({ input: process.stdin });
@@ -202,17 +247,518 @@ async function readLines(prompts) {
   it.close();
   return out;
 }
+async function verbStatus(c) {
+  const { paths, policy } = c;
+  console.log(JSON.stringify({
+    dataDir: paths.dataDir,
+    heartbeatIntervalMin: policy.heartbeat.intervalMin,
+    maxDailySend: policy.gate.maxDailySend,
+    seedsMaxActive: policy.seeds.maxActive,
+    psyEnabled: policy.profile.psyEnabled
+  }, null, 2));
+  return 0;
+}
+async function verbSeeds(c) {
+  const { guard, policy, sub, rest, seedsFile, seedAudit } = c;
+  switch (sub) {
+    case "add": {
+      let text = rest[0]?.trim() ?? "";
+      if (text === "-") text = readStdinText();
+      if (!text) {
+        console.error("usage: seeds add <text|-> [--tag t] [--source s] [--topic x] [--confidence n]");
+        return 1;
+      }
+      const result = addSeed(guard, seedsFile, policy, {
+        text,
+        tag: flagOneOf(rest, "--tag", SEED_TAGS),
+        source: flagOneOf(rest, "--source", SEED_SOURCES),
+        topic: flag(rest, "--topic"),
+        confidence: flag(rest, "--confidence") ? Number(flag(rest, "--confidence")) : void 0
+      }, Date.now(), seedAudit);
+      if (result.kind === "duplicate") {
+        console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
+        return 0;
+      }
+      console.log(`${result.kind.toUpperCase()} ${result.seed.id} (${activeSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.maxActive})` + (result.evicted ? ` [evicted ${result.evicted.id}: ${result.evicted.retireReason}]` : ""));
+      return 0;
+    }
+    case "list": {
+      const db = loadPool(guard, seedsFile);
+      const items = rest.includes("--archived") ? archivedSeeds(db) : activeSeeds(db);
+      for (const s of items) {
+        const ageDays = Math.floor((Date.now() - Date.parse(s.bornAt)) / 864e5);
+        console.log(`${s.id} [${s.tag}/${s.source}] d${ageDays} used:${s.used}${s.protected ? " *" : ""} ${s.text.slice(0, 60)}`);
+      }
+      if (items.length === 0) console.log("(empty)");
+      return 0;
+    }
+    case "surface": {
+      const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? "", Date.now(), seedAudit);
+      if (!s) {
+        console.log("NOT_FOUND");
+        return 1;
+      }
+      console.log(`SURFACED ${s.id} used:${s.used}${s.status === "archived" ? " -> archived (consumed)" : ""}`);
+      return 0;
+    }
+    case "archive": {
+      const s = archiveSeedById(guard, seedsFile, rest[0] ?? "", "completed", Date.now(), seedAudit);
+      if (!s) {
+        console.log("NOT_FOUND");
+        return 1;
+      }
+      console.log(`ARCHIVED ${s.id}`);
+      return 0;
+    }
+    case "gc": {
+      const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
+      console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench} archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive} archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
+      return 0;
+    }
+    case "stats": {
+      const db = loadPool(guard, seedsFile);
+      console.log(JSON.stringify({
+        active: activeSeeds(db).length,
+        archived: archivedSeeds(db).length,
+        cap: policy.seeds.maxActive,
+        seq: db.seq
+      }, null, 2));
+      return 0;
+    }
+    default:
+      console.error(`unknown seeds subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbLedger(c) {
+  const { guard, sub, rest, ledgerFile } = c;
+  switch (sub) {
+    case "add": {
+      let text = rest.join(" ").trim();
+      if (text === "-") text = readStdinText();
+      if (!text) {
+        console.error("usage: ledger add <text|->");
+        return 1;
+      }
+      const e = appendEntry(guard, ledgerFile, text);
+      console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case "list": {
+      const { entries } = readLedger(guard, ledgerFile);
+      const items = rest.includes("--pending") ? scanPending(guard, ledgerFile) : entries;
+      for (const e of items) console.log(`${e.status === "open" ? " " : "x"} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log("(empty)");
+      return 0;
+    }
+    case "done": {
+      const key = rest.join(" ").trim();
+      if (!key) {
+        console.error("usage: ledger done <id|substring>");
+        return 1;
+      }
+      const e = markDone(guard, ledgerFile, key);
+      if (!e) {
+        console.log("NOT_FOUND");
+        return 1;
+      }
+      console.log(`DONE #${e.id}`);
+      return 0;
+    }
+    case "open": {
+      const f = ledgerFile;
+      if (!fs2.existsSync(f)) {
+        console.log(`(ledger will be created at ${f})`);
+      }
+      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbWeekly(c) {
+  const { guard, paths, sub, rest } = c;
+  const reports = listWeeklyReports(guard, paths.dataDir);
+  if (sub === "list" || sub === void 0) {
+    if (reports.length === 0) console.log("(no reports yet \u2014 heartbeat generates one every 7 days)");
+    for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
+    return 0;
+  }
+  if (sub === "show") {
+    const file = rest[0] ?? reports[0]?.file;
+    if (!file) {
+      console.log("(no reports yet)");
+      return 1;
+    }
+    const rep = readWeeklyReport(guard, paths.dataDir, file);
+    if (!rep) {
+      console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
+      return 1;
+    }
+    console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
+    console.log(rep.text);
+    return 0;
+  }
+  console.error(`unknown weekly subcommand: ${sub}`);
+  return 1;
+}
+async function verbLogs(c) {
+  const { paths, policy, sub, rest, decisionLog } = c;
+  if (sub !== "cleanup") {
+    console.error("usage: logs cleanup [--dry-run]");
+    return 1;
+  }
+  const dry = rest.includes("--dry-run");
+  const envPulse = path2.join(paths.logsDir, "envpulse.jsonl");
+  const cut1 = policy.retention.envPulseHours * 36e5;
+  const cut2 = policy.retention.decisionLogDays * 864e5;
+  if (dry) {
+    console.log(`(dry-run) would prune ${envPulse} to ${policy.retention.envPulseHours}h and ${decisionLog} to ${policy.retention.decisionLogDays}d`);
+    return 0;
+  }
+  const a = pruneAuditFile(envPulse, cut1);
+  const b = pruneAuditFile(decisionLog, cut2);
+  appendAuditLine(decisionLog, { event: "retention", pruned_envpulse: a, pruned_decision: b });
+  console.log(`PRUNED envpulse:${a} decision:${b}`);
+  return 0;
+}
+async function verbBrowse(c) {
+  const { guard, paths, policy, sub, rest } = c;
+  switch (sub) {
+    case "status": {
+      const st = browseStatus(guard, paths);
+      const interests = loadInterests(paths);
+      console.log(JSON.stringify({
+        lastWanderAt: st.wander.last_wander_at ? new Date(st.wander.last_wander_at).toISOString() : null,
+        focusCount: st.wander.focusCount,
+        interestCount: interests.interests?.length ?? 0
+      }, null, 2));
+      return 0;
+    }
+    case "dry": {
+      const forced = /* @__PURE__ */ new Date();
+      forced.setHours(12, 0, 0, 0);
+      const advice = adviseWander(guard, paths, policy, forced);
+      console.log(JSON.stringify(advice, null, 2));
+      return 0;
+    }
+    case "done": {
+      const focus = rest.join(" ").trim();
+      if (!focus) {
+        console.error("usage: browse done <focus>");
+        return 1;
+      }
+      const r = completeWander(guard, paths, focus);
+      console.log(JSON.stringify(r));
+      return 0;
+    }
+    default:
+      console.error(`unknown browse subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbNotify(c) {
+  const { paths, sub } = c;
+  switch (sub) {
+    case "check":
+      console.log(await ensureRegistered(paths) ? "REGISTERED: yes" : "REGISTERED: no");
+      return 0;
+    case "register":
+      await ensureRegistered(paths);
+      console.log("register attempted");
+      return 0;
+    case "send":
+      console.log(await sendNewMessageHint(paths) ? "SENT" : "FAILED");
+      return 0;
+    default:
+      console.error("usage: notify check|register|send");
+      return 1;
+  }
+}
+async function verbProfile(c) {
+  const { guard, paths, sub, rest } = c;
+  const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+  const all = rest.includes("--all");
+  switch (sub) {
+    case "list": {
+      let n = 0;
+      for (const p of ["interest", "projects", "comm", "psy"]) {
+        for (const e of doc.partitions[p].entries) {
+          if (!all && e.validTo !== null) continue;
+          n += 1;
+          console.log(`${e.id} [${e.partition}/${e.topic}/${e.subTopic}] ${e.temporal} conf=${e.confidence.toFixed(2)}${e.lowActivity ? " \u4E45\u672A\u9A8C\u8BC1" : ""}${e.validTo ? " [\u5931\u6548]" : ""}: ${e.content.slice(0, 60)}`);
+        }
+      }
+      if (n === 0) console.log("(empty)");
+      return 0;
+    }
+    case "export": {
+      const lines = [`# \u753B\u50CF\u5BFC\u51FA ${(/* @__PURE__ */ new Date()).toISOString()}`, ""];
+      for (const p of ["interest", "projects", "comm", "psy"]) {
+        lines.push(`## ${p}`);
+        for (const e of doc.partitions[p].entries) {
+          if (e.validTo !== null) continue;
+          lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
+        }
+      }
+      const out = path2.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+      writeText(guard, out, lines.join("\n") + "\n");
+      console.log(`EXPORTED: ${out}`);
+      return 0;
+    }
+    case "verify": {
+      const r = verifyProfile(guard, paths.dataDir);
+      console.log(JSON.stringify(r, null, 2));
+      return r.ok ? 0 : 1;
+    }
+    case "rebuild": {
+      const r = rebuildProfile(guard, paths.dataDir, { check: rest.includes("--check") });
+      console.log(JSON.stringify(r, null, 2));
+      return r.ok ? 0 : 1;
+    }
+    case "wipe": {
+      if (!rest.includes("--yes")) {
+        console.log("REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)");
+        return 1;
+      }
+      for (const f of ["profile.json", "profile_inbox.jsonl", "profile_journal.jsonl"]) {
+        const abs = guard.assert(path2.join(paths.dataDir, f));
+        if (fs2.existsSync(abs)) fs2.rmSync(abs, { force: true });
+      }
+      console.log("WIPED (settings preserved; use burn for full shredding)");
+      return 0;
+    }
+    case "snapshot": {
+      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-JQDJ346Z.js");
+      const { needed, lines } = snapshotDue(guard, paths.dataDir);
+      console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
+      if (!needed && !rest.includes("--force")) {
+        console.log("\u672A\u5230\u9608\u503C\uFF0C\u672A\u6267\u884C\uFF08\u52A0 --force \u5F3A\u5236\u6298\u53E0\uFF09\u3002");
+        return 0;
+      }
+      const report = snapshotProfile(guard, paths.dataDir);
+      if (!report.ok) {
+        console.log(`\u672A\u6267\u884C\uFF1A${report.reason}`);
+        return 0;
+      }
+      console.log(`\u5DF2\u6298\u53E0 ${report.folded} \u6761 \u2192 \u5FEB\u7167\uFF08baseline ${report.baselineTs}\uFF09\uFF0C\u5F52\u6863 ${report.archiveFile}\uFF0Clive journal \u5DF2\u6E05\u7A7A\u3002`);
+      console.log("verify/rebuild \u81EA\u52A8\u4ECE\u5FEB\u7167\u57FA\u70B9\u91CD\u653E\uFF0C\u65E0\u9700\u989D\u5916\u64CD\u4F5C\u3002");
+      return 0;
+    }
+    default:
+      console.error(`unknown profile subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbBurn(c) {
+  const { guard, paths, rest } = c;
+  const yes = rest.includes("--yes");
+  const all = rest.includes("--all");
+  const plan = planBurn(guard, paths, all);
+  console.log("\u9884\u6F14\uFF08\u4E0D\u4F1A\u6267\u884C\uFF09:");
+  for (const p of plan) console.log(`  [${p.exists ? "\u5B58\u5728" : "\u65E0  "}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
+  if (!yes) {
+    console.log("\n\u6B64\u64CD\u4F5C\u4F1A\u8BA9\u5FC3\u8DF3 agent \u5931\u5FC6\u3002\u786E\u8BA4\u6267\u884C\u8BF7\u52A0 --yes\uFF08" + (all ? "\u542B --all \u8FDE\u7528\u6237\u8BBE\u5B9A" : "\u7528\u6237\u8BBE\u5B9A\u4FDD\u7559") + "\uFF09");
+    return 0;
+  }
+  const result = executeBurn(guard, paths, { all });
+  console.log(`BURNED: ${result.burned.length} \u9879\uFF1BMISSING: ${result.missing.length} \u9879`);
+  return 0;
+}
+async function verbMigrate(c) {
+  const { guard, paths, sub, rest } = c;
+  if (sub === "export") {
+    const defaultOut = path2.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+    const outfile = rest[0] ?? defaultOut;
+    let outCanon;
+    try {
+      outCanon = guard.assert(outfile);
+    } catch {
+      console.error(`\u5BFC\u51FA\u6587\u4EF6\u5FC5\u987B\u843D\u5728\u63D2\u4EF6 data/ \u76EE\u5F55\u5185\uFF08\u8DEF\u5F84\u5B88\u536B\u62D2\u7EDD\uFF09\uFF1A${outfile}
+\u9ED8\u8BA4\u4F4D\u7F6E\uFF1A${defaultOut}`);
+      return 1;
+    }
+    const [pw1, pw2] = await readLines(["\u8BBE\u7F6E\u53E3\u4EE4\uFF08\u7528\u4E8E\u52A0\u5BC6\u8FC1\u79FB\u5305\uFF09: ", "\u518D\u8F93\u5165\u4E00\u6B21\u786E\u8BA4: "]);
+    if (!pw1 || pw1 !== pw2) {
+      console.error("\u4E24\u6B21\u8F93\u5165\u4E0D\u4E00\u81F4\u6216\u4E3A\u7A7A\uFF0C\u5DF2\u53D6\u6D88\u3002");
+      return 1;
+    }
+    const { entries, progress } = collectMigrationEntries(guard, paths);
+    if (entries.length === 0) {
+      console.log("\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09\u3002");
+      return 1;
+    }
+    fs2.mkdirSync(path2.dirname(outCanon), { recursive: true });
+    atomicWriteFileSync(outCanon, encryptContainer(entries, pw1));
+    console.log(`\u5DF2\u6253\u5305 ${entries.length} \u4E2A\u6587\u4EF6 \u2192 ${outCanon}`);
+    console.log(`  \u6253\u5305\uFF1A${progress.packed.join(", ")}`);
+    if (progress.missing.length > 0) console.log(`  \u8DF3\u8FC7\uFF08\u4E0D\u5B58\u5728\uFF09\uFF1A${progress.missing.join(", ")}`);
+    console.log("\u5BB9\u5668\u662F\u53E3\u4EE4\u52A0\u5BC6\u7684\uFF0C\u53EF\u5B89\u5168\u62F7\u8D1D\u5230\u65B0\u673A\u5668\uFF1BDPAPI \u4F1A\u5728\u5BFC\u5165\u65F6\u7528\u65B0\u673A\u5668\u91CD\u65B0\u52A0\u5BC6\u3002");
+    return 0;
+  }
+  if (sub === "import") {
+    const infile = rest[0];
+    if (!infile) {
+      console.error("usage: migrate import <container-file>");
+      return 1;
+    }
+    const [pw] = await readLines(["\u8F93\u5165\u8FC1\u79FB\u5305\u53E3\u4EE4: "]);
+    let text;
+    try {
+      text = fs2.readFileSync(infile, "utf8");
+    } catch {
+      console.error(`\u8BFB\u4E0D\u5230\u8FC1\u79FB\u5305\uFF1A${infile}`);
+      return 1;
+    }
+    let files;
+    try {
+      files = decryptContainer(text, pw ?? "");
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      return 1;
+    }
+    const result = applyMigrationEntries(guard, paths, files.files);
+    console.log(`\u6062\u590D ${result.restored.length} \u4E2A\u6587\u4EF6\uFF1B\u5907\u4EFD ${result.backedUp.length} \u4E2A\u88AB\u8986\u76D6\u6587\u4EF6\uFF1B\u8DF3\u8FC7 ${result.skipped.length} \u4E2A\u3002`);
+    for (const r of result.restored) console.log(`  \u6062\u590D: ${r}`);
+    for (const b of result.backedUp) console.log(`  \u5907\u4EFD: ${b}.bak-migrate-*`);
+    if (result.skipped.length > 0) console.log(`  \u8DF3\u8FC7: ${result.skipped.join(", ")}`);
+    if (result.error) console.log(`  \u5931\u8D25\u5E76\u5DF2\u56DE\u6EDA\uFF1A${result.error}`);
+    console.log("\u91CD\u542F DSH \u540E\u751F\u6548\u3002");
+    return result.error ? 1 : 0;
+  }
+  console.error(`unknown migrate subcommand: ${sub}`);
+  return 1;
+}
+async function verbSessions(c) {
+  const { guard, paths } = c;
+  const root = path2.join(os.homedir(), ".dsh", "sessions");
+  let found = 0;
+  if (fs2.existsSync(root)) {
+    const { homeSessionId } = await import("../orchestrator-XWGAW7IL.js");
+    const own = homeSessionId(guard, paths);
+    for (const slug of fs2.readdirSync(root)) {
+      for (const id of fs2.readdirSync(path2.join(root, slug))) {
+        found += 1;
+        const mark = id === own ? "  \u2190 \u5FC3\u8DF3\u6B63\u8EAB" : "";
+        console.log(`${id}  [${slug}]${mark}`);
+      }
+    }
+  }
+  if (found === 0) console.log("(no persisted sessions found)");
+  return 0;
+}
+async function verbBind(c) {
+  const { guard, paths, sub, rest } = c;
+  const { loadBindings, addBinding, removeBinding } = await import("../bindings-225SI7KC.js");
+  switch (sub) {
+    case "list": {
+      const data = loadBindings(guard, paths.settingsDir);
+      const { homeSessionId } = await import("../orchestrator-XWGAW7IL.js");
+      const own = homeSessionId(guard, paths);
+      if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
+      for (const b of data.bindings) {
+        console.log(`${b.sessionId}  deliver:${b.deliver ? "\u221A" : "\xD7"} observe:${b.observe ? "\u221A" : "\xD7"}`);
+      }
+      if (data.bindings.length === 0 && !own) console.log("(no bindings \u2014 expressions stay in the dedicated heartbeat session)");
+      return 0;
+    }
+    case "add": {
+      const id = rest[0];
+      if (!id || !id.startsWith("session-")) {
+        console.error("usage: bind add <sessionId> [--observe] [--no-deliver]  (see: sessions list)");
+        return 1;
+      }
+      const observe = rest.includes("--observe") || rest.includes("--observe-only");
+      const deliver = !rest.includes("--no-deliver") && !rest.includes("--observe-only");
+      const b = addBinding(guard, paths.settingsDir, id, { deliver, observe });
+      console.log(`BOUND ${b.sessionId} deliver:${b.deliver} observe:${b.observe}`);
+      return 0;
+    }
+    case "remove": {
+      const id = rest[0];
+      if (!id) {
+        console.error("usage: bind remove <sessionId>");
+        return 1;
+      }
+      console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
+      const { resetHomeSession } = await import("../orchestrator-XWGAW7IL.js");
+      if (resetHomeSession(guard, paths, id)) {
+        console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
+      }
+      return 0;
+    }
+    default:
+      console.error("usage: bind list | add <sessionId> | remove <sessionId>");
+      return 1;
+  }
+}
+async function verbPreset(c) {
+  const { sub, rest, argv } = c;
+  const id = flag(argv, "--id") ?? BUNDLED_PRESET_ID;
+  const root = conventionalUserPresetRoot();
+  const status = presetStatus(import.meta.url, id, root);
+  if (sub === void 0 || sub === "status") {
+    console.log(`preset id   : ${status.id}`);
+    console.log(`installed   : ${status.installed ? "yes" : "no"}`);
+    console.log(`target dir  : ${status.dir}`);
+    console.log(`bundled at  : ${status.bundledDir ?? "(not found next to the plugin)"}`);
+    if (status.installed) {
+      console.log(
+        `composition : ${status.compositionMatches ? "matches the bundled template" : "differs from the bundled template (hand-edited, or an older version)"}`
+      );
+    }
+    if (!status.installed) {
+      console.log("hint: the plugin installs this itself on the next DSH start (installPreset=true, default);");
+      console.log("      or run `preset install` now.");
+    }
+    return status.installed ? 0 : 1;
+  }
+  if (sub === "install") {
+    const result = installBundledPreset({
+      moduleUrl: import.meta.url,
+      id,
+      root,
+      force: rest.includes("--force")
+    });
+    console.log(describeInstall(result));
+    return result.action === "error" ? 1 : 0;
+  }
+  console.error("usage: preset status | install [--force] [--id <presetId>]");
+  return 1;
+}
+var VERBS = {
+  status: verbStatus,
+  seeds: verbSeeds,
+  ledger: verbLedger,
+  weekly: verbWeekly,
+  logs: verbLogs,
+  browse: verbBrowse,
+  notify: verbNotify,
+  profile: verbProfile,
+  burn: verbBurn,
+  migrate: verbMigrate,
+  sessions: verbSessions,
+  bind: verbBind,
+  preset: verbPreset
+};
 async function main(argv) {
   const [cmd, sub, ...rest] = argv;
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(usage());
     return 0;
   }
+  const verb = VERBS[cmd];
+  if (!verb) {
+    console.error(`unknown command: ${cmd}`);
+    console.log(usage());
+    return 1;
+  }
   const paths = initWorkspace();
   const guard = createPathGuard(paths.dataDir);
   const policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
-  const seedsFile = seedsFilePath(paths.dataDir);
-  const ledgerFile = ledgerFilePath(paths.dataDir);
   const decisionLog = path2.join(paths.logsDir, "heartbeat.jsonl");
   const seedAudit = (entry) => {
     try {
@@ -220,503 +766,25 @@ async function main(argv) {
     } catch {
     }
   };
-  switch (cmd) {
-    case "status": {
-      console.log(JSON.stringify({
-        dataDir: paths.dataDir,
-        heartbeatIntervalMin: policy.heartbeat.intervalMin,
-        maxDailySend: policy.gate.maxDailySend,
-        seedsMaxActive: policy.seeds.maxActive,
-        psyEnabled: policy.profile.psyEnabled
-      }, null, 2));
-      return 0;
-    }
-    case "seeds": {
-      switch (sub) {
-        case "add": {
-          let text = rest[0]?.trim() ?? "";
-          if (text === "-") text = readStdinText();
-          if (!text) {
-            console.error("usage: seeds add <text|-> [--tag t] [--source s] [--topic x] [--confidence n]");
-            return 1;
-          }
-          const result = addSeed(guard, seedsFile, policy, {
-            text,
-            tag: flag(rest, "--tag"),
-            source: flag(rest, "--source"),
-            topic: flag(rest, "--topic"),
-            confidence: flag(rest, "--confidence") ? Number(flag(rest, "--confidence")) : void 0
-          }, Date.now(), seedAudit);
-          if (result.kind === "duplicate") {
-            console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
-            return 0;
-          }
-          console.log(`${result.kind.toUpperCase()} ${result.seed.id} (${activeSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.maxActive})` + (result.evicted ? ` [evicted ${result.evicted.id}: ${result.evicted.retireReason}]` : ""));
-          return 0;
-        }
-        case "list": {
-          const db = loadPool(guard, seedsFile);
-          const items = rest.includes("--archived") ? archivedSeeds(db) : activeSeeds(db);
-          for (const s of items) {
-            const ageDays = Math.floor((Date.now() - Date.parse(s.bornAt)) / 864e5);
-            console.log(`${s.id} [${s.tag}/${s.source}] d${ageDays} used:${s.used}${s.protected ? " *" : ""} ${s.text.slice(0, 60)}`);
-          }
-          if (items.length === 0) console.log("(empty)");
-          return 0;
-        }
-        case "surface": {
-          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? "", Date.now(), seedAudit);
-          if (!s) {
-            console.log("NOT_FOUND");
-            return 1;
-          }
-          console.log(`SURFACED ${s.id} used:${s.used}${s.status === "archived" ? " -> archived (consumed)" : ""}`);
-          return 0;
-        }
-        case "archive": {
-          const s = archiveSeedById(guard, seedsFile, rest[0] ?? "", "completed", Date.now(), seedAudit);
-          if (!s) {
-            console.log("NOT_FOUND");
-            return 1;
-          }
-          console.log(`ARCHIVED ${s.id}`);
-          return 0;
-        }
-        case "gc": {
-          const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
-          console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench} archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive} archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
-          return 0;
-        }
-        case "stats": {
-          const db = loadPool(guard, seedsFile);
-          console.log(JSON.stringify({
-            active: activeSeeds(db).length,
-            archived: archivedSeeds(db).length,
-            cap: policy.seeds.maxActive,
-            seq: db.seq
-          }, null, 2));
-          return 0;
-        }
-        default:
-          console.error(`unknown seeds subcommand: ${sub}`);
-          return 1;
-      }
-    }
-    case "ledger": {
-      switch (sub) {
-        case "add": {
-          let text = rest.join(" ").trim();
-          if (text === "-") text = readStdinText();
-          if (!text) {
-            console.error("usage: ledger add <text|->");
-            return 1;
-          }
-          const e = appendEntry(guard, ledgerFile, text);
-          console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
-          return 0;
-        }
-        case "list": {
-          const { entries } = readLedger(guard, ledgerFile);
-          const items = rest.includes("--pending") ? scanPending(guard, ledgerFile) : entries;
-          for (const e of items) console.log(`${e.status === "open" ? " " : "x"} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
-          if (items.length === 0) console.log("(empty)");
-          return 0;
-        }
-        case "done": {
-          const key = rest.join(" ").trim();
-          if (!key) {
-            console.error("usage: ledger done <id|substring>");
-            return 1;
-          }
-          const e = markDone(guard, ledgerFile, key);
-          if (!e) {
-            console.log("NOT_FOUND");
-            return 1;
-          }
-          console.log(`DONE #${e.id}`);
-          return 0;
-        }
-        case "open": {
-          const f = ledgerFile;
-          if (!fs2.existsSync(f)) {
-            console.log(`(ledger will be created at ${f})`);
-          }
-          spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
-          console.log(`opened ${f}`);
-          return 0;
-        }
-        default:
-          console.error(`unknown ledger subcommand: ${sub}`);
-          return 1;
-      }
-    }
-    case "weekly": {
-      const reports = listWeeklyReports(guard, paths.dataDir);
-      if (sub === "list" || sub === void 0) {
-        if (reports.length === 0) console.log("(no reports yet \u2014 heartbeat generates one every 7 days)");
-        for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
-        return 0;
-      }
-      if (sub === "show") {
-        const file = rest[0] ?? reports[0]?.file;
-        if (!file) {
-          console.log("(no reports yet)");
-          return 1;
-        }
-        const rep = readWeeklyReport(guard, paths.dataDir, file);
-        if (!rep) {
-          console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
-          return 1;
-        }
-        console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
-        console.log(rep.text);
-        return 0;
-      }
-      console.error(`unknown weekly subcommand: ${sub}`);
-      return 1;
-    }
-    case "logs": {
-      if (sub !== "cleanup") {
-        console.error("usage: logs cleanup [--dry-run]");
-        return 1;
-      }
-      const dry = rest.includes("--dry-run");
-      const envPulse = path2.join(paths.logsDir, "envpulse.jsonl");
-      const cut1 = policy.retention.envPulseHours * 36e5;
-      const cut2 = policy.retention.decisionLogDays * 864e5;
-      if (dry) {
-        console.log(`(dry-run) would prune ${envPulse} to ${policy.retention.envPulseHours}h and ${decisionLog} to ${policy.retention.decisionLogDays}d`);
-        return 0;
-      }
-      const a = pruneAuditFile(envPulse, cut1);
-      const b = pruneAuditFile(decisionLog, cut2);
-      appendAuditLine(decisionLog, { event: "retention", pruned_envpulse: a, pruned_decision: b });
-      console.log(`PRUNED envpulse:${a} decision:${b}`);
-      return 0;
-    }
-    case "browse": {
-      switch (sub) {
-        case "status": {
-          const st = browseStatus(guard, paths);
-          const interests = loadInterests(paths);
-          console.log(JSON.stringify({
-            watchTargets: loadWatchlist(paths).targets?.length ?? 0,
-            lastCheckAt: st.last_check_at ? new Date(st.last_check_at).toISOString() : null,
-            lastWanderAt: st.wander.last_wander_at ? new Date(st.wander.last_wander_at).toISOString() : null,
-            focusCount: st.wander.focusCount,
-            interestCount: interests.interests?.length ?? 0
-          }, null, 2));
-          return 0;
-        }
-        case "dry": {
-          const forced = /* @__PURE__ */ new Date();
-          forced.setHours(12, 0, 0, 0);
-          const advice = adviseWander(guard, paths, policy, forced);
-          console.log(JSON.stringify(advice, null, 2));
-          return 0;
-        }
-        case "watch": {
-          const report = await checkWatchlist(guard, paths, { throttleOk: true });
-          console.log(JSON.stringify({ checked: report.checked, updates: report.items.length, errors: report.errors }, null, 2));
-          for (const item of report.items) console.log(`NEWS: ${item.text}`);
-          return 0;
-        }
-        case "done": {
-          const focus = rest.join(" ").trim();
-          if (!focus) {
-            console.error("usage: browse done <focus>");
-            return 1;
-          }
-          const r = completeWander(guard, paths, focus);
-          console.log(JSON.stringify(r));
-          return 0;
-        }
-        default:
-          console.error(`unknown browse subcommand: ${sub}`);
-          return 1;
-      }
-    }
-    case "notify": {
-      switch (sub) {
-        case "check":
-          console.log(ensureRegistered(paths) ? "REGISTERED: yes" : "REGISTERED: no");
-          return 0;
-        case "register":
-          ensureRegistered(paths);
-          console.log("register attempted");
-          return 0;
-        case "send":
-          console.log(sendNewMessageHint(paths) ? "SENT" : "FAILED");
-          return 0;
-        default:
-          console.error("usage: notify check|register|send");
-          return 1;
-      }
-    }
-    case "profile": {
-      const doc = loadProfile(guard, profileFilePath(paths.dataDir));
-      const all = rest.includes("--all");
-      switch (sub) {
-        case "list": {
-          let n = 0;
-          for (const p of ["interest", "projects", "comm", "psy"]) {
-            for (const e of doc.partitions[p].entries) {
-              if (!all && e.validTo !== null) continue;
-              n += 1;
-              console.log(`${e.id} [${e.partition}/${e.topic}/${e.subTopic}] ${e.temporal} conf=${e.confidence.toFixed(2)}${e.lowActivity ? " \u4E45\u672A\u9A8C\u8BC1" : ""}${e.validTo ? " [\u5931\u6548]" : ""}: ${e.content.slice(0, 60)}`);
-            }
-          }
-          if (n === 0) console.log("(empty)");
-          return 0;
-        }
-        case "export": {
-          const lines = [`# \u753B\u50CF\u5BFC\u51FA ${(/* @__PURE__ */ new Date()).toISOString()}`, ""];
-          for (const p of ["interest", "projects", "comm", "psy"]) {
-            lines.push(`## ${p}`);
-            for (const e of doc.partitions[p].entries) {
-              if (e.validTo !== null) continue;
-              lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
-            }
-          }
-          const out = path2.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
-          writeText(guard, out, lines.join("\n") + "\n");
-          console.log(`EXPORTED: ${out}`);
-          return 0;
-        }
-        case "verify": {
-          const r = verifyProfile(guard, paths.dataDir);
-          console.log(JSON.stringify(r, null, 2));
-          return r.ok ? 0 : 1;
-        }
-        case "rebuild": {
-          const r = rebuildProfile(guard, paths.dataDir, { check: rest.includes("--check") });
-          console.log(JSON.stringify(r, null, 2));
-          return r.ok ? 0 : 1;
-        }
-        case "wipe": {
-          if (!rest.includes("--yes")) {
-            console.log("REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)");
-            return 1;
-          }
-          for (const f of ["profile.json", "profile_inbox.jsonl", "profile_journal.jsonl"]) {
-            const abs = guard.assert(path2.join(paths.dataDir, f));
-            if (fs2.existsSync(abs)) fs2.rmSync(abs, { force: true });
-          }
-          console.log("WIPED (settings preserved; use burn for full shredding)");
-          return 0;
-        }
-        case "snapshot": {
-          const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-ZBCSX67Y.js");
-          const { needed, lines } = snapshotDue(guard, paths.dataDir);
-          console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
-          if (!needed && !rest.includes("--force")) {
-            console.log("\u672A\u5230\u9608\u503C\uFF0C\u672A\u6267\u884C\uFF08\u52A0 --force \u5F3A\u5236\u6298\u53E0\uFF09\u3002");
-            return 0;
-          }
-          const report = snapshotProfile(guard, paths.dataDir);
-          if (!report.ok) {
-            console.log(`\u672A\u6267\u884C\uFF1A${report.reason}`);
-            return 0;
-          }
-          console.log(`\u5DF2\u6298\u53E0 ${report.folded} \u6761 \u2192 \u5FEB\u7167\uFF08baseline ${report.baselineTs}\uFF09\uFF0C\u5F52\u6863 ${report.archiveFile}\uFF0Clive journal \u5DF2\u6E05\u7A7A\u3002`);
-          console.log("verify/rebuild \u81EA\u52A8\u4ECE\u5FEB\u7167\u57FA\u70B9\u91CD\u653E\uFF0C\u65E0\u9700\u989D\u5916\u64CD\u4F5C\u3002");
-          return 0;
-        }
-        default:
-          console.error(`unknown profile subcommand: ${sub}`);
-          return 1;
-      }
-    }
-    case "burn": {
-      const yes = rest.includes("--yes");
-      const all = rest.includes("--all");
-      const plan = planBurn(guard, paths, all);
-      console.log("\u9884\u6F14\uFF08\u4E0D\u4F1A\u6267\u884C\uFF09:");
-      for (const p of plan) console.log(`  [${p.exists ? "\u5B58\u5728" : "\u65E0  "}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
-      if (!yes) {
-        console.log("\n\u6B64\u64CD\u4F5C\u4F1A\u8BA9\u5FC3\u8DF3 agent \u5931\u5FC6\u3002\u786E\u8BA4\u6267\u884C\u8BF7\u52A0 --yes\uFF08" + (all ? "\u542B --all \u8FDE\u7528\u6237\u8BBE\u5B9A" : "\u7528\u6237\u8BBE\u5B9A\u4FDD\u7559") + "\uFF09");
-        return 0;
-      }
-      const result = executeBurn(guard, paths, { all });
-      console.log(`BURNED: ${result.burned.length} \u9879\uFF1BMISSING: ${result.missing.length} \u9879`);
-      return 0;
-    }
-    case "migrate": {
-      if (sub === "export") {
-        const defaultOut = path2.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
-        const outfile = rest[0] ?? defaultOut;
-        let outCanon;
-        try {
-          outCanon = guard.assert(outfile);
-        } catch {
-          console.error(`\u5BFC\u51FA\u6587\u4EF6\u5FC5\u987B\u843D\u5728\u63D2\u4EF6 data/ \u76EE\u5F55\u5185\uFF08\u8DEF\u5F84\u5B88\u536B\u62D2\u7EDD\uFF09\uFF1A${outfile}
-\u9ED8\u8BA4\u4F4D\u7F6E\uFF1A${defaultOut}`);
-          return 1;
-        }
-        const [pw1, pw2] = await readLines(["\u8BBE\u7F6E\u53E3\u4EE4\uFF08\u7528\u4E8E\u52A0\u5BC6\u8FC1\u79FB\u5305\uFF09: ", "\u518D\u8F93\u5165\u4E00\u6B21\u786E\u8BA4: "]);
-        if (!pw1 || pw1 !== pw2) {
-          console.error("\u4E24\u6B21\u8F93\u5165\u4E0D\u4E00\u81F4\u6216\u4E3A\u7A7A\uFF0C\u5DF2\u53D6\u6D88\u3002");
-          return 1;
-        }
-        const { entries, progress } = collectMigrationEntries(guard, paths);
-        if (entries.length === 0) {
-          console.log("\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09\u3002");
-          return 1;
-        }
-        fs2.mkdirSync(path2.dirname(outCanon), { recursive: true });
-        fs2.writeFileSync(outCanon, encryptContainer(entries, pw1), "utf8");
-        console.log(`\u5DF2\u6253\u5305 ${entries.length} \u4E2A\u6587\u4EF6 \u2192 ${outCanon}`);
-        console.log(`  \u6253\u5305\uFF1A${progress.packed.join(", ")}`);
-        if (progress.missing.length > 0) console.log(`  \u8DF3\u8FC7\uFF08\u4E0D\u5B58\u5728\uFF09\uFF1A${progress.missing.join(", ")}`);
-        console.log("\u5BB9\u5668\u662F\u53E3\u4EE4\u52A0\u5BC6\u7684\uFF0C\u53EF\u5B89\u5168\u62F7\u8D1D\u5230\u65B0\u673A\u5668\uFF1BDPAPI \u4F1A\u5728\u5BFC\u5165\u65F6\u7528\u65B0\u673A\u5668\u91CD\u65B0\u52A0\u5BC6\u3002");
-        return 0;
-      }
-      if (sub === "import") {
-        const infile = rest[0];
-        if (!infile) {
-          console.error("usage: migrate import <container-file>");
-          return 1;
-        }
-        const [pw] = await readLines(["\u8F93\u5165\u8FC1\u79FB\u5305\u53E3\u4EE4: "]);
-        let text;
-        try {
-          text = fs2.readFileSync(infile, "utf8");
-        } catch {
-          console.error(`\u8BFB\u4E0D\u5230\u8FC1\u79FB\u5305\uFF1A${infile}`);
-          return 1;
-        }
-        let files;
-        try {
-          files = decryptContainer(text, pw ?? "");
-        } catch (e) {
-          console.error(String(e instanceof Error ? e.message : e));
-          return 1;
-        }
-        const result = applyMigrationEntries(guard, paths, files.files);
-        console.log(`\u6062\u590D ${result.restored.length} \u4E2A\u6587\u4EF6\uFF1B\u5907\u4EFD ${result.backedUp.length} \u4E2A\u88AB\u8986\u76D6\u6587\u4EF6\uFF1B\u8DF3\u8FC7 ${result.skipped.length} \u4E2A\u3002`);
-        for (const r of result.restored) console.log(`  \u6062\u590D: ${r}`);
-        for (const b of result.backedUp) console.log(`  \u5907\u4EFD: ${b}.bak-migrate-*`);
-        if (result.skipped.length > 0) console.log(`  \u8DF3\u8FC7: ${result.skipped.join(", ")}`);
-        console.log("\u91CD\u542F DSH \u540E\u751F\u6548\u3002");
-        return 0;
-      }
-      console.error(`unknown migrate subcommand: ${sub}`);
-      return 1;
-    }
-    case "sessions": {
-      const root = path2.join(os.homedir(), ".dsh", "sessions");
-      let found = 0;
-      if (fs2.existsSync(root)) {
-        let own = null;
-        try {
-          own = JSON.parse(loadEncryptedText(guard, path2.join(paths.dataDir, "gate.json")) ?? "{}").sessionId ?? null;
-        } catch {
-        }
-        for (const slug of fs2.readdirSync(root)) {
-          for (const id of fs2.readdirSync(path2.join(root, slug))) {
-            found += 1;
-            const mark = id === own ? "  \u2190 \u5FC3\u8DF3\u6B63\u8EAB" : "";
-            console.log(`${id}  [${slug}]${mark}`);
-          }
-        }
-      }
-      if (found === 0) console.log("(no persisted sessions found)");
-      return 0;
-    }
-    case "bind": {
-      const { loadBindings, addBinding, removeBinding, bindingsFilePath } = await import("../bindings-XPPSKILN.js");
-      switch (sub) {
-        case "list": {
-          const data = loadBindings(guard, paths.settingsDir);
-          let own = null;
-          try {
-            own = JSON.parse(loadEncryptedText(guard, path2.join(paths.dataDir, "gate.json")) ?? "{}").sessionId ?? null;
-          } catch {
-          }
-          if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
-          for (const b of data.bindings) {
-            console.log(`${b.sessionId}  deliver:${b.deliver ? "\u221A" : "\xD7"} observe:${b.observe ? "\u221A" : "\xD7"}`);
-          }
-          if (data.bindings.length === 0 && !own) console.log("(no bindings \u2014 expressions stay in the dedicated heartbeat session)");
-          return 0;
-        }
-        case "add": {
-          const id = rest[0];
-          if (!id || !id.startsWith("session-")) {
-            console.error("usage: bind add <sessionId> [--observe] [--no-deliver]  (see: sessions list)");
-            return 1;
-          }
-          const observe = rest.includes("--observe") || rest.includes("--observe-only");
-          const deliver = !rest.includes("--no-deliver") && !rest.includes("--observe-only");
-          const b = addBinding(guard, paths.settingsDir, id, { deliver, observe });
-          console.log(`BOUND ${b.sessionId} deliver:${b.deliver} observe:${b.observe}`);
-          return 0;
-        }
-        case "remove": {
-          const id = rest[0];
-          if (!id) {
-            console.error("usage: bind remove <sessionId>");
-            return 1;
-          }
-          console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-          try {
-            const state = JSON.parse(loadEncryptedText(guard, path2.join(paths.dataDir, "gate.json")) ?? "{}");
-            if (state.sessionId === id) {
-              fs2.rmSync(guard.assert(path2.join(paths.dataDir, "gate.json")), { force: true });
-              console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
-              appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "home_reset", oldSessionId: id });
-            }
-          } catch {
-          }
-          return 0;
-        }
-        default:
-          console.error("usage: bind list | add <sessionId> | remove <sessionId>");
-          return 1;
-      }
-    }
-    case "preset": {
-      const id = flag(argv, "--id") ?? BUNDLED_PRESET_ID;
-      const root = conventionalUserPresetRoot();
-      const status = presetStatus(import.meta.url, id, root);
-      if (sub === void 0 || sub === "status") {
-        console.log(`preset id   : ${status.id}`);
-        console.log(`installed   : ${status.installed ? "yes" : "no"}`);
-        console.log(`target dir  : ${status.dir}`);
-        console.log(`bundled at  : ${status.bundledDir ?? "(not found next to the plugin)"}`);
-        if (status.installed) {
-          console.log(
-            `composition : ${status.compositionMatches ? "matches the bundled template" : "differs from the bundled template (hand-edited, or an older version)"}`
-          );
-        }
-        if (!status.installed) {
-          console.log("hint: the plugin installs this itself on the next DSH start (installPreset=true, default);");
-          console.log("      or run `preset install` now.");
-        }
-        return status.installed ? 0 : 1;
-      }
-      if (sub === "install") {
-        const result = installBundledPreset({
-          moduleUrl: import.meta.url,
-          id,
-          root,
-          force: rest.includes("--force")
-        });
-        console.log(describeInstall(result));
-        return result.action === "error" ? 1 : 0;
-      }
-      console.error("usage: preset status | install [--force] [--id <presetId>]");
-      return 1;
-    }
-    default:
-      console.error(`unknown command: ${cmd}`);
-      console.log(usage());
-      return 1;
-  }
+  return verb({
+    paths,
+    guard,
+    policy,
+    sub,
+    rest,
+    argv,
+    seedsFile: seedsFilePath(paths.dataDir),
+    ledgerFile: ledgerFilePath(paths.dataDir),
+    decisionLog,
+    seedAudit
+  });
 }
 if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, "/")}`).href) {
   void main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
+  }).catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
   });
 }
 export {

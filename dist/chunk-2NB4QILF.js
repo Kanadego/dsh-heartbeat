@@ -2,7 +2,7 @@ import {
   isEncrypted,
   loadEncryptedText,
   saveEncryptedText
-} from "./chunk-IFTFDHZX.js";
+} from "./chunk-7TW6DD6Q.js";
 
 // src/vault/migrate.ts
 import fs from "fs";
@@ -139,6 +139,7 @@ function applyMigrationEntries(guard, paths, files, now = Date.now()) {
   const backedUp = [];
   const skipped = [];
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const staged = [];
   for (const f of files) {
     const rel = String(f.path ?? "");
     if (!rel || rel.includes("..") || path.isAbsolute(rel)) {
@@ -153,16 +154,53 @@ function applyMigrationEntries(guard, paths, files, now = Date.now()) {
       skipped.push(rel);
       continue;
     }
-    fs.mkdirSync(path.dirname(absCanon), { recursive: true });
-    if (fs.existsSync(absCanon)) {
-      fs.copyFileSync(absCanon, `${absCanon}.bak-migrate-${stamp}`);
-      backedUp.push(rel);
+    const incoming = `${absCanon}.incoming-${stamp}`;
+    try {
+      fs.mkdirSync(path.dirname(absCanon), { recursive: true });
+      if (f.encrypted) saveEncryptedText(guard, incoming, f.content);
+      else fs.writeFileSync(incoming, f.content, "utf8");
+      staged.push({ rel, abs: absCanon, incoming });
+    } catch {
+      skipped.push(rel);
+      try {
+        fs.rmSync(incoming, { force: true });
+      } catch {
+      }
     }
-    if (f.encrypted) saveEncryptedText(guard, absCanon, f.content);
-    else fs.writeFileSync(absCanon, f.content, "utf8");
-    restored.push(rel);
   }
-  return { restored, backedUp, skipped };
+  const committed = [];
+  try {
+    for (const s of staged) {
+      let backup = null;
+      if (fs.existsSync(s.abs)) {
+        backup = `${s.abs}.bak-migrate-${stamp}`;
+        fs.copyFileSync(s.abs, backup);
+        backedUp.push(s.rel);
+      }
+      fs.renameSync(s.incoming, s.abs);
+      committed.push({ rel: s.rel, abs: s.abs, backup });
+      restored.push(s.rel);
+    }
+    return { restored, backedUp, skipped };
+  } catch (e) {
+    const rolledBack = [];
+    for (const c of committed.reverse()) {
+      try {
+        if (c.backup) fs.renameSync(c.backup, c.abs);
+        else fs.rmSync(c.abs, { force: true });
+        rolledBack.push(c.rel);
+      } catch {
+      }
+    }
+    for (const s of staged) {
+      if (committed.some((c) => c.abs === s.abs)) continue;
+      try {
+        fs.rmSync(s.incoming, { force: true });
+      } catch {
+      }
+    }
+    return { restored: [], backedUp, skipped, rolledBack, error: String(e) };
+  }
 }
 
 export {
@@ -174,4 +212,4 @@ export {
   decryptContainer,
   applyMigrationEntries
 };
-//# sourceMappingURL=chunk-IPOZFZPY.js.map
+//# sourceMappingURL=chunk-2NB4QILF.js.map

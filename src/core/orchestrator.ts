@@ -516,7 +516,7 @@ function unwrapHomeHandle(handle: unknown): HostAgent {
  *  promise that had resolved to a dead handle was reused forever, which
  *  surfaced as "the heartbeat simply stopped" with nothing in the log. Probe
  *  cheaply and drop the cache when the probe fails. */
-function agentLooksAlive(agent: HostAgent | null | undefined): boolean {
+export function agentLooksAlive(agent: HostAgent | null | undefined): boolean {
   if (!agent) return false;
   const probe = agent as unknown as { disposed?: unknown };
   if (probe.disposed === true) return false;
@@ -744,7 +744,7 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
  * brace-bounded candidate (left edge ascending, right edge descending) and take
  * the first slice that parses — a naive first-`{`-to-last-`}` slice spans two
  * objects and throws. */
-function parseJsonBlock(raw: string): unknown {
+export function parseJsonBlock(raw: string): unknown {
   const text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
     for (let end = text.lastIndexOf('}'); end > start; end = text.lastIndexOf('}', end - 1)) {
@@ -828,7 +828,7 @@ async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | n
  */
 interface CursorFile { version: 2; sessions: Record<string, number> }
 
-function loadCursors(file: string): { sessions: Record<string, number>; discardedLegacy: boolean } {
+export function loadCursors(file: string): { sessions: Record<string, number>; discardedLegacy: boolean } {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; sessions?: unknown };
     if (raw?.version === 2 && raw.sessions && typeof raw.sessions === 'object') {
@@ -849,7 +849,7 @@ function loadCursors(file: string): { sessions: Record<string, number>; discarde
  * line carrying Chinese — the target agent's turn may end on a tool call, so
  * the sentence she actually spoke sits further up.
  */
-function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
+export function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
   const lines = raw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
     .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
   const cnLine = [...lines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
@@ -863,7 +863,7 @@ function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
  * session, so the timeout path must not be reported as a plain failure — it
  * looks for Chinese assistant text appended past `fromSeq` instead.
  */
-function spokeTextSince(session: HostSession | undefined, fromSeq: number): string | null {
+export function spokeTextSince(session: HostSession | undefined, fromSeq: number): string | null {
   for (const e of sessionEvents(session, fromSeq)) {
     if (typeof e.type !== 'string' || !e.type.startsWith('assistant/')) continue;
     const d = e.data as {
