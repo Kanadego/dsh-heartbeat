@@ -103,13 +103,24 @@ test('inbox: append/count/drain/clear with note truncation and dedupe key', () =
   assert.equal(inboxCount(guard, inboxFile()), 0);
 });
 
+test('H-16: inboxAppend is idempotent on kind+ref', () => {
+  const a = inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: 'same', note: 'first' });
+  const b = inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'y', ref: 'same', note: 'second' });
+  assert.equal(b.note, 'first'); // the entry already on disk wins
+  assert.equal(a.note, 'first');
+  assert.equal(inboxCount(guard, inboxFile()), 1);
+});
+
 test('inbox health check counts corrupt and duplicate lines', async () => {
   inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: 'r1', note: 'a' });
-  inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: 'r1', note: 'b' }); // duplicate key
-  // inject a corrupt line through the ENCRYPTED channel (file is DPAPI at rest)
+  // H-16 made inboxAppend idempotent on kind+ref, so a duplicate line can only
+  // be injected by hand now — which is exactly the shape the health check is
+  // there to detect (a file written by an older build, or a half-torn write).
   const { loadEncryptedText, saveEncryptedText } = await import('../src/vault/vault.js');
   const raw = loadEncryptedText(guard, inboxFile()) ?? '';
-  saveEncryptedText(guard, inboxFile(), raw + '{broken\n');
+  const dup = JSON.stringify({ kind: 'chat', at: 'x', ref: 'r1', note: 'b' });
+  // the corrupt line goes through the ENCRYPTED channel (file is DPAPI at rest)
+  saveEncryptedText(guard, inboxFile(), raw + dup + '\n' + '{broken\n');
   const health = inboxHealthCheck(guard, inboxFile());
   assert.equal(health.total, 2);
   assert.equal(health.duplicates, 1);

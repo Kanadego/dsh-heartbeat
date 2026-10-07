@@ -192,15 +192,31 @@ export interface MigrateImportResult {
   restored: string[];
   backedUp: string[];
   skipped: string[];
+  /** H-21: files put back from their backups after a failed commit phase. */
+  rolledBack?: string[];
+  /** H-21: set when the commit phase failed and the import was rolled back. */
+  error?: string;
 }
 
-/** Restore entries into the local dataDir, re-encrypting DPAPI files with the
- * LOCAL machine key. Existing files are copied aside first. */
+/**
+ * Restore entries into the local dataDir, re-encrypting DPAPI files with the
+ * LOCAL machine key.
+ *
+ * H-21: this used to be a per-file "back up, then overwrite" loop with no
+ * pre-flight and no rollback — a failure halfway through left a mixed memory
+ * (a new `profile.json` next to a stale `profile_journal.jsonl`). Now it runs
+ * in two phases: stage every entry next to its target (nothing visible changes
+ * yet, and a staging failure only skips that entry), then commit each one by
+ * rename. A commit failure rolls the already-committed files back from their
+ * backups, so the import is all-or-nothing apart from entries that never
+ * staged.
+ */
 export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, files: MigrateEntry[], now = Date.now()): MigrateImportResult {
   const restored: string[] = [];
   const backedUp: string[] = [];
   const skipped: string[] = [];
   const stamp = new Date(now).toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const staged: Array<{ rel: string; abs: string; incoming: string }> = [];
   for (const f of files) {
     const rel = String(f.path ?? '');
     // String-level rejection BEFORE the path is resolved: the guard's realpath
@@ -218,14 +234,56 @@ export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, f
       skipped.push(rel); // path refused by the guard — never write it
       continue;
     }
-    fs.mkdirSync(path.dirname(absCanon), { recursive: true });
-    if (fs.existsSync(absCanon)) {
-      fs.copyFileSync(absCanon, `${absCanon}.bak-migrate-${stamp}`);
-      backedUp.push(rel);
+    const incoming = `${absCanon}.incoming-${stamp}`;
+    try {
+      fs.mkdirSync(path.dirname(absCanon), { recursive: true });
+      if (f.encrypted) saveEncryptedText(guard, incoming, f.content);
+      else fs.writeFileSync(incoming, f.content, 'utf8');
+      staged.push({ rel, abs: absCanon, incoming });
+    } catch {
+      skipped.push(rel);
+      try {
+        fs.rmSync(incoming, { force: true });
+      } catch {
+        /* nothing staged */
+      }
     }
-    if (f.encrypted) saveEncryptedText(guard, absCanon, f.content);
-    else fs.writeFileSync(absCanon, f.content, 'utf8');
-    restored.push(rel);
   }
-  return { restored, backedUp, skipped };
+  const committed: Array<{ rel: string; abs: string; backup: string | null }> = [];
+  try {
+    for (const s of staged) {
+      let backup: string | null = null;
+      if (fs.existsSync(s.abs)) {
+        backup = `${s.abs}.bak-migrate-${stamp}`;
+        fs.copyFileSync(s.abs, backup);
+        backedUp.push(s.rel);
+      }
+      fs.renameSync(s.incoming, s.abs);
+      committed.push({ rel: s.rel, abs: s.abs, backup });
+      restored.push(s.rel);
+    }
+    return { restored, backedUp, skipped };
+  } catch (e) {
+    // Roll back so the dataDir never holds a half-migrated mix; staged files
+    // that were never committed are simply dropped.
+    const rolledBack: string[] = [];
+    for (const c of committed.reverse()) {
+      try {
+        if (c.backup) fs.renameSync(c.backup, c.abs);
+        else fs.rmSync(c.abs, { force: true });
+        rolledBack.push(c.rel);
+      } catch {
+        /* best effort — the backup file itself is still on disk */
+      }
+    }
+    for (const s of staged) {
+      if (committed.some((c) => c.abs === s.abs)) continue;
+      try {
+        fs.rmSync(s.incoming, { force: true });
+      } catch {
+        /* already gone */
+      }
+    }
+    return { restored: [], backedUp, skipped, rolledBack, error: String(e) };
+  }
 }

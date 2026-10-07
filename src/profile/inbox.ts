@@ -7,6 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
+import { withFileLock } from '../core/file-lock.js';
 import type { InboxItem } from './types.js';
 
 const MAX_NOTE_CHARS = 120;
@@ -25,6 +26,17 @@ export function inboxAppend(
   file: string,
   item: Omit<InboxItem, 'id'> & { id?: string },
 ): InboxItem {
+  // H-20 (minimal tier): the append is a whole-file encrypted rewrite, so it
+  // needs the same cross-process lock the pool uses — the CLI can be draining
+  // or writing the same file while a beat appends.
+  return withFileLock(file, () => inboxAppendLocked(guard, file, item));
+}
+
+function inboxAppendLocked(
+  guard: PathGuard,
+  file: string,
+  item: Omit<InboxItem, 'id'> & { id?: string },
+): InboxItem {
   const full: InboxItem = {
     id: item.id ?? randomUUID().slice(0, 8),
     kind: item.kind,
@@ -33,6 +45,21 @@ export function inboxAppend(
     note: truncateNote(item.note),
   };
   const prev = loadEncryptedText(guard, file) ?? '';
+  // H-16 (minimal tier): this file is a whole-file encrypted rewrite, so a
+  // repeated observation used to cost a full decrypt + encrypt + write for a
+  // duplicate row. The §3.7 dedupe key is kind+ref — if that row is already
+  // queued, hand it back instead of appending a second copy. (A stalled cursor
+  // used to grow the queue here and rely on the consumer's dedupeItems.)
+  for (const line of prev.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const existing = JSON.parse(trimmed) as InboxItem;
+      if (existing.kind === full.kind && existing.ref === full.ref) return existing;
+    } catch {
+      // corrupt line: ignore (the queue is re-derivable from its sources)
+    }
+  }
   saveEncryptedText(guard, file, prev + JSON.stringify(full) + '\n');
   return full;
 }
