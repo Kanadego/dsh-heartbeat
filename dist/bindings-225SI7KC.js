@@ -6,7 +6,8 @@ import {
   observeTargets,
   removeBinding,
   saveBindings
-} from "./chunk-J6ZTRFFW.js";
+} from "./chunk-TY6UP74X.js";
+import "./chunk-WRUTATW4.js";
 export {
   addBinding,
   bindingsFilePath,
@@ -16,4 +17,4 @@ export {
   removeBinding,
   saveBindings
 };
-//# sourceMappingURL=bindings-XPPSKILN.js.map
+//# sourceMappingURL=bindings-225SI7KC.js.map

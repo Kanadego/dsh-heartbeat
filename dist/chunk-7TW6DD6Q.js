@@ -1,3 +1,7 @@
+import {
+  burnFileSync
+} from "./chunk-WRUTATW4.js";
+
 // src/core/paths.ts
 import fs from "fs";
 import path from "path";
@@ -107,7 +111,7 @@ function loadJson(guard, file) {
     runVault(guard, ["unprotect", "-InFile", f, "-OutFile", tmp]);
     return JSON.parse(fs2.readFileSync(tmp, "utf8"));
   } finally {
-    fs2.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 function saveJson(guard, file, value) {
@@ -120,7 +124,7 @@ function saveJson(guard, file, value) {
     runVault(guard, ["protect", "-InFile", plain, "-OutFile", enc]);
     fs2.renameSync(enc, f);
   } finally {
-    fs2.rmSync(plain, { force: true });
+    burnFileSync(plain);
     fs2.rmSync(enc, { force: true });
   }
 }
@@ -140,7 +144,7 @@ function writeText(guard, file, content) {
     fs2.writeFileSync(tmp, content, "utf8");
     fs2.renameSync(tmp, f);
   } finally {
-    fs2.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 function loadEncryptedText(guard, file) {
@@ -152,7 +156,7 @@ function loadEncryptedText(guard, file) {
     runVault(guard, ["unprotect", "-InFile", f, "-OutFile", tmp]);
     return fs2.readFileSync(tmp, "utf8");
   } finally {
-    fs2.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 function saveEncryptedText(guard, file, content) {
@@ -165,7 +169,7 @@ function saveEncryptedText(guard, file, content) {
     runVault(guard, ["protect", "-InFile", plain, "-OutFile", enc]);
     fs2.renameSync(enc, f);
   } finally {
-    fs2.rmSync(plain, { force: true });
+    burnFileSync(plain);
     fs2.rmSync(enc, { force: true });
   }
 }
@@ -190,6 +194,7 @@ function decryptFile(guard, inFile, outFile) {
 
 export {
   initWorkspace,
+  workspace,
   isEncrypted,
   loadJson,
   saveJson,
@@ -200,4 +205,4 @@ export {
   encryptFile,
   decryptFile
 };
-//# sourceMappingURL=chunk-IFTFDHZX.js.map
+//# sourceMappingURL=chunk-7TW6DD6Q.js.map

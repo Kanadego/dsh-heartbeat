@@ -3,55 +3,28 @@ import {
   readText,
   saveJson,
   writeText
-} from "./chunk-IFTFDHZX.js";
+} from "./chunk-7TW6DD6Q.js";
+import {
+  atomicWriteFileSync
+} from "./chunk-WRUTATW4.js";
 
 // src/core/audit-log.ts
-import fs2 from "fs";
-import path2 from "path";
-
-// src/core/atomic-fs.ts
 import fs from "fs";
 import path from "path";
-import { randomUUID, randomFillSync } from "crypto";
-function tmpSibling(target, tag = "w") {
-  return path.join(
-    path.dirname(target),
-    `.${path.basename(target)}.${tag}-${randomUUID().slice(0, 8)}.tmp`
-  );
-}
-function atomicWriteFileSync(target, data) {
-  const tmp = tmpSibling(target);
-  try {
-    fs.writeFileSync(tmp, data);
-    fs.renameSync(tmp, target);
-  } finally {
-    fs.rmSync(tmp, { force: true });
-  }
-}
-function atomicWriteJsonSync(target, value) {
-  atomicWriteFileSync(target, JSON.stringify(value, null, 2));
-}
-function shredFileSync(target, passes = 3) {
-  const stat = fs.statSync(target);
-  if (!stat.isFile()) throw new Error(`shred: not a file: ${target}`);
-  const buf = Buffer.alloc(Math.max(stat.size, 1));
-  for (let i = 0; i < passes; i++) {
-    randomFillSync(buf);
-    fs.writeFileSync(target, buf);
-  }
-  fs.rmSync(target, { force: true });
-}
-
-// src/core/audit-log.ts
 function appendAuditLine(file, event) {
-  fs2.mkdirSync(path2.dirname(file), { recursive: true });
-  const line = JSON.stringify({ ts: event.ts ?? (/* @__PURE__ */ new Date()).toISOString(), ...event });
-  fs2.appendFileSync(file, line + "\n", "utf8");
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const line = JSON.stringify({ ts: event.ts ?? (/* @__PURE__ */ new Date()).toISOString(), ...event });
+    fs.appendFileSync(file, line + "\n", "utf8");
+  } catch (e) {
+    process.stderr.write(`[heartbeat] audit append failed: ${file}: ${String(e)}
+`);
+  }
 }
 function readAuditLines(file) {
-  if (!fs2.existsSync(file)) return [];
+  if (!fs.existsSync(file)) return [];
   const out = [];
-  const raw = fs2.readFileSync(file, "utf8");
+  const raw = fs.readFileSync(file, "utf8");
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -64,7 +37,7 @@ function readAuditLines(file) {
   return out;
 }
 function pruneAuditFile(file, maxAgeMs, now = Date.now()) {
-  if (!fs2.existsSync(file)) return 0;
+  if (!fs.existsSync(file)) return 0;
   const lines = readAuditLines(file);
   const kept = lines.filter((e) => {
     const ev = e;
@@ -80,9 +53,9 @@ function pruneAuditFile(file, maxAgeMs, now = Date.now()) {
 }
 
 // src/profile/store.ts
-import path4 from "path";
-import { randomUUID as randomUUID2 } from "crypto";
-import fs4 from "fs";
+import path3 from "path";
+import { randomUUID } from "crypto";
+import fs3 from "fs";
 
 // src/profile/types.ts
 var PARTITIONS = ["interest", "projects", "comm", "psy"];
@@ -101,18 +74,34 @@ function emptyProfile() {
 }
 
 // src/profile/schema.ts
-import fs3 from "fs";
-import path3 from "path";
+import fs2 from "fs";
+import path2 from "path";
 function loadProfileSchema(paths) {
-  const userPath = path3.join(paths.settingsDir, "profile-schema.json");
-  const file = fs3.existsSync(userPath) ? userPath : path3.join(paths.configDir, "profile-schema.json");
-  try {
-    const raw = JSON.parse(fs3.readFileSync(file, "utf8"));
-    if (!raw.partitions) throw new Error("partitions missing");
-    return raw;
-  } catch (e) {
-    throw new Error(`profile-schema unreadable at ${file}: ${String(e)}`);
+  const userPath = path2.join(paths.settingsDir, "profile-schema.json");
+  const factoryPath = path2.join(paths.configDir, "profile-schema.json");
+  const read = (file) => {
+    try {
+      const raw = JSON.parse(fs2.readFileSync(file, "utf8"));
+      if (!raw.partitions) return { error: "partitions missing" };
+      return { schema: raw, error: "" };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  };
+  const user = fs2.existsSync(userPath) ? read(userPath) : null;
+  if (user?.schema) return { schema: user.schema, source: "user" };
+  const factory = read(factoryPath);
+  if (factory.schema) {
+    return user ? {
+      schema: factory.schema,
+      source: "factory",
+      fallbackReason: `user profile-schema.json unusable (${user.error}) \u2014 fell back to the factory copy`
+    } : { schema: factory.schema, source: "factory" };
   }
+  return {
+    source: "none",
+    fallbackReason: `no usable profile-schema.json (user: ${user?.error ?? "absent"}; factory: ${factory.error})`
+  };
 }
 function checkAddAgainstSchema(schema, partition, topic, subTopic, nominated) {
   const p = schema.partitions[partition];
@@ -137,15 +126,15 @@ function checkAddAgainstSchema(schema, partition, topic, subTopic, nominated) {
 // src/profile/store.ts
 var DAY_MS = 864e5;
 function profileFilePath(dataDir) {
-  return path4.join(dataDir, "profile.json");
+  return path3.join(dataDir, "profile.json");
 }
 function journalFilePath(dataDir) {
-  return path4.join(dataDir, "profile_journal.jsonl");
+  return path3.join(dataDir, "profile_journal.jsonl");
 }
 var SNAPSHOT_FILE = "profile_snapshot.json";
 var ARCHIVE_PREFIX = "profile_journal.archive-";
 function snapshotFilePath(dataDir) {
-  return path4.join(dataDir, SNAPSHOT_FILE);
+  return path3.join(dataDir, SNAPSHOT_FILE);
 }
 function loadSnapshot(guard, dataDir) {
   const snap = loadJson(guard, snapshotFilePath(dataDir));
@@ -154,7 +143,7 @@ function loadSnapshot(guard, dataDir) {
 }
 function listArchiveFiles(guard, dataDir) {
   try {
-    return fs4.readdirSync(guard.assert(dataDir)).filter((f) => f.startsWith(ARCHIVE_PREFIX) && f.endsWith(".jsonl")).sort();
+    return fs3.readdirSync(guard.assert(dataDir)).filter((f) => f.startsWith(ARCHIVE_PREFIX) && f.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -185,13 +174,24 @@ function replayJournal(guard, dataDir) {
   const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, isLive: false };
   for (const file of listArchiveFiles(guard, dataDir)) {
     try {
-      replayText(doc, fs4.readFileSync(path4.join(dataDir, file), "utf8"), baselineTs, { records: 0, truncatedTail: 0, isLive: false });
+      replayText(doc, fs3.readFileSync(path3.join(dataDir, file), "utf8"), baselineTs, { records: 0, truncatedTail: 0, isLive: false });
     } catch {
     }
   }
   stats.isLive = true;
   replayText(doc, readText(guard, journalFilePath(dataDir), ""), baselineTs, stats);
   return { doc, truncatedTail: stats.truncatedTail, records: stats.records };
+}
+function readJournalTexts(guard, dataDir) {
+  const texts = [];
+  for (const file of listArchiveFiles(guard, dataDir)) {
+    try {
+      texts.push(fs3.readFileSync(path3.join(dataDir, file), "utf8"));
+    } catch {
+    }
+  }
+  texts.push(readText(guard, journalFilePath(dataDir), ""));
+  return texts;
 }
 function loadProfile(guard, file) {
   const doc = loadJson(guard, file);
@@ -208,9 +208,9 @@ function parseIso(v) {
 function refExists(guard, dataDir, ref) {
   const base = ref.split("#")[0] ?? "";
   if (!base) return false;
-  const target = path4.join(dataDir, base);
+  const target = path3.join(dataDir, base);
   try {
-    return fs4.existsSync(guard.assert(target));
+    return fs3.existsSync(guard.assert(target));
   } catch {
     return false;
   }
@@ -240,10 +240,19 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
         rejected.push({ op, reason: "psy partition is disabled" });
         continue;
       }
-      const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
-      if (!check.ok) {
-        rejected.push({ op, reason: check.reason });
+      let temporal = "stable";
+      if (schema) {
+        const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
+        if (!check.ok) {
+          rejected.push({ op, reason: check.reason });
+          continue;
+        }
+        temporal = check.temporal;
+      } else if (!(op.partition in doc.partitions)) {
+        rejected.push({ op, reason: `unknown partition: ${op.partition}` });
         continue;
+      } else {
+        temporal = op.temporal === "volatile" ? "volatile" : "stable";
       }
       if (!op.evidence || op.evidence.length === 0) {
         rejected.push({ op, reason: "ADD without evidence (no provenance, axiom 1)" });
@@ -262,13 +271,13 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
       }
       dbSeq += 1;
       const entry = {
-        id: `p${dbSeq.toString(36)}${randomUUID2().slice(0, 4)}`,
+        id: `p${dbSeq.toString(36)}${randomUUID().slice(0, 4)}`,
         partition: op.partition,
         topic: op.topic,
         subTopic: op.subTopic,
         content: op.content.trim(),
         confidence: Math.min(op.confidence ?? cap, cap),
-        temporal: check.temporal,
+        temporal,
         validFrom: nowIso,
         validTo: null,
         supersededBy: null,
@@ -357,17 +366,17 @@ function persistWithJournal(guard, dataDir, doc, record) {
   const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record });
   const journal = journalFilePath(dataDir);
   try {
-    fs4.appendFileSync(guard.assert(journal), line + "\n", "utf8");
+    fs3.appendFileSync(guard.assert(journal), line + "\n", "utf8");
   } catch {
-    fs4.mkdirSync(dataDir, { recursive: true });
-    fs4.appendFileSync(guard.assert(journal), line + "\n", "utf8");
+    fs3.mkdirSync(dataDir, { recursive: true });
+    fs3.appendFileSync(guard.assert(journal), line + "\n", "utf8");
   }
 }
 function applyOpPermissive(doc, op, ts) {
   if (op.op === "ADD") {
     dbSeq += 1;
     doc.partitions[op.partition].entries.push({
-      id: op.assignedId ?? `r${dbSeq.toString(36)}${randomUUID2().slice(0, 4)}`,
+      id: op.assignedId ?? `r${dbSeq.toString(36)}${randomUUID().slice(0, 4)}`,
       partition: op.partition,
       topic: op.topic,
       subTopic: op.subTopic,
@@ -442,7 +451,7 @@ function rebuildProfile(guard, dataDir, opts = {}) {
   if (replayed.truncatedTail > 0) {
     writeText(
       guard,
-      path4.join(dataDir, "logs", "rebuild-report.txt"),
+      path3.join(dataDir, "logs", "rebuild-report.txt"),
       `rebuild truncated ${replayed.truncatedTail} torn line(s) at journal tail; ${replayed.records} records applied
 `
     );
@@ -451,8 +460,6 @@ function rebuildProfile(guard, dataDir, opts = {}) {
 }
 
 export {
-  atomicWriteJsonSync,
-  shredFileSync,
   appendAuditLine,
   readAuditLines,
   pruneAuditFile,
@@ -462,6 +469,7 @@ export {
   ARCHIVE_PREFIX,
   snapshotFilePath,
   replayJournal,
+  readJournalTexts,
   loadProfile,
   applyOpsToDoc,
   runDeterministicAging,
@@ -469,4 +477,4 @@ export {
   verifyProfile,
   rebuildProfile
 };
-//# sourceMappingURL=chunk-VIZNIQLK.js.map
+//# sourceMappingURL=chunk-OYVNWB5G.js.map

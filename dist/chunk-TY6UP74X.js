@@ -1,3 +1,7 @@
+import {
+  atomicWriteFileSync
+} from "./chunk-WRUTATW4.js";
+
 // src/core/bindings.ts
 import fs from "fs";
 import path from "path";
@@ -16,7 +20,7 @@ function loadBindings(guard, settingsDir) {
 function saveBindings(guard, settingsDir, data) {
   const file = guard.assert(bindingsFilePath(settingsDir));
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  atomicWriteFileSync(file, JSON.stringify(data, null, 2));
 }
 function addBinding(guard, settingsDir, sessionId, opts = {}) {
   const data = loadBindings(guard, settingsDir);
@@ -61,4 +65,4 @@ export {
   deliverTargets,
   observeTargets
 };
-//# sourceMappingURL=chunk-J6ZTRFFW.js.map
+//# sourceMappingURL=chunk-TY6UP74X.js.map
