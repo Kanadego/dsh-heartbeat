@@ -183,7 +183,7 @@ export function applyOpsToDoc(
   dataDir: string,
   doc: ProfileDoc,
   ops: ProfileOp[],
-  schema: ProfileSchema,
+  schema: ProfileSchema | undefined,
   policy: Policy,
   now: number,
 ): ApplyReport {
@@ -201,10 +201,20 @@ export function applyOpsToDoc(
         rejected.push({ op, reason: 'psy partition is disabled' });
         continue;
       }
-      const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
-      if (!check.ok) {
-        rejected.push({ op, reason: check.reason! });
+      let temporal: 'stable' | 'volatile' = 'stable';
+      if (schema) {
+        const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
+        if (!check.ok) {
+          rejected.push({ op, reason: check.reason! });
+          continue;
+        }
+        temporal = check.temporal;
+      } else if (!(op.partition in doc.partitions)) {
+        // H-17: no usable schema — the partition set is the only boundary left.
+        rejected.push({ op, reason: `unknown partition: ${op.partition}` });
         continue;
+      } else {
+        temporal = op.temporal === 'volatile' ? 'volatile' : 'stable';
       }
       if (!op.evidence || op.evidence.length === 0) {
         rejected.push({ op, reason: 'ADD without evidence (no provenance, axiom 1)' });
@@ -229,7 +239,7 @@ export function applyOpsToDoc(
         subTopic: op.subTopic,
         content: op.content.trim(),
         confidence: Math.min(op.confidence ?? cap, cap),
-        temporal: check.temporal,
+        temporal,
         validFrom: nowIso,
         validTo: null,
         supersededBy: null,

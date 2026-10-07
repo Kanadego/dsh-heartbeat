@@ -11,10 +11,20 @@ export interface AuditEvent {
   [key: string]: unknown;
 }
 
+/**
+ * H-15: audit is best-effort by contract — a full disk, a locked log file or an
+ * unserialisable payload must never abort a beat (one caller inside a catch
+ * block turning a handled failure into an unhandled one is the worst case).
+ * Failures go to stderr so they stay visible instead of silently vanishing.
+ */
 export function appendAuditLine(file: string, event: Omit<AuditEvent, 'ts'> & { ts?: string }): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const line = JSON.stringify({ ts: event.ts ?? new Date().toISOString(), ...event });
-  fs.appendFileSync(file, line + '\n', 'utf8');
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const line = JSON.stringify({ ts: event.ts ?? new Date().toISOString(), ...event });
+    fs.appendFileSync(file, line + '\n', 'utf8');
+  } catch (e) {
+    process.stderr.write(`[heartbeat] audit append failed: ${file}: ${String(e)}\n`);
+  }
 }
 
 export function readAuditLines<T = AuditEvent>(file: string): T[] {

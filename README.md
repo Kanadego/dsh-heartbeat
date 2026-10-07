@@ -112,7 +112,7 @@ node <插件目录>/dist/cli/index.js <命令>
 | | `seeds list [--archived]` / `seeds surface <id>` / `seeds archive <id>` | 列表 / 计一次曝光 / 归档 |
 | | `seeds gc` / `seeds stats` | 跑确定性淘汰 / 池子状态 JSON |
 | 账本 | `ledger add <text>` / `ledger list [--pending]` / `ledger done <id\|子串>` / `ledger open` | 待办登记 / 查询 / 勾掉 / 编辑器打开 |
-| 闲逛 | `browse status` / `browse dry` / `browse watch` / `browse done <focus>` | 状态 / 强制裁决预演 / 立即查 watchlist / 手动登记一次闲逛 |
+| 闲逛 | `browse status` / `browse dry` / `browse done <focus>` | 状态 / 强制裁决预演 / 手动登记一次闲逛 |
 | 绑定 | `sessions list` | 枚举会话 id |
 | | `bind list` / `bind add <id> [--observe]` / `bind remove <id>` | 绑定详情（正身也会列出）/ 绑定 / 解绑；`--observe-only` 仅观察、`--no-deliver` 关投递 |
 | 通知 | `notify check` / `notify register` / `notify send` | toast 通道体检 / 注册 / 测试发送（只提示新消息，不承载正文） |

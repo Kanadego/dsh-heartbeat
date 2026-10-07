@@ -105,8 +105,6 @@ test('v1.9.0: loadPreference drops garbled entries and clamps adopted to deliver
 
 test('pickFocus: weighting favors the preferred topic but cooldown still rotates everyone', () => {
   const mk = (focusHistory: Record<string, number>) => ({
-    targets: {},
-    last_check_at: 0,
     wander: { focusHistory, focusCount: {} as Record<string, number>, last_wander_at: 0 },
   });
   const interests = { interests: ['甲', '乙'], _schedule: { focus_cooldown_days: 3 } };
@@ -129,8 +127,6 @@ test('pickFocus: weighting favors the preferred topic but cooldown still rotates
 
 test('pickFocus: starvation floor overrides weighting after STARVATION_DAYS', () => {
   const mk = (focusHistory: Record<string, number>) => ({
-    targets: {},
-    last_check_at: 0,
     wander: { focusHistory, focusCount: {} as Record<string, number>, last_wander_at: 0 },
   });
   const interests = { interests: ['甲', '乙'], _schedule: { focus_cooldown_days: 0 } };

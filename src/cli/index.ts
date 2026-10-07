@@ -32,10 +32,8 @@ import {
   adviseWander,
   browseStatePath,
   browseStatus,
-  checkWatchlist,
   completeWander,
   loadInterests,
-  loadWatchlist,
 } from '../browse/browse.js';
 import { ensureRegistered, sendNewMessageHint } from '../notify/notify.js';
 import {
@@ -44,7 +42,6 @@ import {
   verifyProfile,
   rebuildProfile,
 } from '../profile/store.js';
-import { loadProfileSchema } from '../profile/schema.js';
 import { planBurn, executeBurn } from '../vault/burn-list.js';
 import {
   collectMigrationEntries,
@@ -79,9 +76,8 @@ function usage(): string {
     '  ledger done <id|substring>        mark an entry done',
     '  ledger open                       open ledger.md in the default editor',
     '  logs cleanup [--dry-run]          apply log retention now',
-    '  browse status                     browse state summary (watch + wander)',
+    '  browse status                     browse state summary (wander)',
     '  browse dry                        wander adjudication with forced noon window',
-    '  browse watch                      run watchlist check now (network)',
     '  browse done <focus>               CODE-side registration after a wander visit',
     '  bind list                         list session bindings (D13)',
     '  bind add <sessionId> [--observe]  bind a session (deliver by default)',
@@ -337,8 +333,6 @@ export async function main(argv: string[]): Promise<number> {
           const st = browseStatus(guard, paths);
           const interests = loadInterests(paths);
           console.log(JSON.stringify({
-            watchTargets: loadWatchlist(paths).targets?.length ?? 0,
-            lastCheckAt: st.last_check_at ? new Date(st.last_check_at).toISOString() : null,
             lastWanderAt: st.wander.last_wander_at ? new Date(st.wander.last_wander_at).toISOString() : null,
             focusCount: st.wander.focusCount,
             interestCount: interests.interests?.length ?? 0,
@@ -350,12 +344,6 @@ export async function main(argv: string[]): Promise<number> {
           forced.setHours(12, 0, 0, 0);
           const advice = adviseWander(guard, paths, policy, forced);
           console.log(JSON.stringify(advice, null, 2));
-          return 0;
-        }
-        case 'watch': {
-          const report = await checkWatchlist(guard, paths, { throttleOk: true });
-          console.log(JSON.stringify({ checked: report.checked, updates: report.items.length, errors: report.errors }, null, 2));
-          for (const item of report.items) console.log(`NEWS: ${item.text}`);
           return 0;
         }
         case 'done': {
@@ -377,14 +365,14 @@ export async function main(argv: string[]): Promise<number> {
     case 'notify': {
       switch (sub) {
         case 'check':
-          console.log(ensureRegistered(paths) ? 'REGISTERED: yes' : 'REGISTERED: no');
+          console.log(await ensureRegistered(paths) ? 'REGISTERED: yes' : 'REGISTERED: no');
           return 0;
         case 'register':
-          ensureRegistered(paths);
+          await ensureRegistered(paths);
           console.log('register attempted');
           return 0;
         case 'send':
-          console.log(sendNewMessageHint(paths) ? 'SENT' : 'FAILED');
+          console.log(await sendNewMessageHint(paths) ? 'SENT' : 'FAILED');
           return 0;
         default:
           console.error('usage: notify check|register|send');

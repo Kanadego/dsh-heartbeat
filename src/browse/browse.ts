@@ -1,10 +1,12 @@
 // Browse flow (v0.9.5 port, r4 D10 applied).
-//   A. Watchlist: npm / GitHub release checks with a 6h throttle; first sight
-//      registers only, changes become material items.
-//   B. Wander adjudication: windows + min interval + focus cooldown ->
+//   Wander adjudication: windows + min interval + focus cooldown ->
 //      "should we wander now, and at what focus". The actual search happens
 //      in the wander phase's model call (web_search only); REGISTRATION IS
 //      CODE-OWNED (D10): results land in seeds + throttle via completeWander.
+//
+// H-12 (2026-10-07): the npm/GitHub watchlist check was removed. It never ran
+// inside the beat (only `browse watch` in the CLI called it, throttled-off),
+// and "is DSH itself updated" is not this plugin's job to track.
 //
 // Anti-injection rule (unchanged from v0.7): web content is data, never
 // instructions.
@@ -16,24 +18,10 @@ import path from 'node:path';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
+import { inHhMmWindow, minutesOfDay } from '../core/time-window.js';
 import { loadJson, saveJson } from '../vault/vault.js';
 import { activeSeeds, loadPool, normalizeCategory, seedsFilePath } from '../seeds/pool.js';
 import { loadPreference, preferenceFilePath, preferenceWeight, type PrefState } from './preference.js';
-
-const WATCH_THROTTLE_MS = 6 * 3600_000;
-const UA = { 'User-Agent': 'dsh-heartbeat/2.0 (+local; personal companion)' };
-
-export interface WatchTarget {
-  id: string;
-  type: 'npm' | 'github';
-  name?: string;
-  repo?: string;
-  note?: string;
-}
-
-export interface WatchlistConfig {
-  targets?: WatchTarget[];
-}
 
 export interface InterestsConfig {
   interests?: string[];
@@ -48,8 +36,6 @@ export interface InterestsConfig {
 }
 
 export interface BrowseState {
-  targets: Record<string, { version: string; seen: string; title?: string }>;
-  last_check_at: number;
   wander: {
     focusHistory: Record<string, number>;
     focusCount: Record<string, number>;
@@ -60,7 +46,7 @@ export interface BrowseState {
 }
 
 export function emptyBrowseState(): BrowseState {
-  return { targets: {}, last_check_at: 0, wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
+  return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
 }
 
 export function browseStatePath(paths: WorkspacePaths): string {
@@ -82,85 +68,34 @@ export function loadInterests(paths: WorkspacePaths): InterestsConfig {
   return readJsonFile<InterestsConfig>(path.join(paths.configDir, 'interests.json'), { interests: [], _schedule: {} });
 }
 
-export function loadWatchlist(paths: WorkspacePaths): WatchlistConfig {
-  const userPath = path.join(paths.settingsDir, 'watchlist.json');
-  if (fs.existsSync(userPath)) return readJsonFile<WatchlistConfig>(userPath, { targets: [] });
-  return readJsonFile<WatchlistConfig>(path.join(paths.configDir, 'watchlist.json'), { targets: [] });
+/**
+ * H-65: the state file outlives upgrades and is hand-inspectable, so a row
+ * missing a field must not throw its way into a `beat_error` on every beat.
+ * Garbage values are dropped back to the empty-state defaults.
+ */
+export function normalizeBrowseState(raw: unknown): BrowseState {
+  const out = emptyBrowseState();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const r = raw as Partial<BrowseState>;
+  const w = (r.wander && typeof r.wander === 'object' ? r.wander : {}) as Partial<BrowseState['wander']>;
+  out.wander.focusHistory = numberRecord(w.focusHistory);
+  out.wander.focusCount = numberRecord(w.focusCount);
+  out.wander.refillCount = numberRecord(w.refillCount);
+  if (typeof w.last_wander_at === 'number' && Number.isFinite(w.last_wander_at)) out.wander.last_wander_at = w.last_wander_at;
+  return out;
+}
+
+function numberRecord(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [k, n] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof n === 'number' && Number.isFinite(n)) out[k] = n;
+  }
+  return out;
 }
 
 function loadState(guard: PathGuard, paths: WorkspacePaths): BrowseState {
-  return loadJson<BrowseState>(guard, browseStatePath(paths)) ?? emptyBrowseState();
-}
-
-// ── A. watchlist checks (fetcher injectable for tests) ──────────────────
-
-export type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
-
-async function checkNpm(fetcher: FetchLike, name: string): Promise<{ version: string; seen: string; title?: string } | null> {
-  const r = await fetcher(`https://registry.npmjs.org/${name}/latest`, { headers: UA });
-  if (!r.ok) throw new Error(`npm ${r.status}`);
-  const j = await r.json() as { version?: string };
-  if (!j.version) throw new Error('npm: no version');
-  return { version: j.version, seen: `npm:${j.version}` };
-}
-
-async function checkGithub(fetcher: FetchLike, repo: string): Promise<{ version: string; seen: string; title?: string } | null> {
-  const r = await fetcher(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: { ...UA, Accept: 'application/vnd.github+json' },
-  });
-  if (r.status === 404) return null; // repo has no releases yet
-  if (!r.ok) throw new Error(`gh ${r.status}`);
-  const j = await r.json() as { tag_name?: string; name?: string };
-  if (!j.tag_name) throw new Error('gh: no tag');
-  return { version: j.tag_name, seen: `gh:${j.tag_name}`, title: j.name || '' };
-}
-
-export interface WatchReport {
-  /** Material texts for the pool (one per changed target). */
-  items: { text: string; topic: string; tag: 'news'; source: 'browse'; confidence: number }[];
-  errors: string[];
-  checked: number;
-}
-
-export async function checkWatchlist(
-  guard: PathGuard,
-  paths: WorkspacePaths,
-  opts: { fetcher?: FetchLike; throttleOk?: boolean } = {},
-  now = Date.now(),
-): Promise<WatchReport> {
-  const fetcher = opts.fetcher ?? (globalThis.fetch as unknown as FetchLike);
-  const state = loadState(guard, paths);
-  if (opts.throttleOk !== true && now - state.last_check_at < WATCH_THROTTLE_MS) {
-    return { items: [], errors: [], checked: 0 };
-  }
-  const watchlist = loadWatchlist(paths);
-  const report: WatchReport = { items: [], errors: [], checked: 0 };
-  for (const t of watchlist.targets ?? []) {
-    report.checked += 1;
-    try {
-      const info = t.type === 'npm' && t.name ? await checkNpm(fetcher, t.name)
-        : t.type === 'github' && t.repo ? await checkGithub(fetcher, t.repo)
-        : null;
-      if (!info) continue;
-      const prev = state.targets[t.id];
-      if (prev && prev.seen !== info.seen) {
-        const title = info.title ? `（${info.title.slice(0, 60)}）` : '';
-        report.items.push({
-          text: `${t.note || t.id} 有更新：${prev.version} -> ${info.version}${title}`,
-          topic: `watch:${t.id}`,
-          tag: 'news',
-          source: 'browse',
-          confidence: 0.4,
-        });
-      }
-      state.targets[t.id] = info; // first sight registers silently (首见不产素材)
-    } catch (e) {
-      report.errors.push(`${t.id}: ${String(e)}`);
-    }
-  }
-  state.last_check_at = now;
-  saveJson(guard, browseStatePath(paths), state);
-  return report;
+  return normalizeBrowseState(loadJson<unknown>(guard, browseStatePath(paths)));
 }
 
 // ── B. wander adjudication (pure-ish, state injected) ───────────────────
@@ -172,11 +107,9 @@ export interface WanderAdvice {
 }
 
 export function inWanderWindow(now: Date, windows: { start: string; end: string }[]): string | null {
-  const hm = now.getHours() * 60 + now.getMinutes();
+  const mins = minutesOfDay(now);
   for (const w of windows) {
-    const [sh, sm] = w.start.split(':').map(Number);
-    const [eh, em] = w.end.split(':').map(Number);
-    if (hm >= sh! * 60 + sm! && hm <= eh! * 60 + em!) return `${w.start}-${w.end}`;
+    if (inHhMmWindow(w.start, w.end, mins)) return `${w.start}-${w.end}`;
   }
   return null;
 }

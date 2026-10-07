@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { runPowerShell, runPowerShellFile } from '../core/ps.js';
 import { appendAuditLine } from '../core/audit-log.js';
 import { timeContext } from './timeflow.js';
 import { classifyProcess, type BusyRules } from '../gate/busy-rules.js';
@@ -38,13 +38,11 @@ export interface EnvSnapshot {
   festival: string | null;
 }
 
-function probeIdle(guard: PathGuard, paths: WorkspacePaths): number {
+async function probeIdle(guard: PathGuard, paths: WorkspacePaths): Promise<number> {
   const tmp = path.join(paths.tmpDir, `idle-${Date.now()}.txt`);
   try {
     const out = guard.assert(tmp);
-    const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(paths.assetsDir, 'idle.ps1'), '-out', out],
-      { timeout: 20_000, encoding: 'utf8' });
+    const r = await runPowerShellFile(path.join(paths.assetsDir, 'idle.ps1'), ['-out', out], 20_000);
     if (r.status !== 0 || !fs.existsSync(out)) return -1;
     const v = Number.parseInt(fs.readFileSync(out, 'utf8').trim(), 10);
     return Number.isNaN(v) ? -1 : v;
@@ -56,7 +54,7 @@ function probeIdle(guard: PathGuard, paths: WorkspacePaths): number {
 }
 
 /** Exported for the token-saver gate (v1.7.0): fresh idle seconds on demand. */
-export function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths): number {
+export async function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths): Promise<number> {
   return probeIdle(guard, paths);
 }
 
@@ -65,29 +63,26 @@ export function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths): numbe
  * the Windows session is locked. Probe failure fails OPEN (false = unlocked)
  * so a broken probe never pauses the heartbeat by itself.
  */
-export function probeWorkstationLocked(): boolean {
-  try {
-    const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-Command', 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
-      { timeout: 10_000, encoding: 'utf8' });
-    return r.status === 0 && String(r.stdout || '').includes('locked');
-  } catch {
-    return false;
-  }
+export async function probeWorkstationLocked(): Promise<boolean> {
+  const r = await runPowerShell(
+    ['-Command', 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
+    10_000,
+  );
+  return r.status === 0 && String(r.stdout || '').includes('locked');
 }
 
 /**
  * Refresh the thermometer snapshot. `fgProcess` comes from the same beat's
  * screen pulse when available (orchestrator order: screen first, then env).
  */
-export function collectPulse(
+export async function collectPulse(
   guard: PathGuard,
   paths: WorkspacePaths,
   rules: BusyRules,
   fgProcess: string | null = null,
   now = new Date(),
-): EnvSnapshot {
-  const idle = probeIdle(guard, paths);
+): Promise<EnvSnapshot> {
+  const idle = await probeIdle(guard, paths);
   const windowClass = classifyProcess(fgProcess, rules);
   const t = timeContext(now);
   const snapshot: EnvSnapshot = {

@@ -18,16 +18,51 @@ export interface ProfileSchema {
   }>>;
 }
 
-export function loadProfileSchema(paths: { configDir: string; settingsDir: string }): ProfileSchema {
+export interface SchemaLoad {
+  /** The schema to use, or undefined when even the factory copy is unusable. */
+  schema?: ProfileSchema;
+  /** Where the returned schema came from. */
+  source: 'user' | 'factory' | 'none';
+  /** Set when the chosen schema is not the first choice (H-17 fallback). */
+  fallbackReason?: string;
+}
+
+/**
+ * H-17: three-tier load. This file is user-editable by design, so a broken
+ * comma used to throw on every beat — `runConsolidation` aborted before
+ * `inboxClear`, the inbox grew forever and the profile froze with no way back.
+ * Now: a bad user copy falls back to the factory copy (audited by the caller);
+ * an unusable factory copy yields `undefined`, which callers read as "no
+ * whitelist" instead of a fatal error.
+ */
+export function loadProfileSchema(paths: { configDir: string; settingsDir: string }): SchemaLoad {
   const userPath = path.join(paths.settingsDir, 'profile-schema.json');
-  const file = fs.existsSync(userPath) ? userPath : path.join(paths.configDir, 'profile-schema.json');
-  try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as ProfileSchema;
-    if (!raw.partitions) throw new Error('partitions missing');
-    return raw;
-  } catch (e) {
-    throw new Error(`profile-schema unreadable at ${file}: ${String(e)}`);
+  const factoryPath = path.join(paths.configDir, 'profile-schema.json');
+  const read = (file: string): { schema?: ProfileSchema; error: string } => {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as ProfileSchema;
+      if (!raw.partitions) return { error: 'partitions missing' };
+      return { schema: raw, error: '' };
+    } catch (e) {
+      return { error: String(e) };
+    }
+  };
+  const user = fs.existsSync(userPath) ? read(userPath) : null;
+  if (user?.schema) return { schema: user.schema, source: 'user' };
+  const factory = read(factoryPath);
+  if (factory.schema) {
+    return user
+      ? {
+          schema: factory.schema,
+          source: 'factory',
+          fallbackReason: `user profile-schema.json unusable (${user.error}) — fell back to the factory copy`,
+        }
+      : { schema: factory.schema, source: 'factory' };
   }
+  return {
+    source: 'none',
+    fallbackReason: `no usable profile-schema.json (user: ${user?.error ?? 'absent'}; factory: ${factory.error})`,
+  };
 }
 
 export interface SchemaCheck {

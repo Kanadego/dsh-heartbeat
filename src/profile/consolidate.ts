@@ -200,7 +200,16 @@ export async function runConsolidation(
   consolidating = true;
   try {
     const runId = randomUUID().slice(0, 8);
-    const schema = loadProfileSchema(paths);
+    // H-17: never let a hand-edited schema file freeze the pipeline.
+    const schemaLoad = loadProfileSchema(paths);
+    const schema = schemaLoad.schema;
+    if (schemaLoad.fallbackReason) {
+      appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
+        event: 'profile_schema_fallback',
+        source: schemaLoad.source,
+        reason: schemaLoad.fallbackReason.slice(0, 240),
+      });
+    }
     const doc = loadProfile(guard, paths.dataDir + '/profile.json');
     const all = dedupeItems(inboxDrain(guard, inboxFilePath(paths.dataDir)));
 
@@ -224,9 +233,16 @@ export async function runConsolidation(
       }
     }
     if (ops === null) {
-      appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
-        event: 'consolidation_failed', runId, error: lastError.slice(0, 200),
-      });
+      // H-15: same best-effort discipline as the seed audit below — a failed
+      // audit write must not abort the run before inboxClear (that used to
+      // leave a "due every beat, fail every beat" loop).
+      try {
+        appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
+          event: 'consolidation_failed', runId, error: lastError.slice(0, 200),
+        });
+      } catch {
+        /* audit must never break the consolidation run */
+      }
       return { ran: false, reason: `llm output unusable: ${lastError}`, applied: 0, rejected: 0 };
     }
 
