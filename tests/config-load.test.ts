@@ -1,7 +1,7 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { loadPolicy } from '../src/config/load.js';
 import { assertPolicy, deepMerge } from '../src/config/schema.js';
@@ -20,7 +20,7 @@ const FACTORY = {
 };
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-cfg-'));
+  sandbox = sandboxDir('hb-cfg-');
   fs.mkdirSync(path.join(sandbox, 'config'), { recursive: true });
   fs.mkdirSync(path.join(sandbox, 'settings'), { recursive: true });
   fs.writeFileSync(path.join(sandbox, 'config', 'policy.json'), JSON.stringify(FACTORY), 'utf8');

@@ -2,10 +2,10 @@
 // extraction, spawn orchestration with "use then burn" discipline, and the
 // spec-② privacy rule (failure -> no summary -> caller withholds titles).
 
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
@@ -17,7 +17,7 @@ let sandbox = '';
 let guard: ReturnType<typeof createPathGuard>;
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-vision-'));
+  sandbox = sandboxDir('hb-vision-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();

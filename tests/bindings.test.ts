@@ -2,10 +2,10 @@
 // for "which sessions does the beat observe / speak into", edited from three
 // sides (CLI, RPC card, hand), so its merge semantics deserve cover.
 
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
@@ -28,7 +28,7 @@ const read = () => JSON.parse(fs.readFileSync(bindingsFilePath(settingsDir), 'ut
 };
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-bind-'));
+  sandbox = sandboxDir('hb-bind-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();

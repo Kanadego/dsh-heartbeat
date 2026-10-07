@@ -1,7 +1,7 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   BUNDLED_PRESET_ID,
@@ -20,7 +20,7 @@ const moduleUrl = import.meta.url;
 let root = '';
 
 beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-preset-'));
+  root = sandboxDir('hb-preset-');
 });
 
 after(() => {

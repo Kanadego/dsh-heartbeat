@@ -1,7 +1,7 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createPathGuard, canonicalize, isInsideWorkspace } from '../src/core/path-guard.js';
 
@@ -9,8 +9,8 @@ let sandbox = '';
 let outside = '';
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-guard-ws-'));
-  outside = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-guard-out-'));
+  sandbox = sandboxDir('hb-guard-ws-');
+  outside = sandboxDir('hb-guard-out-');
   fs.mkdirSync(path.join(sandbox, 'data', 'logs'), { recursive: true });
 });
 

@@ -2,10 +2,10 @@
 // schema enforcement, ring trim, window reads. Tool execute() stores raw ids;
 // package validation happens at reconciliation (orchestrator), not here.
 // DPAPI vault shells out per read/write, so tests batch whole files.
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard, type PathGuard } from '../src/core/path-guard.js';
@@ -25,7 +25,7 @@ import { MATERIAL_MISMATCH_REASON } from '../src/core/material.js';
 // vault (DPAPI) needs the workspace singleton for tmp windows + vault.ps1
 let sandbox = '';
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-report-'));
+  sandbox = sandboxDir('hb-report-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();

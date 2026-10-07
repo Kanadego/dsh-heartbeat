@@ -2,10 +2,10 @@
 // capability probe, status text rendering (D21 red line), track memo audit,
 // section text gating.
 
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
@@ -33,7 +33,7 @@ const session = (id: string, events: { type: string; data?: unknown }[]): { id: 
 });
 
 beforeEach(() => {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-track-'));
+  sandbox = sandboxDir('hb-track-');
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();

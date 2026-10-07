@@ -1,7 +1,7 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { writePulseStream, presenceOf, IDLE_AWAY_SECONDS, IDLE_FLOOR_SECONDS, type EnvSnapshot } from '../src/env/envpulse.js';
 import { readAuditLines, pruneAuditFile } from '../src/core/audit-log.js';
@@ -26,7 +26,7 @@ const snapshot: EnvSnapshot = {
 };
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-envpulse-'));
+  dir = sandboxDir('hb-envpulse-');
   paths = { logsDir: path.join(dir, 'logs'), dataDir: dir };
 });
 
@@ -95,7 +95,7 @@ test('H-68: presenceOf reads the configured thresholds, not the constants', () =
 });
 
 test('H-68: loadBusyRules backfills a partial rules block from the factory defaults', () => {
-  const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-busy-'));
+  const cfg = sandboxDir('hb-busy-');
   assert.deepEqual(loadBusyRules(cfg).rules, FALLBACK_RULES.rules);
 
   // `busy` / `idle` are required by loadBusyRules; only the rules block is partial

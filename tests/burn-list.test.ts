@@ -5,10 +5,10 @@
 // that cost us the most: everything migrated is also burned, and the journal
 // rotation shards (PLAINTEXT profile history) are actually removed.
 
+import { sandboxDir } from './_sandbox.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createPathGuard } from '../src/core/path-guard.js';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
@@ -29,7 +29,7 @@ test('H-19: every migrated memory file is also on the burn list', () => {
 });
 
 test('H-19: a burn shreds the journal archive shards too', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-burn-'));
+  const dir = sandboxDir('hb-burn-');
   process.env.HEARTBEAT_DATA_DIR = path.join(dir, 'data');
   resetWorkspaceForTest();
   initWorkspace();

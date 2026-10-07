@@ -1,14 +1,14 @@
+import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { atomicWriteFileSync, atomicWriteJsonSync, shredFileSync } from '../src/core/atomic-fs.js';
 
 let dir = '';
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-atomic-'));
+  dir = sandboxDir('hb-atomic-');
 });
 
 after(() => {
