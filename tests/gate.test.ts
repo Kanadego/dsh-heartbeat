@@ -16,6 +16,11 @@ import {
   gateStatus,
 } from '../src/gate/gate.js';
 
+// Quiet hours are wall-clock windows resolved in the *process* time zone, and the
+// fixtures below are written as +08:00 instants. Pin the zone so the suite gives
+// the same verdict on a developer machine and on a CI runner (UTC).
+process.env.TZ = 'Asia/Shanghai';
+
 const NOON = Date.parse('2026-09-06T12:00:00.000+08:00'); // 12:00 local
 const NIGHT = Date.parse('2026-09-06T02:00:00.000+08:00'); // inside quiet hours 01:00-08:00
 

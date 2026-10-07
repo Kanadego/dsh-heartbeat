@@ -18,6 +18,11 @@ import {
   resolveSchedule,
 } from '../src/browse/browse.js';
 
+// Wander windows are wall-clock windows resolved in the *process* time zone, and
+// the fixtures below are written as +08:00 instants. Pin the zone so the suite
+// gives the same verdict on a developer machine and on a CI runner (UTC).
+process.env.TZ = 'Asia/Shanghai';
+
 let sandbox = '';
 let guard: ReturnType<typeof createPathGuard>;
 let paths: ReturnType<typeof workspace>;
