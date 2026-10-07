@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { OrchestratorDeps } from './core/orchestrator.js';
-import { getLastBeat } from './core/orchestrator.js';
+import { getLastBeat, homeSessionId, resetHomeSession } from './core/orchestrator.js';
 import { appendAuditLine } from './core/audit-log.js';
 import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
@@ -37,7 +37,7 @@ import { ledgerFilePath } from './ledger/ledger.js';
 import { listWeeklyReports, readWeeklyReport } from './weekly/report.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
 import { addInterest, readEffective, removeInterest, setWanderWindows } from './browse/interests-edit.js';
-import { loadEncryptedText, writeText } from './vault/vault.js';
+import { writeText } from './vault/vault.js';
 import { readStatus } from './statusbar/store.js';
 import { loadTimeInjectState } from './statusbar/time-inject.js';
 import type { Policy } from './config/schema.js';
@@ -86,15 +86,6 @@ function pluginVersion(paths: WorkspacePaths): string {
   return cachedVersion;
 }
 
-function homeSessionId(paths: WorkspacePaths, guard: PathGuard): string | null {
-  try {
-    const raw = loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json'));
-    return (JSON.parse(raw ?? '{}') as { sessionId?: string }).sessionId ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /** 素材池生命周期的审计出口（v1.9.0）：卡片上的归档/恢复/删除也留下痕迹。 */
 function seedAuditSink(paths: WorkspacePaths): (entry: Record<string, unknown>) => void {
   return (entry) => {
@@ -105,18 +96,14 @@ function seedAuditSink(paths: WorkspacePaths): (entry: Record<string, unknown>) 
 }
 
 /** 兴趣/时段卡片编辑的审计留痕（成功才记；失败原因走 RPC err 回给卡片）。 */
-function auditInterests(
-  paths: WorkspacePaths,
-  action: 'add' | 'remove' | 'set-windows',
-  result: { ok: boolean; reason?: string },
-  detail: unknown,
-): void {
-  if (!result.ok) return;
-  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-    event: 'interests_updated',
-    action,
-    detail: typeof detail === 'string' ? detail.slice(0, 80) : null,
-  });
+function auditInterests(paths: WorkspacePaths, action: string, r: { ok: boolean }, detail: unknown): void {
+  try {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: `interests_${r.ok ? 'edit' : 'edit_failed'}`,
+      action,
+      detail: typeof detail === 'string' ? detail.slice(0, 80) : null,
+    });
+  } catch { /* audit must never break the RPC call */ }
 }
 
 /** Session titles from the host's projection cache. Titles are host data — the
@@ -128,7 +115,8 @@ function auditInterests(
  * before is the older aggregate layout and goes stale: a session created after
  * the upgrade is simply absent from it, so `title` came back null and the card
  * printed the raw session id. Read the per-record layout FIRST, keep the
- * aggregate only as a legacy fallback. */function loadSessionTitles(): Record<string, string> {
+ * aggregate only as a legacy fallback. */
+function loadSessionTitles(): Record<string, string> {
   const titles: Record<string, string> = {};
   const take = (id: string, value: unknown): void => {
     const t = value as { rows?: { title?: { val?: unknown } }; title?: { val?: unknown } } | undefined;
@@ -211,6 +199,261 @@ export function loadVisibleSessionIds(registryFile?: string): { visible: Set<str
   }
 }
 
+/** One RPC verb: payload in, envelope out. `guard` / `paths` / `policy` / `deps`
+ *  come from the closure built by {@link buildEndpoints}. */
+type Endpoint = (p: Record<string, unknown>) => RpcResult | Promise<RpcResult>;
+
+/**
+ * H-36: the endpoint table. This used to be a single `switch` at the bottom of
+ * the route handler — 22 verbs and ~250 lines, with the guest list (which
+ * endpoints exist) tangled up with the machinery (envelope validation, the
+ * catch-all error wrapper). Adding a verb is now one entry here; the wrapper
+ * stays in one place.
+ */
+function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) => boolean): Record<string, Endpoint> {
+  const { guard, paths, policy } = deps;
+  return {
+    async status() {
+      const now = Date.now();
+      const sent = readSentState(guard, paths, now);
+      const beat = getLastBeat();
+      // M7 statusbar block (§17.8): store + throttle-state + live flags.
+      let lastTimeInjectAt: number | null = null;
+      try {
+        const state = loadTimeInjectState(guard, paths.dataDir);
+        for (const v of Object.values(state)) {
+          if (typeof v === 'number' && v > (lastTimeInjectAt ?? 0)) lastTimeInjectAt = v;
+        }
+      } catch { /* missing state file = never injected */ }
+      let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
+      try {
+        const { getRuntime } = await import('./core/runtime.js');
+        const f = getRuntime().flags;
+        flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
+      } catch { /* pre-init: report defaults */ }
+      return ok({
+        now: new Date(now).toISOString(),
+        version: pluginVersion(paths),
+        intervalMin: policy.heartbeat.intervalMin,
+        idleMode: policy.heartbeat.idleMode,
+        cap: { used: sent.items.length, max: policy.gate.maxDailySend },
+        quiet: inQuietHours(policy, now),
+        lastBeat: beat,
+        homeSessionId: homeSessionId(guard, paths),
+        bindings: loadBindings(guard, paths.settingsDir).bindings.length,
+        statusbar: {
+          enabled: flags.statusbarEnabled,
+          timeInjectMin: flags.timeInjectMin,
+          lastStatus: readStatus(guard, paths),
+          lastTimeInjectAt: lastTimeInjectAt === null ? null : new Date(lastTimeInjectAt).toISOString(),
+        },
+      });
+    },
+
+    'sessions.list'() {
+      const root = path.join(os.homedir(), '.dsh', 'sessions');
+      const bindings = loadBindings(guard, paths.settingsDir).bindings;
+      const home = homeSessionId(guard, paths);
+      const titles = loadSessionTitles();
+      // Bind picker visibility: hide archived and subagent sessions
+      // (2026-09-30 user request). Fail-open when the registry is
+      // unreadable; the home is always listed.
+      const { visible, registryFound } = loadVisibleSessionIds();
+      const out: Record<string, unknown>[] = [];
+      if (fs.existsSync(root)) {
+        for (const slug of fs.readdirSync(root)) {
+          for (const id of fs.readdirSync(path.join(root, slug))) {
+            if (registryFound && id !== home && !visible.has(id)) continue;
+            const binding = bindings.find((b) => b.sessionId === id);
+            out.push({
+              id,
+              title: titles[id] ?? null,
+              cwdSlug: slug,
+              live: isLive(id),
+              home: id === home,
+              deliver: binding?.deliver ?? false,
+              observe: binding?.observe ?? false,
+            });
+          }
+        }
+      }
+      return ok({ sessions: out });
+    },
+
+    'bindings.get': () => ok(loadBindings(guard, paths.settingsDir)),
+
+    'bindings.add'(p) {
+      const id = String(p.sessionId ?? '');
+      if (!id.startsWith('session-')) return err('bad-request', 'sessionId must look like session-...');
+      const home = homeSessionId(guard, paths);
+      if (id === home) return err('bad-request', '该会话是心跳正身，无需绑定（决策轮次固定发生在正身）');
+      // Callers send BOTH flags explicitly (the card's per-flag toggles), so
+      // this stays a full-state write: deliver defaults on, observe off.
+      const b = addBinding(guard, paths.settingsDir, id, {
+        deliver: p.deliver !== false,
+        observe: p.observe === true,
+      });
+      return ok(b);
+    },
+
+    'bindings.remove'(p) {
+      const id = String(p.sessionId ?? '');
+      const removed = removeBinding(guard, paths.settingsDir, id);
+      // H-09/H-45: one shared release path — gate.json, the home_reset audit
+      // line and the orchestrator's cached agent — instead of an inline delete
+      // that silently left the in-memory home behind.
+      const homeReset = resetHomeSession(guard, paths, id);
+      return ok({ removed, homeReset });
+    },
+
+    'seeds.list'() {
+      const db = loadPool(guard, seedsFilePath(paths.dataDir));
+      return ok({
+        active: activeSeeds(db),
+        archived: archivedSeeds(db),
+        cap: policy.seeds.maxActive,
+      });
+    },
+
+    'seeds.archive'(p) {
+      const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), 'completed', Date.now(), seedAuditSink(paths));
+      return s ? ok(s) : err('not-found', 'active seed not found');
+    },
+
+    'seeds.restore'(p) {
+      const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ''), Date.now(), seedAuditSink(paths));
+      return r.ok ? ok(r.seed) : err('restore-failed', r.reason);
+    },
+
+    'seeds.delete'(p) {
+      return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), seedAuditSink(paths)) });
+    },
+
+    // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
+    'interests.list': () => ok(readEffective(paths)),
+
+    'interests.add'(p) {
+      const r = addInterest(guard, paths, String(p.text ?? ''));
+      auditInterests(paths, 'add', r, p.text);
+      return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'add failed');
+    },
+
+    'interests.remove'(p) {
+      const r = removeInterest(guard, paths, String(p.text ?? ''));
+      auditInterests(paths, 'remove', r, p.text);
+      return r.ok ? ok(r.doc) : err('not-found', r.reason ?? 'remove failed');
+    },
+
+    'interests.setWindows'(p) {
+      const r = setWanderWindows(guard, paths, p.windows);
+      auditInterests(paths, 'set-windows', r, JSON.stringify(p.windows ?? null));
+      return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'setWindows failed');
+    },
+
+    'config.get': () => ok(deps.ui.get()),
+
+    'config.set'(p) {
+      const patch = p as UiConfig;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return err('bad-request', 'config.set needs a patch object');
+      }
+      const keys = Object.keys(patch).filter((k) =>
+        ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'psyEnabled'].includes(k),
+      );
+      if (keys.length === 0) return err('bad-request', 'config.set has no recognized field');
+      try {
+        deps.ui.set(patch);
+      } catch (e) {
+        return err('bad-request', String(e).slice(0, 120));
+      }
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'ui_config_set', keys });
+      return ok(deps.ui.get());
+    },
+
+    'profile.digest'() {
+      const d = buildDigest(guard, paths, policy, {});
+      return ok({
+        tact: d.tact,
+        topic: d.topic,
+        wander: d.wander,
+        withinBudget: d.withinBudget,
+      });
+    },
+
+    'profile.export'() {
+      const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+      const lines = [`# 画像导出 ${new Date().toISOString()}`, ''];
+      for (const part of ['interest', 'projects', 'comm', 'psy'] as const) {
+        lines.push(`## ${part}`);
+        for (const e of doc.partitions[part]!.entries) {
+          if (e.validTo !== null) continue;
+          lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
+        }
+      }
+      const out = path.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+      writeText(guard, out, lines.join('\n') + '\n');
+      return ok({ path: out });
+    },
+
+    'ledger.open'() {
+      const f = ledgerFilePath(paths.dataDir);
+      if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
+      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      return ok({ path: f });
+    },
+
+    'weekly.list': () => ok({ reports: listWeeklyReports(guard, paths.dataDir) }),
+
+    'weekly.get'(p) {
+      const file = String(p.file ?? '');
+      const rep = readWeeklyReport(guard, paths.dataDir, file);
+      if (!rep) return err('bad-request', `no such report: ${file}`);
+      return ok(rep);
+    },
+
+    async 'migrate.export'(p) {
+      // Card-side export (v1.8.0): same container as the CLI. The
+      // passphrase lives only in this call — never audited, never logged.
+      const passphrase = String(p.passphrase ?? '');
+      if (!passphrase) return err('bad-request', '需要设置口令');
+      const { collectMigrationEntries, encryptContainer } = await import('./vault/migrate.js');
+      const { entries } = collectMigrationEntries(guard, paths);
+      if (entries.length === 0) return err('bad-request', '没有可打包的记忆文件（data/ 是空的）');
+      const out = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+      writeText(guard, out, encryptContainer(entries, passphrase));
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'migrate_export', files: entries.length });
+      return ok({ path: out, count: entries.length });
+    },
+
+    async 'migrate.import'(p) {
+      const passphrase = String(p.passphrase ?? '');
+      const file = String(p.file ?? '');
+      if (!passphrase || !file) return err('bad-request', '需要容器路径与口令');
+      const { decryptContainer, applyMigrationEntries } = await import('./vault/migrate.js');
+      let text: string;
+      try {
+        // Read-only from a user-chosen path (likely OUTSIDE data/); the
+        // path guard still gates every file we WRITE back.
+        text = fs.readFileSync(file, 'utf8');
+      } catch {
+        return err('bad-request', `读不到迁移包：${file}`);
+      }
+      let container: ReturnType<typeof decryptContainer>;
+      try {
+        container = decryptContainer(text, passphrase);
+      } catch (e) {
+        return err('bad-request', String(e instanceof Error ? e.message : e));
+      }
+      const result = applyMigrationEntries(guard, paths, container.files);
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
+        event: 'migrate_import', restored: result.restored.length, backedUp: result.backedUp.length, skipped: result.skipped.length,
+        rolledBack: result.rolledBack?.length ?? 0, error: result.error ?? null,
+      });
+      return ok(result);
+    },
+  };
+}
+
 export function installHeartbeatRpc(
   ctx: OrchestratorDeps['ctx'] & { inject(services: string[], callback: (scoped: unknown) => void): void },
   deps: Omit<RpcDeps, 'ctx'>,
@@ -248,259 +491,14 @@ export function installHeartbeatRpc(
       }
     };
 
+    const endpoints = buildEndpoints(deps, isLive);
+
     const handler = async (endpoint: unknown, payload: unknown): Promise<RpcResult> => {
-      const { guard, paths, policy } = deps;
       const p = (payload ?? {}) as Record<string, unknown>;
+      const fn = typeof endpoint === 'string' ? endpoints[endpoint] : undefined;
+      if (!fn) return err('bad-request', `unknown endpoint ${JSON.stringify(endpoint)}`);
       try {
-        switch (endpoint) {
-          case 'status': {
-            const now = Date.now();
-            const sent = readSentState(guard, paths, now);
-            const beat = getLastBeat();
-            // M7 statusbar block (§17.8): store + throttle-state + live flags.
-            let lastTimeInjectAt: number | null = null;
-            try {
-              const state = loadTimeInjectState(guard, paths.dataDir);
-              for (const v of Object.values(state)) {
-                if (typeof v === 'number' && v > (lastTimeInjectAt ?? 0)) lastTimeInjectAt = v;
-              }
-            } catch { /* missing state file = never injected */ }
-            let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
-            try {
-              const { getRuntime } = await import('./core/runtime.js');
-              const f = getRuntime().flags;
-              flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
-            } catch { /* pre-init: report defaults */ }
-            return ok({
-              now: new Date(now).toISOString(),
-              version: pluginVersion(paths),
-              intervalMin: policy.heartbeat.intervalMin,
-              idleMode: policy.heartbeat.idleMode,
-              cap: { used: sent.items.length, max: policy.gate.maxDailySend },
-              quiet: inQuietHours(policy, now),
-              lastBeat: beat,
-              homeSessionId: homeSessionId(paths, guard),
-              bindings: loadBindings(guard, paths.settingsDir).bindings.length,
-              statusbar: {
-                enabled: flags.statusbarEnabled,
-                timeInjectMin: flags.timeInjectMin,
-                lastStatus: readStatus(guard, paths),
-                lastTimeInjectAt: lastTimeInjectAt === null ? null : new Date(lastTimeInjectAt).toISOString(),
-              },
-            });
-          }
-
-          case 'sessions.list': {
-            const root = path.join(os.homedir(), '.dsh', 'sessions');
-            const bindings = loadBindings(guard, paths.settingsDir).bindings;
-            const home = homeSessionId(paths, guard);
-            const titles = loadSessionTitles();
-            // Bind picker visibility: hide archived and subagent sessions
-            // (2026-09-30 user request). Fail-open when the registry is
-            // unreadable; the home is always listed.
-            const { visible, registryFound } = loadVisibleSessionIds();
-            const out: Record<string, unknown>[] = [];
-            if (fs.existsSync(root)) {
-              for (const slug of fs.readdirSync(root)) {
-                for (const id of fs.readdirSync(path.join(root, slug))) {
-                  if (registryFound && id !== home && !visible.has(id)) continue;
-                  const binding = bindings.find((b) => b.sessionId === id);
-                  out.push({
-                    id,
-                    title: titles[id] ?? null,
-                    cwdSlug: slug,
-                    live: isLive(id),
-                    home: id === home,
-                    deliver: binding?.deliver ?? false,
-                    observe: binding?.observe ?? false,
-                  });
-                }
-              }
-            }
-            return ok({ sessions: out });
-          }
-
-          case 'bindings.get':
-            return ok(loadBindings(guard, paths.settingsDir));
-
-          case 'bindings.add': {
-            const id = String(p.sessionId ?? '');
-            if (!id.startsWith('session-')) return err('bad-request', 'sessionId must look like session-...');
-            const home = homeSessionId(paths, guard);
-            if (id === home) return err('bad-request', '该会话是心跳正身，无需绑定（决策轮次固定发生在正身）');
-            // Callers send BOTH flags explicitly (the card's per-flag toggles), so
-            // this stays a full-state write: deliver defaults on, observe off.
-            const b = addBinding(guard, paths.settingsDir, id, {
-              deliver: p.deliver !== false,
-              observe: p.observe === true,
-            });
-            return ok(b);
-          }
-
-          case 'bindings.remove': {
-            const id = String(p.sessionId ?? '');
-            const removed = removeBinding(guard, paths.settingsDir, id);
-            let homeReset = false;
-            if (id === homeSessionId(paths, guard)) {
-              try {
-                fs.rmSync(guard.assert(path.join(paths.dataDir, 'gate.json')), { force: true });
-                homeReset = true;
-              } catch { /* absent */ }
-            }
-            return ok({ removed, homeReset });
-          }
-
-          case 'seeds.list': {
-            const db = loadPool(guard, seedsFilePath(paths.dataDir));
-            return ok({
-              active: activeSeeds(db),
-              archived: archivedSeeds(db),
-              cap: policy.seeds.maxActive,
-            });
-          }
-
-          case 'seeds.archive': {
-            const s = archiveSeedById(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), 'completed', Date.now(), seedAuditSink(paths));
-            return s ? ok(s) : err('not-found', 'active seed not found');
-          }
-
-          case 'seeds.restore': {
-            const r = restoreSeed(guard, seedsFilePath(paths.dataDir), policy, String(p.id ?? ''), Date.now(), seedAuditSink(paths));
-            return r.ok ? ok(r.seed) : err('restore-failed', r.reason);
-          }
-
-          case 'seeds.delete': {
-            return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), seedAuditSink(paths)) });
-          }
-
-          // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
-          case 'interests.list':
-            return ok(readEffective(paths));
-
-          case 'interests.add': {
-            const r = addInterest(guard, paths, String(p.text ?? ''));
-            auditInterests(paths, 'add', r, p.text);
-            return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'add failed');
-          }
-
-          case 'interests.remove': {
-            const r = removeInterest(guard, paths, String(p.text ?? ''));
-            auditInterests(paths, 'remove', r, p.text);
-            return r.ok ? ok(r.doc) : err('not-found', r.reason ?? 'remove failed');
-          }
-
-          case 'interests.setWindows': {
-            const r = setWanderWindows(guard, paths, p.windows);
-            auditInterests(paths, 'set-windows', r, JSON.stringify(p.windows ?? null));
-            return r.ok ? ok(r.doc) : err('bad-request', r.reason ?? 'setWindows failed');
-          }
-
-          case 'config.get':
-            return ok(deps.ui.get());
-
-          case 'config.set': {
-            const patch = p as UiConfig;
-            if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-              return err('bad-request', 'config.set needs a patch object');
-            }
-            const keys = Object.keys(patch).filter((k) =>
-              ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'psyEnabled'].includes(k),
-            );
-            if (keys.length === 0) return err('bad-request', 'config.set has no recognized field');
-            try {
-              deps.ui.set(patch);
-            } catch (e) {
-              return err('bad-request', String(e).slice(0, 120));
-            }
-            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'ui_config_set', keys });
-            return ok(deps.ui.get());
-          }
-
-          case 'profile.digest': {
-            const d = buildDigest(guard, paths, policy, {});
-            return ok({
-              tact: d.tact,
-              topic: d.topic,
-              wander: d.wander,
-              withinBudget: d.withinBudget,
-            });
-          }
-
-          case 'profile.export': {
-            const doc = loadProfile(guard, profileFilePath(paths.dataDir));
-            const lines = [`# 画像导出 ${new Date().toISOString()}`, ''];
-            for (const part of ['interest', 'projects', 'comm', 'psy'] as const) {
-              lines.push(`## ${part}`);
-              for (const e of doc.partitions[part]!.entries) {
-                if (e.validTo !== null) continue;
-                lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
-              }
-            }
-            const out = path.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
-            writeText(guard, out, lines.join('\n') + '\n');
-            return ok({ path: out });
-          }
-
-          case 'ledger.open': {
-            const f = ledgerFilePath(paths.dataDir);
-            if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
-            spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
-            return ok({ path: f });
-          }
-
-          case 'weekly.list':
-            return ok({ reports: listWeeklyReports(guard, paths.dataDir) });
-
-          case 'weekly.get': {
-            const file = String(p.file ?? '');
-            const rep = readWeeklyReport(guard, paths.dataDir, file);
-            if (!rep) return err('bad-request', `no such report: ${file}`);
-            return ok(rep);
-          }
-
-          case 'migrate.export': {
-            // Card-side export (v1.8.0): same container as the CLI. The
-            // passphrase lives only in this call — never audited, never logged.
-            const passphrase = String(p.passphrase ?? '');
-            if (!passphrase) return err('bad-request', '需要设置口令');
-            const { collectMigrationEntries, encryptContainer } = await import('./vault/migrate.js');
-            const { entries } = collectMigrationEntries(guard, paths);
-            if (entries.length === 0) return err('bad-request', '没有可打包的记忆文件（data/ 是空的）');
-            const out = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
-            writeText(guard, out, encryptContainer(entries, passphrase));
-            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'migrate_export', files: entries.length });
-            return ok({ path: out, count: entries.length });
-          }
-
-          case 'migrate.import': {
-            const passphrase = String(p.passphrase ?? '');
-            const file = String(p.file ?? '');
-            if (!passphrase || !file) return err('bad-request', '需要容器路径与口令');
-            const { decryptContainer, applyMigrationEntries } = await import('./vault/migrate.js');
-            let text: string;
-            try {
-              // Read-only from a user-chosen path (likely OUTSIDE data/); the
-              // path guard still gates every file we WRITE back.
-              text = fs.readFileSync(file, 'utf8');
-            } catch {
-              return err('bad-request', `读不到迁移包：${file}`);
-            }
-            let container: ReturnType<typeof decryptContainer>;
-            try {
-              container = decryptContainer(text, passphrase);
-            } catch (e) {
-              return err('bad-request', String(e instanceof Error ? e.message : e));
-            }
-            const result = applyMigrationEntries(guard, paths, container.files);
-            appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
-              event: 'migrate_import', restored: result.restored.length, backedUp: result.backedUp.length, skipped: result.skipped.length,
-            });
-            return ok(result);
-          }
-
-          default:
-            return err('bad-request', `unknown endpoint ${JSON.stringify(endpoint)}`);
-        }
+        return await fn(p);
       } catch (e) {
         return err('internal', String(e).slice(0, 200));
       }

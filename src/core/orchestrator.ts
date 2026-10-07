@@ -233,20 +233,54 @@ function noteBeat(verdict: NonNullable<LastBeat['verdict']>, detail?: { text?: s
   lastBeat = { at: new Date().toISOString(), verdict, ...detail };
 }
 
-function stateFile(paths: WorkspacePaths): string {
+/** The home-session record (machine-local): which session the beat speaks from. */
+export function gateFilePath(paths: WorkspacePaths): string {
   return path.join(paths.dataDir, 'gate.json');
 }
 
 function readBeatState(guard: PathGuard, paths: WorkspacePaths): { sessionId?: string } {
   try {
-    return JSON.parse(loadEncryptedText(guard, stateFile(paths)) ?? '{}') as { sessionId?: string };
+    return JSON.parse(loadEncryptedText(guard, gateFilePath(paths)) ?? '{}') as { sessionId?: string };
   } catch {
     return {};
   }
 }
 
 function writeBeatState(guard: PathGuard, paths: WorkspacePaths, state: { sessionId?: string }): void {
-  saveEncryptedText(guard, stateFile(paths), JSON.stringify(state, null, 2));
+  saveEncryptedText(guard, gateFilePath(paths), JSON.stringify(state, null, 2));
+}
+
+// ── home session: shared by the RPC endpoint and the CLI (H-09 / H-45) ──
+
+/** The id of the session the beat currently speaks from, or null. */
+export function homeSessionId(guard: PathGuard, paths: WorkspacePaths): string | null {
+  return readBeatState(guard, paths).sessionId ?? null;
+}
+
+/**
+ * H-09 / H-45: release the home session. The RPC `bindings.remove` and the CLI
+ * `bind remove` each did this inline — and both forgot the orchestrator's
+ * cached agent, so the in-memory home kept pointing at the session that had
+ * just been released. Returns false when `id` is not the current home.
+ */
+export function resetHomeSession(guard: PathGuard, paths: WorkspacePaths, id: string): boolean {
+  if (homeSessionId(guard, paths) !== id) return false;
+  try {
+    fs.rmSync(guard.assert(gateFilePath(paths)), { force: true });
+  } catch { /* already gone */ }
+  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'home_reset', oldSessionId: id });
+  resetHomeAgent();
+  return true;
+}
+
+/**
+ * H-09: drop the cached home agent and any pending rotation. Deleting gate.json
+ * alone is not enough — `ensureAgent` short-circuits on a non-null
+ * `agentPromise` and would keep handing the next beat the released handle.
+ */
+export function resetHomeAgent(): void {
+  agentPromise = null;
+  homeRotatePending = null;
 }
 
 // ── heartbeat agent management ──────────────────────────────────────────
@@ -477,8 +511,30 @@ function unwrapHomeHandle(handle: unknown): HostAgent {
   return (handle as { agent?: HostAgent }).agent ?? (handle as HostAgent);
 }
 
+/** H-02: a cached handle can outlive its session. The host disposes agents on
+ *  config edits and on session archives and tells this module nothing — a
+ *  promise that had resolved to a dead handle was reused forever, which
+ *  surfaced as "the heartbeat simply stopped" with nothing in the log. Probe
+ *  cheaply and drop the cache when the probe fails. */
+function agentLooksAlive(agent: HostAgent | null | undefined): boolean {
+  if (!agent) return false;
+  const probe = agent as unknown as { disposed?: unknown };
+  if (probe.disposed === true) return false;
+  // A live handle always carries its session; a disposed one may keep a stale
+  // reference, hence both checks.
+  return Boolean(agent.session);
+}
+
 async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
-  if (agentPromise) return agentPromise;
+  if (agentPromise) {
+    const cached = await agentPromise;
+    if (agentLooksAlive(cached)) return cached;
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'agent_cache_discarded',
+      reason: 'cached handle is no longer usable; re-acquiring',
+    });
+    agentPromise = null;
+  }
   const { ctx, paths, guard } = deps;
   const agentOptions = defaultAgentOptions(ctx);
   const setup = makeHomeSetup(deps);
@@ -1648,6 +1704,22 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
         beatCancel?.();
       } catch { /* never rethrow from the disposer */ }
       appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'orchestrator_disposed', beatCancelled: cancelledInFlight });
+      // H-02: every piece of module-level orchestrator state dies with this
+      // instance. The host may reload the plugin on a config edit; whatever we
+      // leave behind is then read as the NEW instance's own state (a cached
+      // agent handle was the worst of them: the heartbeat just went quiet).
+      reschedule = null;
+      agentPromise = null;
+      beating = false;
+      beatCancel = undefined;
+      homeRotatePending = null;
+      lastBeat = null;
+      droppedStreak = 0;
+      deferredRetries = 0;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
       deps.ctx.logger.info('heartbeat: orchestrator timer disposed');
     };
   }, 'heartbeat: timer');

@@ -5,6 +5,7 @@
 import path from 'node:path';
 import type { PathGuard } from '../core/path-guard.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
+import { withFileLock } from '../core/file-lock.js';
 import type { Policy } from '../config/schema.js';
 import {
   SEED_SOURCE_DEFAULT_CONFIDENCE,
@@ -124,6 +125,18 @@ export function savePool(guard: PathGuard, file: string, db: SeedDb): void {
   saveEncryptedText(guard, file, body ? body + '\n' : '');
 }
 
+/**
+ * H-20 (minimal tier): every pool writer goes through here, so the load happens
+ * INSIDE the cross-process lock and cannot be based on a read that went stale
+ * while it was being mutated — the CLI is a second process sharing this file,
+ * and an interleaved write used to be silently overwritten. The ciphertext is a
+ * whole-file rewrite, so append/merge does not apply here; the append-only pool
+ * with compaction is v2.0 work (ledger #8649f9).
+ */
+function update<T>(guard: PathGuard, file: string, fn: (db: SeedDb) => T): T {
+  return withFileLock(file, () => fn(loadPool(guard, file)));
+}
+
 // ── queries ─────────────────────────────────────────────────────────────
 
 export const activeSeeds = (db: SeedDb): Seed[] => db.seeds.filter((s) => s.status === 'active');
@@ -201,6 +214,19 @@ export function addSeed(
   input: AddSeedInput,
   now = Date.now(),
   audit: SeedAuditFn = NO_AUDIT,
+): AddSeedResult {
+  // H-20: the read-modify-write below runs under the cross-process pool lock
+  // (same guard as `update`, kept as a named body to avoid re-indenting it).
+  return withFileLock(file, () => addSeedLocked(guard, file, policy, input, now, audit));
+}
+
+function addSeedLocked(
+  guard: PathGuard,
+  file: string,
+  policy: Policy,
+  input: AddSeedInput,
+  now: number,
+  audit: SeedAuditFn,
 ): AddSeedResult {
   const db = loadPool(guard, file);
   const text = input.text.trim();
@@ -306,7 +332,7 @@ export function addSeed(
  * a forensic trail, not a hoard; trim oldest-retired first.
  */
 export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Date.now(), audit: SeedAuditFn = NO_AUDIT): GcReport {
-  const db = loadPool(guard, file);
+  return update(guard, file, (db) => {
   const report: GcReport = { consumed: 0, expired: 0, coldBench: 0, activeAfter: 0, archiveTrimmed: 0 };
   for (const s of activeSeeds(db)) {
     const ageMs = now - parseIso(s.bornAt);
@@ -344,6 +370,7 @@ export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Dat
   report.activeAfter = activeSeeds(db).length;
   savePool(guard, file, db);
   return report;
+  });
 }
 
 /** The seed surfaced in a real expression: count + maybe retire (rule 1). */
@@ -355,20 +382,21 @@ export function surfaceSeed(
   now = Date.now(),
   audit: SeedAuditFn = NO_AUDIT,
 ): Seed | null {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === 'active');
-  if (!s) return null;
-  // H-22: snapshot the PREVIOUS use time before bumping it — the retirement
-  // check must compare against the last use, not against this one.
-  const prevUsedAt = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
-  s.used += 1;
-  s.lastUsedAt = new Date(now).toISOString();
-  if (isConsumed(s, policy, prevUsedAt, parseIso(s.lastEvidenceAt))) {
-    archiveSeed(s, 'consumed', now);
-    emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'surface', used: s.used });
-  }
-  savePool(guard, file, db);
-  return s;
+  return update(guard, file, (db) => {
+    const s = db.seeds.find((x) => x.id === id && x.status === 'active');
+    if (!s) return null;
+    // H-22: snapshot the PREVIOUS use time before bumping it — the retirement
+    // check must compare against the last use, not against this one.
+    const prevUsedAt = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
+    s.used += 1;
+    s.lastUsedAt = new Date(now).toISOString();
+    if (isConsumed(s, policy, prevUsedAt, parseIso(s.lastEvidenceAt))) {
+      archiveSeed(s, 'consumed', now);
+      emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'surface', used: s.used });
+    }
+    savePool(guard, file, db);
+    return s;
+  });
 }
 
 /** Deliberate retirement (item completed / no longer relevant). */
@@ -380,13 +408,14 @@ export function archiveSeedById(
   now = Date.now(),
   audit: SeedAuditFn = NO_AUDIT,
 ): Seed | null {
-  const db = loadPool(guard, file);
-  const s = db.seeds.find((x) => x.id === id && x.status === 'active');
-  if (!s) return null;
-  archiveSeed(s, reason, now);
-  emit(audit, { event: 'seed_retired', id: s.id, reason, via: 'manual' });
-  savePool(guard, file, db);
-  return s;
+  return update(guard, file, (db) => {
+    const s = db.seeds.find((x) => x.id === id && x.status === 'active');
+    if (!s) return null;
+    archiveSeed(s, reason, now);
+    emit(audit, { event: 'seed_retired', id: s.id, reason, via: 'manual' });
+    savePool(guard, file, db);
+    return s;
+  });
 }
 
 /** Restore an archived seed to the active pool (UI operation; resets TTL). */
@@ -398,7 +427,7 @@ export function restoreSeed(
   now = Date.now(),
   audit: SeedAuditFn = NO_AUDIT,
 ): { ok: true; seed: Seed } | { ok: false; reason: string } {
-  const db = loadPool(guard, file);
+  return update<{ ok: true; seed: Seed } | { ok: false; reason: string }>(guard, file, (db) => {
   const s = db.seeds.find((x) => x.id === id && x.status === 'archived');
   if (!s) return { ok: false, reason: 'archived seed not found' };
   // H-23: a restore must satisfy the same two caps an add does — the global
@@ -426,15 +455,17 @@ export function restoreSeed(
   emit(audit, { event: 'seed_restored', id: s.id });
   savePool(guard, file, db);
   return { ok: true, seed: s };
+  });
 }
 
 /** Hard delete (UI explicit action with confirm; the caller audits it). */
 export function deleteSeed(guard: PathGuard, file: string, id: string, audit: SeedAuditFn = NO_AUDIT): boolean {
-  const db = loadPool(guard, file);
-  const before = db.seeds.length;
-  db.seeds = db.seeds.filter((x) => x.id !== id);
-  if (db.seeds.length === before) return false;
-  emit(audit, { event: 'seed_deleted', id });
-  savePool(guard, file, db);
-  return true;
+  return update(guard, file, (db) => {
+    const before = db.seeds.length;
+    db.seeds = db.seeds.filter((x) => x.id !== id);
+    if (db.seeds.length === before) return false;
+    emit(audit, { event: 'seed_deleted', id });
+    savePool(guard, file, db);
+    return true;
+  });
 }

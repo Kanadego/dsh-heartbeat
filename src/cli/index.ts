@@ -1,16 +1,23 @@
 // Operational CLI (design doc §14). Commands grow per module.
 // Run: node dist/cli/index.js <command> [args]  (or via tsx in dev)
+//
+// H-42: `main` used to be a 530-line function with a switch holding every
+// verb's body. The verbs are module-level functions now (see CliCtx below) and
+// `main` only builds the shared context and dispatches — one place to add a
+// command, and each verb is readable on its own.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { initWorkspace, workspace } from '../core/paths.js';
+import { initWorkspace } from '../core/paths.js';
+import type { WorkspacePaths } from '../core/paths.js';
 import { createPathGuard } from '../core/path-guard.js';
+import type { PathGuard } from '../core/path-guard.js';
 import { appendAuditLine, pruneAuditFile } from '../core/audit-log.js';
 import { atomicWriteFileSync } from '../core/atomic-fs.js';
-import { loadEncryptedText } from '../vault/vault.js';
 import { loadPolicy } from '../config/load.js';
+import type { Policy } from '../config/schema.js';
 import {
   addSeed,
   archiveSeedById,
@@ -21,6 +28,7 @@ import {
   seedsFilePath,
   surfaceSeed,
 } from '../seeds/pool.js';
+import type { SeedSource, SeedTag } from '../seeds/types.js';
 import {
   appendEntry,
   ledgerFilePath,
@@ -30,7 +38,6 @@ import {
 } from '../ledger/ledger.js';
 import {
   adviseWander,
-  browseStatePath,
   browseStatus,
   completeWander,
   loadInterests,
@@ -113,6 +120,19 @@ function flag(argv: string[], name: string): string | undefined {
   return i > -1 ? argv[i + 1] : undefined;
 }
 
+/** H-42: the seed flags used to be written `flag(rest, '--tag') as never` — the
+ *  escape hatch threw the type away, so a typo landed in the seed record
+ *  unchecked. Validate against the known sets instead (the `satisfies` clauses
+ *  keep these lists in step with the types). */
+const SEED_TAGS = ['news', 'fandom', 'scene', 'promise'] as const satisfies readonly SeedTag[];
+const SEED_SOURCES = ['chat', 'screen', 'browse', 'hand', 'profile'] as const satisfies readonly SeedSource[];
+
+function flagOneOf<T extends string>(argv: string[], name: string, allowed: readonly T[]): T | undefined {
+  const v = flag(argv, name);
+  if (v === undefined) return undefined;
+  return (allowed as readonly string[]).includes(v) ? (v as T) : undefined;
+}
+
 /** Read N lines from stdin (passphrase prompts for migrate). */
 async function readLines(prompts: string[]): Promise<string[]> {
   const readline = await import('node:readline/promises');
@@ -123,17 +143,564 @@ async function readLines(prompts: string[]): Promise<string[]> {
   return out;
 }
 
+/** Everything a verb needs. Built once in {@link main}; `sub`/`rest` are the
+ *  positional split of argv, `argv` stays available for top-level flags. */
+interface CliCtx {
+  paths: WorkspacePaths;
+  guard: PathGuard;
+  policy: Policy;
+  sub: string | undefined;
+  rest: string[];
+  argv: string[];
+  seedsFile: string;
+  ledgerFile: string;
+  decisionLog: string;
+  seedAudit: (entry: Record<string, unknown>) => void;
+}
+
+type Verb = (c: CliCtx) => Promise<number>;
+
+async function verbStatus(c: CliCtx): Promise<number> {
+  const { paths, policy } = c;
+  console.log(JSON.stringify({
+    dataDir: paths.dataDir,
+    heartbeatIntervalMin: policy.heartbeat.intervalMin,
+    maxDailySend: policy.gate.maxDailySend,
+    seedsMaxActive: policy.seeds.maxActive,
+    psyEnabled: policy.profile.psyEnabled,
+  }, null, 2));
+  return 0;
+}
+
+async function verbSeeds(c: CliCtx): Promise<number> {
+  const { guard, policy, sub, rest, seedsFile, seedAudit } = c;
+  switch (sub) {
+    case 'add': {
+      let text = rest[0]?.trim() ?? '';
+      if (text === '-') text = readStdinText();
+      if (!text) {
+        console.error('usage: seeds add <text|-> [--tag t] [--source s] [--topic x] [--confidence n]');
+        return 1;
+      }
+      const result = addSeed(guard, seedsFile, policy, {
+        text,
+        tag: flagOneOf(rest, '--tag', SEED_TAGS),
+        source: flagOneOf(rest, '--source', SEED_SOURCES),
+        topic: flag(rest, '--topic'),
+        confidence: flag(rest, '--confidence') ? Number(flag(rest, '--confidence')) : undefined,
+      }, Date.now(), seedAudit);
+      if (result.kind === 'duplicate') {
+        console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
+        return 0;
+      }
+      console.log(`${result.kind.toUpperCase()} ${result.seed.id}` +
+        ` (${activeSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.maxActive})` +
+        (result.evicted ? ` [evicted ${result.evicted.id}: ${result.evicted.retireReason}]` : ''));
+      return 0;
+    }
+    case 'list': {
+      const db = loadPool(guard, seedsFile);
+      const items = rest.includes('--archived') ? archivedSeeds(db) : activeSeeds(db);
+      for (const s of items) {
+        const ageDays = Math.floor((Date.now() - Date.parse(s.bornAt)) / 86_400_000);
+        console.log(`${s.id} [${s.tag}/${s.source}] d${ageDays} used:${s.used}` +
+          `${s.protected ? ' *' : ''} ${s.text.slice(0, 60)}`);
+      }
+      if (items.length === 0) console.log('(empty)');
+      return 0;
+    }
+    case 'surface': {
+      const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? '', Date.now(), seedAudit);
+      if (!s) {
+        console.log('NOT_FOUND');
+        return 1;
+      }
+      console.log(`SURFACED ${s.id} used:${s.used}${s.status === 'archived' ? ' -> archived (consumed)' : ''}`);
+      return 0;
+    }
+    case 'archive': {
+      const s = archiveSeedById(guard, seedsFile, rest[0] ?? '', 'completed', Date.now(), seedAudit);
+      if (!s) {
+        console.log('NOT_FOUND');
+        return 1;
+      }
+      console.log(`ARCHIVED ${s.id}`);
+      return 0;
+    }
+    case 'gc': {
+      const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
+      console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench}` +
+        ` archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive}` +
+        ` archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
+      return 0;
+    }
+    case 'stats': {
+      const db = loadPool(guard, seedsFile);
+      console.log(JSON.stringify({
+        active: activeSeeds(db).length,
+        archived: archivedSeeds(db).length,
+        cap: policy.seeds.maxActive,
+        seq: db.seq,
+      }, null, 2));
+      return 0;
+    }
+    default:
+      console.error(`unknown seeds subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbLedger(c: CliCtx): Promise<number> {
+  const { guard, sub, rest, ledgerFile } = c;
+  switch (sub) {
+    case 'add': {
+      let text = rest.join(' ').trim();
+      if (text === '-') text = readStdinText();
+      if (!text) {
+        console.error('usage: ledger add <text|->');
+        return 1;
+      }
+      const e = appendEntry(guard, ledgerFile, text);
+      console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case 'list': {
+      const { entries } = readLedger(guard, ledgerFile);
+      const items = rest.includes('--pending') ? scanPending(guard, ledgerFile) : entries;
+      for (const e of items) console.log(`${e.status === 'open' ? ' ' : 'x'} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log('(empty)');
+      return 0;
+    }
+    case 'done': {
+      const key = rest.join(' ').trim();
+      if (!key) {
+        console.error('usage: ledger done <id|substring>');
+        return 1;
+      }
+      const e = markDone(guard, ledgerFile, key);
+      if (!e) {
+        console.log('NOT_FOUND');
+        return 1;
+      }
+      console.log(`DONE #${e.id}`);
+      return 0;
+    }
+    case 'open': {
+      const f = ledgerFile;
+      if (!fs.existsSync(f)) {
+        console.log(`(ledger will be created at ${f})`);
+      }
+      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbWeekly(c: CliCtx): Promise<number> {
+  const { guard, paths, sub, rest } = c;
+  const reports = listWeeklyReports(guard, paths.dataDir);
+  if (sub === 'list' || sub === undefined) {
+    if (reports.length === 0) console.log('(no reports yet — heartbeat generates one every 7 days)');
+    for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
+    return 0;
+  }
+  if (sub === 'show') {
+    const file = rest[0] ?? reports[0]?.file;
+    if (!file) {
+      console.log('(no reports yet)');
+      return 1;
+    }
+    const rep = readWeeklyReport(guard, paths.dataDir, file);
+    if (!rep) {
+      console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
+      return 1;
+    }
+    console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
+    console.log(rep.text);
+    return 0;
+  }
+  console.error(`unknown weekly subcommand: ${sub}`);
+  return 1;
+}
+
+async function verbLogs(c: CliCtx): Promise<number> {
+  const { paths, policy, sub, rest, decisionLog } = c;
+  if (sub !== 'cleanup') {
+    console.error('usage: logs cleanup [--dry-run]');
+    return 1;
+  }
+  const dry = rest.includes('--dry-run');
+  const envPulse = path.join(paths.logsDir, 'envpulse.jsonl');
+  const cut1 = policy.retention.envPulseHours * 3600_000;
+  const cut2 = policy.retention.decisionLogDays * 86_400_000;
+  if (dry) {
+    console.log(`(dry-run) would prune ${envPulse} to ${policy.retention.envPulseHours}h` +
+      ` and ${decisionLog} to ${policy.retention.decisionLogDays}d`);
+    return 0;
+  }
+  const a = pruneAuditFile(envPulse, cut1);
+  const b = pruneAuditFile(decisionLog, cut2);
+  appendAuditLine(decisionLog, { event: 'retention', pruned_envpulse: a, pruned_decision: b });
+  console.log(`PRUNED envpulse:${a} decision:${b}`);
+  return 0;
+}
+
+async function verbBrowse(c: CliCtx): Promise<number> {
+  const { guard, paths, policy, sub, rest } = c;
+  switch (sub) {
+    case 'status': {
+      const st = browseStatus(guard, paths);
+      const interests = loadInterests(paths);
+      console.log(JSON.stringify({
+        lastWanderAt: st.wander.last_wander_at ? new Date(st.wander.last_wander_at).toISOString() : null,
+        focusCount: st.wander.focusCount,
+        interestCount: interests.interests?.length ?? 0,
+      }, null, 2));
+      return 0;
+    }
+    case 'dry': {
+      const forced = new Date();
+      forced.setHours(12, 0, 0, 0);
+      const advice = adviseWander(guard, paths, policy, forced);
+      console.log(JSON.stringify(advice, null, 2));
+      return 0;
+    }
+    case 'done': {
+      const focus = rest.join(' ').trim();
+      if (!focus) {
+        console.error('usage: browse done <focus>');
+        return 1;
+      }
+      const r = completeWander(guard, paths, focus);
+      console.log(JSON.stringify(r));
+      return 0;
+    }
+    default:
+      console.error(`unknown browse subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbNotify(c: CliCtx): Promise<number> {
+  const { paths, sub } = c;
+  switch (sub) {
+    case 'check':
+      console.log(await ensureRegistered(paths) ? 'REGISTERED: yes' : 'REGISTERED: no');
+      return 0;
+    case 'register':
+      await ensureRegistered(paths);
+      console.log('register attempted');
+      return 0;
+    case 'send':
+      console.log(await sendNewMessageHint(paths) ? 'SENT' : 'FAILED');
+      return 0;
+    default:
+      console.error('usage: notify check|register|send');
+      return 1;
+  }
+}
+
+async function verbProfile(c: CliCtx): Promise<number> {
+  const { guard, paths, sub, rest } = c;
+  const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+  const all = rest.includes('--all');
+  switch (sub) {
+    case 'list': {
+      let n = 0;
+      for (const p of ['interest', 'projects', 'comm', 'psy'] as const) {
+        for (const e of doc.partitions[p]!.entries) {
+          if (!all && e.validTo !== null) continue;
+          n += 1;
+          console.log(`${e.id} [${e.partition}/${e.topic}/${e.subTopic}] ${e.temporal}` +
+            ` conf=${e.confidence.toFixed(2)}${e.lowActivity ? ' 久未验证' : ''}${e.validTo ? ' [失效]' : ''}: ${e.content.slice(0, 60)}`);
+        }
+      }
+      if (n === 0) console.log('(empty)');
+      return 0;
+    }
+    case 'export': {
+      const lines = [`# 画像导出 ${new Date().toISOString()}`, ''];
+      for (const p of ['interest', 'projects', 'comm', 'psy'] as const) {
+        lines.push(`## ${p}`);
+        for (const e of doc.partitions[p]!.entries) {
+          if (e.validTo !== null) continue;
+          lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
+        }
+      }
+      const out = path.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
+      writeText(guard, out, lines.join('\n') + '\n');
+      console.log(`EXPORTED: ${out}`);
+      return 0;
+    }
+    case 'verify': {
+      const r = verifyProfile(guard, paths.dataDir);
+      console.log(JSON.stringify(r, null, 2));
+      return r.ok ? 0 : 1;
+    }
+    case 'rebuild': {
+      const r = rebuildProfile(guard, paths.dataDir, { check: rest.includes('--check') });
+      console.log(JSON.stringify(r, null, 2));
+      return r.ok ? 0 : 1;
+    }
+    case 'wipe': {
+      if (!rest.includes('--yes')) {
+        console.log('REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)');
+        return 1;
+      }
+      for (const f of ['profile.json', 'profile_inbox.jsonl', 'profile_journal.jsonl']) {
+        const abs = guard.assert(path.join(paths.dataDir, f));
+        if (fs.existsSync(abs)) fs.rmSync(abs, { force: true });
+      }
+      console.log('WIPED (settings preserved; use burn for full shredding)');
+      return 0;
+    }
+    case 'snapshot': {
+      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import('../profile/snapshot.js');
+      const { needed, lines } = snapshotDue(guard, paths.dataDir);
+      console.log(`journal ${lines} 条（阈值 ${SNAPSHOT_THRESHOLD}）`);
+      if (!needed && !rest.includes('--force')) {
+        console.log('未到阈值，未执行（加 --force 强制折叠）。');
+        return 0;
+      }
+      const report = snapshotProfile(guard, paths.dataDir);
+      if (!report.ok) {
+        console.log(`未执行：${report.reason}`);
+        return 0;
+      }
+      console.log(`已折叠 ${report.folded} 条 → 快照（baseline ${report.baselineTs}），归档 ${report.archiveFile}，live journal 已清空。`);
+      console.log('verify/rebuild 自动从快照基点重放，无需额外操作。');
+      return 0;
+    }
+    default:
+      console.error(`unknown profile subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbBurn(c: CliCtx): Promise<number> {
+  const { guard, paths, rest } = c;
+  const yes = rest.includes('--yes');
+  const all = rest.includes('--all');
+  const plan = planBurn(guard, paths, all);
+  console.log('预演（不会执行）:');
+  for (const p of plan) console.log(`  [${p.exists ? '存在' : '无  '}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
+  if (!yes) {
+    console.log('\n此操作会让心跳 agent 失忆。确认执行请加 --yes（' + (all ? '含 --all 连用户设定' : '用户设定保留') + '）');
+    return 0;
+  }
+  const result = executeBurn(guard, paths, { all });
+  console.log(`BURNED: ${result.burned.length} 项；MISSING: ${result.missing.length} 项`);
+  return 0;
+}
+
+async function verbMigrate(c: CliCtx): Promise<number> {
+  const { guard, paths, sub, rest } = c;
+  if (sub === 'export') {
+    const defaultOut = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+    const outfile = rest[0] ?? defaultOut;
+    let outCanon: string;
+    try {
+      outCanon = guard.assert(outfile);
+    } catch {
+      console.error(`导出文件必须落在插件 data/ 目录内（路径守卫拒绝）：${outfile}\n默认位置：${defaultOut}`);
+      return 1;
+    }
+    const [pw1, pw2] = await readLines(['设置口令（用于加密迁移包）: ', '再输入一次确认: ']);
+    if (!pw1 || pw1 !== pw2) {
+      console.error('两次输入不一致或为空，已取消。');
+      return 1;
+    }
+    const { entries, progress } = collectMigrationEntries(guard, paths);
+    if (entries.length === 0) {
+      console.log('没有可打包的记忆文件（data/ 是空的）。');
+      return 1;
+    }
+    fs.mkdirSync(path.dirname(outCanon), { recursive: true });
+    atomicWriteFileSync(outCanon, encryptContainer(entries, pw1));
+    console.log(`已打包 ${entries.length} 个文件 → ${outCanon}`);
+    console.log(`  打包：${progress.packed.join(', ')}`);
+    if (progress.missing.length > 0) console.log(`  跳过（不存在）：${progress.missing.join(', ')}`);
+    console.log('容器是口令加密的，可安全拷贝到新机器；DPAPI 会在导入时用新机器重新加密。');
+    return 0;
+  }
+  if (sub === 'import') {
+    const infile = rest[0];
+    if (!infile) {
+      console.error('usage: migrate import <container-file>');
+      return 1;
+    }
+    const [pw] = await readLines(['输入迁移包口令: ']);
+    let text: string;
+    try {
+      text = fs.readFileSync(infile, 'utf8');
+    } catch {
+      console.error(`读不到迁移包：${infile}`);
+      return 1;
+    }
+    let files;
+    try {
+      files = decryptContainer(text, pw ?? '');
+    } catch (e) {
+      console.error(String(e instanceof Error ? e.message : e));
+      return 1;
+    }
+    const result = applyMigrationEntries(guard, paths, files.files);
+    console.log(`恢复 ${result.restored.length} 个文件；备份 ${result.backedUp.length} 个被覆盖文件；跳过 ${result.skipped.length} 个。`);
+    for (const r of result.restored) console.log(`  恢复: ${r}`);
+    for (const b of result.backedUp) console.log(`  备份: ${b}.bak-migrate-*`);
+    if (result.skipped.length > 0) console.log(`  跳过: ${result.skipped.join(', ')}`);
+    if (result.error) console.log(`  失败并已回滚：${result.error}`);
+    console.log('重启 DSH 后生效。');
+    return result.error ? 1 : 0;
+  }
+  console.error(`unknown migrate subcommand: ${sub}`);
+  return 1;
+}
+
+async function verbSessions(c: CliCtx): Promise<number> {
+  const { guard, paths } = c;
+  // Read-only enumeration of the host's persisted sessions (ids from the
+  // on-disk store; titles live server-side and are not listed here).
+  const root = path.join(os.homedir(), '.dsh', 'sessions');
+  let found = 0;
+  if (fs.existsSync(root)) {
+    const { homeSessionId } = await import('../core/orchestrator.js');
+    const own = homeSessionId(guard, paths);
+    for (const slug of fs.readdirSync(root)) {
+      for (const id of fs.readdirSync(path.join(root, slug))) {
+        found += 1;
+        const mark = id === own ? '  ← 心跳正身' : '';
+        console.log(`${id}  [${slug}]${mark}`);
+      }
+    }
+  }
+  if (found === 0) console.log('(no persisted sessions found)');
+  return 0;
+}
+
+async function verbBind(c: CliCtx): Promise<number> {
+  const { guard, paths, sub, rest } = c;
+  const { loadBindings, addBinding, removeBinding } = await import('../core/bindings.js');
+  switch (sub) {
+    case 'list': {
+      const data = loadBindings(guard, paths.settingsDir);
+      const { homeSessionId } = await import('../core/orchestrator.js');
+      const own = homeSessionId(guard, paths);
+      if (own) console.log(`心跳正身: ${own}（决策轮次发生地；bind remove 它 = 重置正身）`);
+      for (const b of data.bindings) {
+        console.log(`${b.sessionId}  deliver:${b.deliver ? '√' : '×'} observe:${b.observe ? '√' : '×'}`);
+      }
+      if (data.bindings.length === 0 && !own) console.log('(no bindings — expressions stay in the dedicated heartbeat session)');
+      return 0;
+    }
+    case 'add': {
+      const id = rest[0];
+      if (!id || !id.startsWith('session-')) {
+        console.error('usage: bind add <sessionId> [--observe] [--no-deliver]  (see: sessions list)');
+        return 1;
+      }
+      const observe = rest.includes('--observe') || rest.includes('--observe-only');
+      const deliver = !rest.includes('--no-deliver') && !rest.includes('--observe-only');
+      const b = addBinding(guard, paths.settingsDir, id, { deliver, observe });
+      console.log(`BOUND ${b.sessionId} deliver:${b.deliver} observe:${b.observe}`);
+      return 0;
+    }
+    case 'remove': {
+      const id = rest[0];
+      if (!id) {
+        console.error('usage: bind remove <sessionId>');
+        return 1;
+      }
+      console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : 'NOT_FOUND');
+      // Unbinding the HOME session resets it: the next beat creates a fresh
+      // dedicated session (the old one goes quiet after restart). H-09/H-45:
+      // the shared path also drops the orchestrator's cached agent — the
+      // inline delete here used to leave it pointing at the released session.
+      const { resetHomeSession } = await import('../core/orchestrator.js');
+      if (resetHomeSession(guard, paths, id)) {
+        console.log('注意：这是心跳正身会话。已重置——下次心跳将创建新的正身会话（旧会话不再有心跳）');
+      }
+      return 0;
+    }
+    default:
+      console.error('usage: bind list | add <sessionId> | remove <sessionId>');
+      return 1;
+  }
+}
+
+async function verbPreset(c: CliCtx): Promise<number> {
+  const { sub, rest, argv } = c;
+  const id = flag(argv, '--id') ?? BUNDLED_PRESET_ID;
+  // The plugin installs into the roster's own user root; the CLI has no
+  // roster, so it reports/uses the conventional one ($DSH_HOME or ~/.dsh).
+  const root = conventionalUserPresetRoot();
+  const status = presetStatus(import.meta.url, id, root);
+  if (sub === undefined || sub === 'status') {
+    console.log(`preset id   : ${status.id}`);
+    console.log(`installed   : ${status.installed ? 'yes' : 'no'}`);
+    console.log(`target dir  : ${status.dir}`);
+    console.log(`bundled at  : ${status.bundledDir ?? '(not found next to the plugin)'}`);
+    if (status.installed) {
+      console.log(
+        `composition : ${status.compositionMatches ? 'matches the bundled template' : 'differs from the bundled template (hand-edited, or an older version)'}`,
+      );
+    }
+    if (!status.installed) {
+      console.log('hint: the plugin installs this itself on the next DSH start (installPreset=true, default);');
+      console.log('      or run `preset install` now.');
+    }
+    return status.installed ? 0 : 1;
+  }
+  if (sub === 'install') {
+    const result = installBundledPreset({
+      moduleUrl: import.meta.url,
+      id,
+      root,
+      force: rest.includes('--force'),
+    });
+    console.log(describeInstall(result));
+    return result.action === 'error' ? 1 : 0;
+  }
+  console.error('usage: preset status | install [--force] [--id <presetId>]');
+  return 1;
+}
+
+/** Command table. Adding a verb = one function above plus one line here. */
+const VERBS: Record<string, Verb> = {
+  status: verbStatus,
+  seeds: verbSeeds,
+  ledger: verbLedger,
+  weekly: verbWeekly,
+  logs: verbLogs,
+  browse: verbBrowse,
+  notify: verbNotify,
+  profile: verbProfile,
+  burn: verbBurn,
+  migrate: verbMigrate,
+  sessions: verbSessions,
+  bind: verbBind,
+  preset: verbPreset,
+};
+
 export async function main(argv: string[]): Promise<number> {
   const [cmd, sub, ...rest] = argv;
   if (!cmd || cmd === 'help' || cmd === '--help') {
     console.log(usage());
     return 0;
   }
+  const verb = VERBS[cmd];
+  if (!verb) {
+    console.error(`unknown command: ${cmd}`);
+    console.log(usage());
+    return 1;
+  }
   const paths = initWorkspace();
   const guard = createPathGuard(paths.dataDir);
   const policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
-  const seedsFile = seedsFilePath(paths.dataDir);
-  const ledgerFile = ledgerFilePath(paths.dataDir);
   const decisionLog = path.join(paths.logsDir, 'heartbeat.jsonl');
   /** Seed lifecycle audit (v1.9.0): CLI edits land in the same log as the beat's. */
   const seedAudit = (entry: Record<string, unknown>): void => {
@@ -141,514 +708,18 @@ export async function main(argv: string[]): Promise<number> {
       appendAuditLine(decisionLog, entry);
     } catch { /* audit must never break the command */ }
   };
-
-  switch (cmd) {
-    case 'status': {
-      console.log(JSON.stringify({
-        dataDir: paths.dataDir,
-        heartbeatIntervalMin: policy.heartbeat.intervalMin,
-        maxDailySend: policy.gate.maxDailySend,
-        seedsMaxActive: policy.seeds.maxActive,
-        psyEnabled: policy.profile.psyEnabled,
-      }, null, 2));
-      return 0;
-    }
-
-    case 'seeds': {
-      switch (sub) {
-        case 'add': {
-          let text = rest[0]?.trim() ?? '';
-          if (text === '-') text = readStdinText();
-          if (!text) {
-            console.error('usage: seeds add <text|-> [--tag t] [--source s] [--topic x] [--confidence n]');
-            return 1;
-          }
-          const result = addSeed(guard, seedsFile, policy, {
-            text,
-            tag: flag(rest, '--tag') as never,
-            source: flag(rest, '--source') as never,
-            topic: flag(rest, '--topic'),
-            confidence: flag(rest, '--confidence') ? Number(flag(rest, '--confidence')) : undefined,
-          }, Date.now(), seedAudit);
-          if (result.kind === 'duplicate') {
-            console.log(`DUPLICATE: active seed ${result.seed.id} has the same text`);
-            return 0;
-          }
-          console.log(`${result.kind.toUpperCase()} ${result.seed.id}` +
-            ` (${activeSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.maxActive})` +
-            (result.evicted ? ` [evicted ${result.evicted.id}: ${result.evicted.retireReason}]` : ''));
-          return 0;
-        }
-        case 'list': {
-          const db = loadPool(guard, seedsFile);
-          const items = rest.includes('--archived') ? archivedSeeds(db) : activeSeeds(db);
-          for (const s of items) {
-            const ageDays = Math.floor((Date.now() - Date.parse(s.bornAt)) / 86_400_000);
-            console.log(`${s.id} [${s.tag}/${s.source}] d${ageDays} used:${s.used}` +
-              `${s.protected ? ' *' : ''} ${s.text.slice(0, 60)}`);
-          }
-          if (items.length === 0) console.log('(empty)');
-          return 0;
-        }
-        case 'surface': {
-          const s = surfaceSeed(guard, seedsFile, policy, rest[0] ?? '', Date.now(), seedAudit);
-          if (!s) {
-            console.log('NOT_FOUND');
-            return 1;
-          }
-          console.log(`SURFACED ${s.id} used:${s.used}${s.status === 'archived' ? ' -> archived (consumed)' : ''}`);
-          return 0;
-        }
-        case 'archive': {
-          const s = archiveSeedById(guard, seedsFile, rest[0] ?? '', 'completed', Date.now(), seedAudit);
-          if (!s) {
-            console.log('NOT_FOUND');
-            return 1;
-          }
-          console.log(`ARCHIVED ${s.id}`);
-          return 0;
-        }
-        case 'gc': {
-          const report = gcPool(guard, seedsFile, policy, Date.now(), seedAudit);
-          console.log(`GC consumed:${report.consumed} expired:${report.expired} cold_bench:${report.coldBench}` +
-            ` archive_trimmed:${report.archiveTrimmed} -> active ${report.activeAfter}/${policy.seeds.maxActive}` +
-            ` archive ${archivedSeeds(loadPool(guard, seedsFile)).length}/${policy.seeds.archiveCap}`);
-          return 0;
-        }
-        case 'stats': {
-          const db = loadPool(guard, seedsFile);
-          console.log(JSON.stringify({
-            active: activeSeeds(db).length,
-            archived: archivedSeeds(db).length,
-            cap: policy.seeds.maxActive,
-            seq: db.seq,
-          }, null, 2));
-          return 0;
-        }
-        default:
-          console.error(`unknown seeds subcommand: ${sub}`);
-          return 1;
-      }
-    }
-
-    case 'ledger': {
-      switch (sub) {
-        case 'add': {
-          let text = rest.join(' ').trim();
-          if (text === '-') text = readStdinText();
-          if (!text) {
-            console.error('usage: ledger add <text|->');
-            return 1;
-          }
-          const e = appendEntry(guard, ledgerFile, text);
-          console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
-          return 0;
-        }
-        case 'list': {
-          const { entries } = readLedger(guard, ledgerFile);
-          const items = rest.includes('--pending') ? scanPending(guard, ledgerFile) : entries;
-          for (const e of items) console.log(`${e.status === 'open' ? ' ' : 'x'} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
-          if (items.length === 0) console.log('(empty)');
-          return 0;
-        }
-        case 'done': {
-          const key = rest.join(' ').trim();
-          if (!key) {
-            console.error('usage: ledger done <id|substring>');
-            return 1;
-          }
-          const e = markDone(guard, ledgerFile, key);
-          if (!e) {
-            console.log('NOT_FOUND');
-            return 1;
-          }
-          console.log(`DONE #${e.id}`);
-          return 0;
-        }
-        case 'open': {
-          const f = ledgerFile;
-          if (!fs.existsSync(f)) {
-            console.log(`(ledger will be created at ${f})`);
-          }
-          spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
-          console.log(`opened ${f}`);
-          return 0;
-        }
-        default:
-          console.error(`unknown ledger subcommand: ${sub}`);
-          return 1;
-      }
-    }
-
-    case 'weekly': {
-      const reports = listWeeklyReports(guard, paths.dataDir);
-      if (sub === 'list' || sub === undefined) {
-        if (reports.length === 0) console.log('(no reports yet — heartbeat generates one every 7 days)');
-        for (const r of reports) console.log(`${r.file}  ${r.start.slice(0, 10)} ~ ${r.end.slice(0, 10)}  [${r.source}]`);
-        return 0;
-      }
-      if (sub === 'show') {
-        const file = rest[0] ?? reports[0]?.file;
-        if (!file) {
-          console.log('(no reports yet)');
-          return 1;
-        }
-        const rep = readWeeklyReport(guard, paths.dataDir, file);
-        if (!rep) {
-          console.error(`no such report: ${file} (see: weekly list; files live in ${weeklyDirPath(paths.dataDir)})`);
-          return 1;
-        }
-        console.log(`# ${rep.start.slice(0, 10)} ~ ${rep.end.slice(0, 10)}  [${rep.source}]`);
-        console.log(rep.text);
-        return 0;
-      }
-      console.error(`unknown weekly subcommand: ${sub}`);
-      return 1;
-    }
-
-    case 'logs': {
-      if (sub !== 'cleanup') {
-        console.error('usage: logs cleanup [--dry-run]');
-        return 1;
-      }
-      const dry = rest.includes('--dry-run');
-      const envPulse = path.join(paths.logsDir, 'envpulse.jsonl');
-      const cut1 = policy.retention.envPulseHours * 3600_000;
-      const cut2 = policy.retention.decisionLogDays * 86_400_000;
-      if (dry) {
-        console.log(`(dry-run) would prune ${envPulse} to ${policy.retention.envPulseHours}h` +
-          ` and ${decisionLog} to ${policy.retention.decisionLogDays}d`);
-        return 0;
-      }
-      const a = pruneAuditFile(envPulse, cut1);
-      const b = pruneAuditFile(decisionLog, cut2);
-      appendAuditLine(decisionLog, { event: 'retention', pruned_envpulse: a, pruned_decision: b });
-      console.log(`PRUNED envpulse:${a} decision:${b}`);
-      return 0;
-    }
-
-    case 'browse': {
-      switch (sub) {
-        case 'status': {
-          const st = browseStatus(guard, paths);
-          const interests = loadInterests(paths);
-          console.log(JSON.stringify({
-            lastWanderAt: st.wander.last_wander_at ? new Date(st.wander.last_wander_at).toISOString() : null,
-            focusCount: st.wander.focusCount,
-            interestCount: interests.interests?.length ?? 0,
-          }, null, 2));
-          return 0;
-        }
-        case 'dry': {
-          const forced = new Date();
-          forced.setHours(12, 0, 0, 0);
-          const advice = adviseWander(guard, paths, policy, forced);
-          console.log(JSON.stringify(advice, null, 2));
-          return 0;
-        }
-        case 'done': {
-          const focus = rest.join(' ').trim();
-          if (!focus) {
-            console.error('usage: browse done <focus>');
-            return 1;
-          }
-          const r = completeWander(guard, paths, focus);
-          console.log(JSON.stringify(r));
-          return 0;
-        }
-        default:
-          console.error(`unknown browse subcommand: ${sub}`);
-          return 1;
-      }
-    }
-
-    case 'notify': {
-      switch (sub) {
-        case 'check':
-          console.log(await ensureRegistered(paths) ? 'REGISTERED: yes' : 'REGISTERED: no');
-          return 0;
-        case 'register':
-          await ensureRegistered(paths);
-          console.log('register attempted');
-          return 0;
-        case 'send':
-          console.log(await sendNewMessageHint(paths) ? 'SENT' : 'FAILED');
-          return 0;
-        default:
-          console.error('usage: notify check|register|send');
-          return 1;
-      }
-    }
-
-    case 'profile': {
-      const doc = loadProfile(guard, profileFilePath(paths.dataDir));
-      const all = rest.includes('--all');
-      switch (sub) {
-        case 'list': {
-          let n = 0;
-          for (const p of ['interest', 'projects', 'comm', 'psy'] as const) {
-            for (const e of doc.partitions[p]!.entries) {
-              if (!all && e.validTo !== null) continue;
-              n += 1;
-              console.log(`${e.id} [${e.partition}/${e.topic}/${e.subTopic}] ${e.temporal}` +
-                ` conf=${e.confidence.toFixed(2)}${e.lowActivity ? ' 久未验证' : ''}${e.validTo ? ' [失效]' : ''}: ${e.content.slice(0, 60)}`);
-            }
-          }
-          if (n === 0) console.log('(empty)');
-          return 0;
-        }
-        case 'export': {
-          const lines = [`# 画像导出 ${new Date().toISOString()}`, ''];
-          for (const p of ['interest', 'projects', 'comm', 'psy'] as const) {
-            lines.push(`## ${p}`);
-            for (const e of doc.partitions[p]!.entries) {
-              if (e.validTo !== null) continue;
-              lines.push(`- [${e.topic}/${e.subTopic}] ${e.content} (conf ${e.confidence.toFixed(2)}, ${e.temporal})`);
-            }
-          }
-          const out = path.join(paths.exportsDir, `profile-export-${Date.now()}.md`);
-          writeText(guard, out, lines.join('\n') + '\n');
-          console.log(`EXPORTED: ${out}`);
-          return 0;
-        }
-        case 'verify': {
-          const r = verifyProfile(guard, paths.dataDir);
-          console.log(JSON.stringify(r, null, 2));
-          return r.ok ? 0 : 1;
-        }
-        case 'rebuild': {
-          const r = rebuildProfile(guard, paths.dataDir, { check: rest.includes('--check') });
-          console.log(JSON.stringify(r, null, 2));
-          return r.ok ? 0 : 1;
-        }
-        case 'wipe': {
-          if (!rest.includes('--yes')) {
-            console.log('REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)');
-            return 1;
-          }
-          for (const f of ['profile.json', 'profile_inbox.jsonl', 'profile_journal.jsonl']) {
-            const abs = guard.assert(path.join(paths.dataDir, f));
-            if (fs.existsSync(abs)) fs.rmSync(abs, { force: true });
-          }
-          console.log('WIPED (settings preserved; use burn for full shredding)');
-          return 0;
-        }
-        case 'snapshot': {
-          const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import('../profile/snapshot.js');
-          const { needed, lines } = snapshotDue(guard, paths.dataDir);
-          console.log(`journal ${lines} 条（阈值 ${SNAPSHOT_THRESHOLD}）`);
-          if (!needed && !rest.includes('--force')) {
-            console.log('未到阈值，未执行（加 --force 强制折叠）。');
-            return 0;
-          }
-          const report = snapshotProfile(guard, paths.dataDir);
-          if (!report.ok) {
-            console.log(`未执行：${report.reason}`);
-            return 0;
-          }
-          console.log(`已折叠 ${report.folded} 条 → 快照（baseline ${report.baselineTs}），归档 ${report.archiveFile}，live journal 已清空。`);
-          console.log('verify/rebuild 自动从快照基点重放，无需额外操作。');
-          return 0;
-        }
-        default:
-          console.error(`unknown profile subcommand: ${sub}`);
-          return 1;
-      }
-    }
-
-    case 'burn': {
-      const yes = rest.includes('--yes');
-      const all = rest.includes('--all');
-      const plan = planBurn(guard, paths, all);
-      console.log('预演（不会执行）:' );
-      for (const p of plan) console.log(`  [${p.exists ? '存在' : '无  '}] ${p.target.file ?? p.target.dir}  ${p.target.note}`);
-      if (!yes) {
-        console.log('\n此操作会让心跳 agent 失忆。确认执行请加 --yes（' + (all ? '含 --all 连用户设定' : '用户设定保留') + '）');
-        return 0;
-      }
-      const result = executeBurn(guard, paths, { all });
-      console.log(`BURNED: ${result.burned.length} 项；MISSING: ${result.missing.length} 项`);
-      return 0;
-    }
-
-    case 'migrate': {
-      if (sub === 'export') {
-        const defaultOut = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
-        const outfile = rest[0] ?? defaultOut;
-        let outCanon: string;
-        try {
-          outCanon = guard.assert(outfile);
-        } catch {
-          console.error(`导出文件必须落在插件 data/ 目录内（路径守卫拒绝）：${outfile}\n默认位置：${defaultOut}`);
-          return 1;
-        }
-        const [pw1, pw2] = await readLines(['设置口令（用于加密迁移包）: ', '再输入一次确认: ']);
-        if (!pw1 || pw1 !== pw2) {
-          console.error('两次输入不一致或为空，已取消。');
-          return 1;
-        }
-        const { entries, progress } = collectMigrationEntries(guard, paths);
-        if (entries.length === 0) {
-          console.log('没有可打包的记忆文件（data/ 是空的）。');
-          return 1;
-        }
-        fs.mkdirSync(path.dirname(outCanon), { recursive: true });
-        atomicWriteFileSync(outCanon, encryptContainer(entries, pw1));
-        console.log(`已打包 ${entries.length} 个文件 → ${outCanon}`);
-        console.log(`  打包：${progress.packed.join(', ')}`);
-        if (progress.missing.length > 0) console.log(`  跳过（不存在）：${progress.missing.join(', ')}`);
-        console.log('容器是口令加密的，可安全拷贝到新机器；DPAPI 会在导入时用新机器重新加密。');
-        return 0;
-      }
-      if (sub === 'import') {
-        const infile = rest[0];
-        if (!infile) {
-          console.error('usage: migrate import <container-file>');
-          return 1;
-        }
-        const [pw] = await readLines(['输入迁移包口令: ']);
-        let text: string;
-        try {
-          text = fs.readFileSync(infile, 'utf8');
-        } catch {
-          console.error(`读不到迁移包：${infile}`);
-          return 1;
-        }
-        let files;
-        try {
-          files = decryptContainer(text, pw ?? '');
-        } catch (e) {
-          console.error(String(e instanceof Error ? e.message : e));
-          return 1;
-        }
-        const result = applyMigrationEntries(guard, paths, files.files);
-        console.log(`恢复 ${result.restored.length} 个文件；备份 ${result.backedUp.length} 个被覆盖文件；跳过 ${result.skipped.length} 个。`);
-        for (const r of result.restored) console.log(`  恢复: ${r}`);
-        for (const b of result.backedUp) console.log(`  备份: ${b}.bak-migrate-*`);
-        if (result.skipped.length > 0) console.log(`  跳过: ${result.skipped.join(', ')}`);
-        console.log('重启 DSH 后生效。');
-        return 0;
-      }
-      console.error(`unknown migrate subcommand: ${sub}`);
-      return 1;
-    }
-
-    case 'sessions': {
-      // Read-only enumeration of the host's persisted sessions (ids from the
-      // on-disk store; titles live server-side and are not listed here).
-      const root = path.join(os.homedir(), '.dsh', 'sessions');
-      let found = 0;
-      if (fs.existsSync(root)) {
-        let own: string | null = null;
-        try {
-          own = (JSON.parse(loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json')) ?? '{}') as { sessionId?: string }).sessionId ?? null;
-        } catch { /* gate.json absent or unreadable */ }
-        for (const slug of fs.readdirSync(root)) {
-          for (const id of fs.readdirSync(path.join(root, slug))) {
-            found += 1;
-            const mark = id === own ? '  ← 心跳正身' : '';
-            console.log(`${id}  [${slug}]${mark}`);
-          }
-        }
-      }
-      if (found === 0) console.log('(no persisted sessions found)');
-      return 0;
-    }
-
-    case 'bind': {
-      const { loadBindings, addBinding, removeBinding, bindingsFilePath } = await import('../core/bindings.js');
-      switch (sub) {
-        case 'list': {
-          const data = loadBindings(guard, paths.settingsDir);
-          let own: string | null = null;
-          try {
-            own = (JSON.parse(loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json')) ?? '{}') as { sessionId?: string }).sessionId ?? null;
-          } catch { /* absent */ }
-          if (own) console.log(`心跳正身: ${own}（决策轮次发生地；bind remove 它 = 重置正身）`);
-          for (const b of data.bindings) {
-            console.log(`${b.sessionId}  deliver:${b.deliver ? '√' : '×'} observe:${b.observe ? '√' : '×'}`);
-          }
-          if (data.bindings.length === 0 && !own) console.log('(no bindings — expressions stay in the dedicated heartbeat session)');
-          return 0;
-        }
-        case 'add': {
-          const id = rest[0];
-          if (!id || !id.startsWith('session-')) {
-            console.error('usage: bind add <sessionId> [--observe] [--no-deliver]  (see: sessions list)');
-            return 1;
-          }
-          const observe = rest.includes('--observe') || rest.includes('--observe-only');
-          const deliver = !rest.includes('--no-deliver') && !rest.includes('--observe-only');
-          const b = addBinding(guard, paths.settingsDir, id, { deliver, observe });
-          console.log(`BOUND ${b.sessionId} deliver:${b.deliver} observe:${b.observe}`);
-          return 0;
-        }
-        case 'remove': {
-          const id = rest[0];
-          if (!id) {
-            console.error('usage: bind remove <sessionId>');
-            return 1;
-          }
-          console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : 'NOT_FOUND');
-          // Unbinding the HOME session resets it: the next beat creates a
-          // fresh dedicated session (the old one goes quiet after restart).
-          try {
-            const state = JSON.parse(loadEncryptedText(guard, path.join(paths.dataDir, 'gate.json')) ?? '{}') as { sessionId?: string };
-            if (state.sessionId === id) {
-              fs.rmSync(guard.assert(path.join(paths.dataDir, 'gate.json')), { force: true });
-              console.log('注意：这是心跳正身会话。已重置——下次心跳将创建新的正身会话（旧会话不再有心跳）');
-              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'home_reset', oldSessionId: id });
-            }
-          } catch { /* gate.json absent: nothing to reset */ }
-          return 0;
-        }
-        default:
-          console.error('usage: bind list | add <sessionId> | remove <sessionId>');
-          return 1;
-      }
-    }
-
-    case 'preset': {
-      const id = flag(argv, '--id') ?? BUNDLED_PRESET_ID;
-      // The plugin installs into the roster's own user root; the CLI has no
-      // roster, so it reports/uses the conventional one ($DSH_HOME or ~/.dsh).
-      const root = conventionalUserPresetRoot();
-      const status = presetStatus(import.meta.url, id, root);
-      if (sub === undefined || sub === 'status') {
-        console.log(`preset id   : ${status.id}`);
-        console.log(`installed   : ${status.installed ? 'yes' : 'no'}`);
-        console.log(`target dir  : ${status.dir}`);
-        console.log(`bundled at  : ${status.bundledDir ?? '(not found next to the plugin)'}`);
-        if (status.installed) {
-          console.log(
-            `composition : ${status.compositionMatches ? 'matches the bundled template' : 'differs from the bundled template (hand-edited, or an older version)'}`,
-          );
-        }
-        if (!status.installed) {
-          console.log('hint: the plugin installs this itself on the next DSH start (installPreset=true, default);');
-          console.log('      or run `preset install` now.');
-        }
-        return status.installed ? 0 : 1;
-      }
-      if (sub === 'install') {
-        const result = installBundledPreset({
-          moduleUrl: import.meta.url,
-          id,
-          root,
-          force: rest.includes('--force'),
-        });
-        console.log(describeInstall(result));
-        return result.action === 'error' ? 1 : 0;
-      }
-      console.error('usage: preset status | install [--force] [--id <presetId>]');
-      return 1;
-    }
-
-    default:
-      console.error(`unknown command: ${cmd}`);
-      console.log(usage());
-      return 1;
-  }
+  return verb({
+    paths,
+    guard,
+    policy,
+    sub,
+    rest,
+    argv,
+    seedsFile: seedsFilePath(paths.dataDir),
+    ledgerFile: ledgerFilePath(paths.dataDir),
+    decisionLog,
+    seedAudit,
+  });
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href) {

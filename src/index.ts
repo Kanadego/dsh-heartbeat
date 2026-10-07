@@ -178,18 +178,35 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   let statusbarEnabledRef = ui.statusbar ?? (config.statusbar !== false);
   let idleModeRef = ui.idleMode ?? (config.idleMode === true);
   let tokenSaverRef = ui.tokenSaver ?? (config.tokenSaver === true);
+
+  // H-48: ONE setter table for the live-settable fields. The settings section
+  // and the RPC uiSet path used to carry a copy each of the same six ifs, so a
+  // new field had to be added twice — and the two copies had already drifted
+  // (timeInjectMin's lower bound, tokenSaver's absence from the section path).
+  const applyLiveSettings = (v: {
+    intervalMin?: number;
+    maxDailySend?: number;
+    timeInjectMin?: number;
+    statusbar?: boolean;
+    idleMode?: boolean;
+    tokenSaver?: boolean;
+  }): void => {
+    if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
+    if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
+    if (typeof v.timeInjectMin === 'number' && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
+    if (typeof v.statusbar === 'boolean') statusbarEnabledRef = v.statusbar;
+    if (typeof v.idleMode === 'boolean') {
+      idleModeRef = v.idleMode;
+      getRuntime().policy.heartbeat.idleMode = v.idleMode;
+    }
+    if (typeof v.tokenSaver === 'boolean') tokenSaverRef = v.tokenSaver;
+  };
+
   const applySettingsOverrides = (): void => {
     try {
       const v = sectionSource?.();
       if (!v) return;
-      if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
-      if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
-      if (typeof v.timeInjectMin === 'number' && v.timeInjectMin >= 0) timeInjectMinRef = v.timeInjectMin;
-      if (typeof v.statusbar === 'boolean') statusbarEnabledRef = v.statusbar;
-      if (typeof v.idleMode === 'boolean') {
-        idleModeRef = v.idleMode;
-        getRuntime().policy.heartbeat.idleMode = v.idleMode;
-      }
+      applyLiveSettings(v);
       ctx.logger.info('heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)', v.intervalMin ?? '-', v.maxDailySend ?? '-', v.timeInjectMin ?? '-');
     } catch (e) {
       ctx.logger.warn('heartbeat: settings override failed (%s)', String(e).slice(0, 120));
@@ -278,17 +295,31 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       getRuntime().policy.profile.psyEnabled = patch.psyEnabled;
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
-    if (merged.intervalMin && merged.intervalMin >= 1) applyHeartbeatInterval(deps, merged.intervalMin);
-    if (merged.maxDailySend && merged.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = merged.maxDailySend;
-    if (typeof merged.timeInjectMin === 'number') timeInjectMinRef = merged.timeInjectMin;
-    if (typeof merged.statusbar === 'boolean') statusbarEnabledRef = merged.statusbar;
-    if (typeof merged.idleMode === 'boolean') {
-      idleModeRef = merged.idleMode;
-      getRuntime().policy.heartbeat.idleMode = merged.idleMode;
-    }
-    if (typeof merged.tokenSaver === 'boolean') tokenSaverRef = merged.tokenSaver;
+    applyLiveSettings(merged);
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
+
+  // H-49: the ledger (v1.8.0) and seed_report (v1.9.0) registrations were two
+  // copies of one block — same audit closure, same try/catch, same degradation
+  // to an audit line on a host without a registerable ToolRuntime. One factory
+  // now covers both; the audit event names are unchanged.
+  const registerGlobalTool = (name: string, build: () => unknown): void => {
+    ctx.inject(['tools'], (scoped: unknown) => {
+      const audit = (entry: Record<string, unknown>): void => {
+        try {
+          appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+        } catch { /* audit must never break startup */ }
+      };
+      try {
+        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
+        if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
+        tools.register(build());
+        audit({ event: `${name}_tool_registered` });
+      } catch (e) {
+        audit({ event: `${name}_tool_register_failed`, error: String(e).slice(0, 160) });
+      }
+    });
+  };
 
   // ── Ledger as a model tool (v1.8.0) ─────────────────────────────────────
   // Registers a shared `ledger` tool in the GLOBAL tool layer so every chat
@@ -297,21 +328,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // is a plain object (no dsh-tools import); a host without a registerable
   // ToolRuntime degrades to an audit line only.
   if (config.ledgerTool !== false) {
-    ctx.inject(['tools'], (scoped: unknown) => {
-      const audit = (entry: Record<string, unknown>): void => {
-        try {
-          appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
-        } catch { /* audit must never break startup */ }
-      };
-      try {
-        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
-        if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
-        tools.register(buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
-        audit({ event: 'ledger_tool_registered' });
-      } catch (e) {
-        audit({ event: 'ledger_tool_register_failed', error: String(e).slice(0, 160) });
-      }
-    });
+    registerGlobalTool('ledger', () => buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
   }
 
   // ── Seed report tool (v1.9.0): the persona files ONE report per delivery ─
@@ -319,21 +336,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // that replaced containment-match attribution. Same global-layer pattern as
   // the ledger tool; the engine room never sees it.
   if (config.seedReportTool !== false) {
-    ctx.inject(['tools'], (scoped: unknown) => {
-      const audit = (entry: Record<string, unknown>): void => {
-        try {
-          appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
-        } catch { /* audit must never break startup */ }
-      };
-      try {
-        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
-        if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
-        tools.register(buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
-        audit({ event: 'seed_report_tool_registered' });
-      } catch (e) {
-        audit({ event: 'seed_report_tool_register_failed', error: String(e).slice(0, 160) });
-      }
-    });
+    registerGlobalTool('seed_report', () => buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
   }
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
