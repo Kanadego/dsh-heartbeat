@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PathGuard } from '../core/path-guard.js';
+import { atomicWriteFileSync } from '../core/atomic-fs.js';
 
 export const USER_UI_FILE = 'ui.json';
 
@@ -62,6 +63,6 @@ export function saveUiConfig(guard: PathGuard, settingsDir: string, patch: UiCon
   const merged = sanitize({ ...loadUiConfig(guard, settingsDir), ...patch });
   const file = guard.assert(uiConfigPath(settingsDir));
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  atomicWriteFileSync(file, JSON.stringify(merged, null, 2) + '\n');
   return merged;
 }

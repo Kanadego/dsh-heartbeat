@@ -152,14 +152,18 @@ export async function describeScreenShot(
 ): Promise<ScreenVision> {
   const mainJs = opts.mainPath ?? resolveModlensMain(opts.moduleUrl);
   if (!mainJs) return { ok: false, summary: null, error: 'modlens not installed' };
-  const shot = unlockShot(guard, paths);
-  if (!shot) return { ok: false, summary: null, error: 'no screenshot this beat' };
   const outJson = path.join(paths.tmpDir, `screen.vision.${Date.now()}.json`);
   const spawnCli = opts.spawnCli ?? defaultSpawn;
   const timeoutMs = opts.timeoutMs ?? VISION_TIMEOUT_MS;
   const settings = opts.settings ?? readVisionSettings(guard, paths);
   const provider = opts.provider ?? settings.provider ?? DEFAULT_VISION_PROVIDER;
+  // H-11: unlockShot decrypts AND asserts the path — it can throw. Keeping it
+  // inside the try preserves the "never throws" contract, and the `finally`
+  // below still burns whatever was unlocked.
+  let shot: string | null = null;
   try {
+    shot = unlockShot(guard, paths);
+    if (!shot) return { ok: false, summary: null, error: 'no screenshot this beat' };
     const args = [
       mainJs,
       '-i', shot,
@@ -182,7 +186,7 @@ export async function describeScreenShot(
   } catch (e) {
     return { ok: false, summary: null, error: String(e).slice(0, 160) };
   } finally {
-    burnUnlocked(guard, shot);
+    if (shot) burnUnlocked(guard, shot);
     fs.rmSync(outJson, { force: true });
   }
 }

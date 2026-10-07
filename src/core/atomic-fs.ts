@@ -38,3 +38,15 @@ export function shredFileSync(target: string, passes = 3): void {
   }
   fs.rmSync(target, { force: true });
 }
+
+/**
+ * Best-effort burn for a plaintext window: shred it when it exists, ignore it
+ * when it is already gone (H-59 — `rm` alone leaves the bytes on disk).
+ */
+export function burnFileSync(target: string): void {
+  try {
+    shredFileSync(target);
+  } catch {
+    fs.rmSync(target, { force: true });
+  }
+}

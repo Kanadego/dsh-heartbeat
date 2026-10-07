@@ -6,6 +6,7 @@
 param([string]$out)
 
 $ErrorActionPreference = 'Stop'
+if (-not $out) { throw 'frontwin.ps1: -out <path> is required' }
 
 Add-Type @'
 using System;

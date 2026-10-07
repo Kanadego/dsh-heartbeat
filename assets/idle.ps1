@@ -4,6 +4,7 @@
 param([string]$out)
 
 $ErrorActionPreference = 'Stop'
+if (-not $out) { throw 'idle.ps1: -out <path> is required' }
 
 Add-Type @'
 using System;

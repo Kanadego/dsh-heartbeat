@@ -175,6 +175,23 @@ function retireLimit(s: Seed, policy: Policy): number {
   return normalizeCategory(s.category) === 'chat' ? 1 : policy.seeds.retireAfterUsed;
 }
 
+/**
+ * Rule 1 (§4.2): used up to its limit AND no evidence newer than the PREVIOUS
+ * use. `prevUsedAt` MUST be read before bumping `lastUsedAt` — comparing the
+ * just-written value against `lastEvidenceAt` is vacuously true (H-22), which
+ * retired seeds that had received fresh evidence in the same beat. Both
+ * callers (gc and surface) share this, so the rule cannot drift again.
+ *
+ * `prevUsedAt === 0` means "never used before": there is no earlier use for
+ * the evidence to be newer THAN, so the exemption cannot apply — a one-shot
+ * (chat) seed still retires on its first surfacing (spec ④), which is the
+ * contract, not a regression.
+ */
+function isConsumed(s: Seed, policy: Policy, prevUsedAt: number, sinceEvidence: number): boolean {
+  if (s.used < retireLimit(s, policy)) return false;
+  return !(prevUsedAt > 0 && sinceEvidence > prevUsedAt);
+}
+
 // ── operations ──────────────────────────────────────────────────────────
 
 export function addSeed(
@@ -295,7 +312,7 @@ export function gcPool(guard: PathGuard, file: string, policy: Policy, now = Dat
     const ageMs = now - parseIso(s.bornAt);
     const sinceEvidence = parseIso(s.lastEvidenceAt);
     const sinceUsed = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
-    if (s.used >= retireLimit(s, policy) && sinceEvidence <= sinceUsed) {
+    if (isConsumed(s, policy, sinceUsed, sinceEvidence)) {
       archiveSeed(s, 'consumed', now);
       report.consumed += 1;
       emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'gc', used: s.used });
@@ -341,9 +358,12 @@ export function surfaceSeed(
   const db = loadPool(guard, file);
   const s = db.seeds.find((x) => x.id === id && x.status === 'active');
   if (!s) return null;
+  // H-22: snapshot the PREVIOUS use time before bumping it — the retirement
+  // check must compare against the last use, not against this one.
+  const prevUsedAt = s.lastUsedAt ? parseIso(s.lastUsedAt) : 0;
   s.used += 1;
   s.lastUsedAt = new Date(now).toISOString();
-  if (s.used >= retireLimit(s, policy) && parseIso(s.lastEvidenceAt) <= parseIso(s.lastUsedAt)) {
+  if (isConsumed(s, policy, prevUsedAt, parseIso(s.lastEvidenceAt))) {
     archiveSeed(s, 'consumed', now);
     emit(audit, { event: 'seed_retired', id: s.id, reason: 'consumed', via: 'surface', used: s.used });
   }
@@ -381,12 +401,26 @@ export function restoreSeed(
   const db = loadPool(guard, file);
   const s = db.seeds.find((x) => x.id === id && x.status === 'archived');
   if (!s) return { ok: false, reason: 'archived seed not found' };
+  // H-23: a restore must satisfy the same two caps an add does — the global
+  // one AND the per-category one. The add path evicts a neighbour instead, but
+  // restoring a memory is a user action: refuse it rather than silently
+  // pushing someone else's material out.
+  const category = normalizeCategory(s.category);
+  const catCap = SEED_CATEGORY_CAPS[category];
+  const inCategory = activeSeeds(db).filter((x) => normalizeCategory(x.category) === category).length;
+  if (inCategory >= catCap) {
+    return { ok: false, reason: `category full (${category}: ${catCap}); archive something in it first` };
+  }
   if (activeSeeds(db).length >= policy.seeds.maxActive) {
     return { ok: false, reason: `pool full (${policy.seeds.maxActive}); archive something first` };
   }
   s.status = 'active';
   s.retireReason = undefined;
   s.retiredAt = undefined;
+  // H-23: reset bornAt as well — cold-bench eviction (used === 0 && age >=
+  // coldBenchDays) keys off bornAt, so a restored seed used to be re-archived
+  // by the very next maintenance beat ("restored, then gone one beat later").
+  s.bornAt = new Date(now).toISOString();
   s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
   s.lastEvidenceAt = new Date(now).toISOString();
   emit(audit, { event: 'seed_restored', id: s.id });

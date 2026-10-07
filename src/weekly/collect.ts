@@ -9,7 +9,7 @@ import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { readAuditLines } from '../core/audit-log.js';
-import { journalFilePath } from '../profile/store.js';
+import { readJournalTexts } from '../profile/store.js';
 import { readLedger, pendingOlderThan, ledgerFilePath } from '../ledger/ledger.js';
 import { loadPool, seedsFilePath, activeSeeds } from '../seeds/pool.js';
 import { readSeedReports, reportFilePath } from '../seeds/report.js';
@@ -17,6 +17,8 @@ import { summarizeRhythm } from '../rhythm/rhythm.js';
 
 const DAY_MS = 86_400_000;
 const WINDOW_DAYS = 7;
+/** H-53: named threshold (was a bare `12` in the ledger section). */
+const LEDGER_STALE_DAYS = 12;
 
 export interface WeeklyFacts {
   windowStart: string;
@@ -95,9 +97,12 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
   } catch { /* audit unreadable: counts stay zero */ }
 
   // 2) profile adds from the journal (plaintext JSONL; ADD ops only).
+  // H-01: read the archive shards too. Past SNAPSHOT_THRESHOLD the maintenance
+  // phase rotates the journal into profile_journal.archive-*.jsonl and empties
+  // the live file, so reading only the live journal silently reported "the
+  // profile learned nothing this week" after every rotation.
   const profileAdds: WeeklyFacts['profileAdds'] = [];
-  try {
-    const raw = fs.readFileSync(journalFilePath(paths.dataDir), 'utf8');
+  for (const raw of readJournalTexts(guard, paths.dataDir)) {
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
@@ -113,7 +118,7 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
         }
       } catch { /* skip a corrupt journal line */ }
     }
-  } catch { /* no journal yet */ }
+  }
 
   // 3) ledger: added / done-this-week / stale open items.
   const ledger = { added: [] as string[], done: [] as string[], stale: [] as { text: string; days: number }[] };
@@ -125,9 +130,13 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
         (e.status === 'done' ? ledger.done : ledger.added).push(trim(e.text, 40));
       }
     }
-    const staleCutoffDays = 12;
-    for (const e of pendingOlderThan(guard, ledgerFilePath(paths.dataDir), staleCutoffDays, now)) {
-      const days = Math.max(1, Math.round((now - Date.parse(`${e.date}T${e.time}:00`)) / DAY_MS));
+    for (const e of pendingOlderThan(guard, ledgerFilePath(paths.dataDir), LEDGER_STALE_DAYS, now)) {
+      const t = Date.parse(`${e.date}T${e.time}:00`);
+      // H-53: an unparseable timestamp used to yield `days: NaN` (and the
+      // comparison above is silently false on NaN) — skip the row instead of
+      // printing a number we cannot stand behind.
+      if (!Number.isFinite(t)) continue;
+      const days = Math.max(1, Math.round((now - t) / DAY_MS));
       ledger.stale.push({ text: trim(e.text, 40), days });
     }
   } catch { /* no ledger yet */ }

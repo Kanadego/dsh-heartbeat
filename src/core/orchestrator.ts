@@ -1269,9 +1269,19 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     noteBeat('spoke_failed', { reason: 'unparseable decision output' });
     return;
   }
-  // 一条素材都不合适 → 本轮不投递（记 silent）。
-  if (!parsed.speak || !Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'no material' });
+  // 一条素材都不合适 → 本轮不投递。
+  // H-04 / 拍板（2026-10-07）：⑤a 只备料，「此刻说不说、说哪条」由 ⑤b 的投递
+  // 会话决定 —— 决策轮返回的 `speak:false` 不再否决整包素材（旧行为与 2026-09-16
+  // 改版的设计意图正相反）。只有 seed_ids 缺失或为空才是"这轮真的没有可递的东西"。
+  // 事件同时从 `silent` 拆出来：主动沉默与"素材被丢掉"必须分得开，否则周报上的
+  // 沉默次数会把前者算成后者。
+  if (!Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'expression_dropped',
+      why: 'no seed_ids from the decision turn',
+      speak_flag: typeof parsed.speak === 'boolean' ? parsed.speak : null,
+    });
+    noteDroppedStreak(paths.logsDir + '/heartbeat.jsonl', 'no seed_ids from the decision turn');
     noteBeat('silent', { reason: 'no material' });
     return;
   }
@@ -1285,17 +1295,38 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   }
   // 素材必须真有内容；一条都没有（seed_ids 匹配失败）→ 不投递。
   if (materials.length === 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'seed_ids matched no active material' });
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'expression_dropped',
+      why: 'seed_ids matched no active material',
+      requested: parsed.seed_ids,
+    });
+    noteDroppedStreak(paths.logsDir + '/heartbeat.jsonl', 'seed_ids matched no active material');
     noteBeat('silent', { reason: 'seed_ids matched no active material' });
     return;
   }
   // ⑤b 表达轮：投递目标会话出声 + 归账 + 留痕（v1.6.3 抽出 deliverPackage，素材池与画像兜底共用）。
+  droppedStreak = 0; // H-04: a package made it out — the warning streak resets.
   return deliverPackage(bc, materials, {
     seedIds: parsed.seed_ids ?? [],
     doing: (typeof parsed.doing === 'string' && parsed.doing.trim() && screen)
       ? parsed.doing.trim().slice(0, 80)
       : undefined,
   });
+}
+
+/** H-04: consecutive beats whose material package was dropped before delivery.
+ *  Process-local on purpose — it only sharpens a warning, and losing the count
+ *  to a DSH restart is harmless (the audit trail keeps the history). */
+let droppedStreak = 0;
+const DROPPED_STREAK_ALERT = 3;
+
+/** H-04: escalate a dropped material package. The per-drop event is already
+ *  written by the caller (so a single drop is visible in its own right); this
+ *  only adds the "this is not a one-off any more" signal. */
+function noteDroppedStreak(auditFile: string, why: string): void {
+  droppedStreak += 1;
+  if (droppedStreak < DROPPED_STREAK_ALERT) return;
+  appendAuditLine(auditFile, { event: 'expression_dropped_streak', consecutive: droppedStreak, why });
 }
 // ── the beat ────────────────────────────────────────────────────────────
 

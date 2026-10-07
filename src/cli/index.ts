@@ -8,6 +8,7 @@ import path from 'node:path';
 import { initWorkspace, workspace } from '../core/paths.js';
 import { createPathGuard } from '../core/path-guard.js';
 import { appendAuditLine, pruneAuditFile } from '../core/audit-log.js';
+import { atomicWriteFileSync } from '../core/atomic-fs.js';
 import { loadEncryptedText } from '../vault/vault.js';
 import { loadPolicy } from '../config/load.js';
 import {
@@ -504,7 +505,7 @@ export async function main(argv: string[]): Promise<number> {
           return 1;
         }
         fs.mkdirSync(path.dirname(outCanon), { recursive: true });
-        fs.writeFileSync(outCanon, encryptContainer(entries, pw1), 'utf8');
+        atomicWriteFileSync(outCanon, encryptContainer(entries, pw1));
         console.log(`已打包 ${entries.length} 个文件 → ${outCanon}`);
         console.log(`  打包：${progress.packed.join(', ')}`);
         if (progress.missing.length > 0) console.log(`  跳过（不存在）：${progress.missing.join(', ')}`);
@@ -664,5 +665,11 @@ export async function main(argv: string[]): Promise<number> {
 
 if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href) {
   // Direct execution guard; the CLI is also importable for tests.
-  void main(process.argv.slice(2)).then((code) => { process.exitCode = code; });
+  void main(process.argv.slice(2))
+    .then((code) => { process.exitCode = code; })
+    .catch((e: unknown) => {
+      // H-44: no unhandled rejection — print and exit non-zero.
+      console.error(e);
+      process.exitCode = 1;
+    });
 }
