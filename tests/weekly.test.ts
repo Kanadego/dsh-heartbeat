@@ -9,6 +9,7 @@ import { createPathGuard } from '../src/core/path-guard.js';
 import { loadPolicy } from '../src/config/load.js';
 import { appendEntry, ledgerFilePath, markDone } from '../src/ledger/ledger.js';
 import { persistWithJournal } from '../src/profile/store.js';
+import { snapshotProfile } from '../src/profile/snapshot.js';
 import { savePool, seedsFilePath } from '../src/seeds/pool.js';
 import type { SeedDb } from '../src/seeds/types.js';
 import { collectWeeklyFacts } from '../src/weekly/collect.js';
@@ -201,4 +202,31 @@ test('v1.9.0: unaccounted deliveries surface in the report instead of hiding', (
   assert.equal(facts.reports.missing, 0);
   const text = renderTemplateReport({ ...facts, reports: { ...facts.reports, missing: 2 } });
   assert.ok(text.includes('2 次投递没等到报账'));
+});
+
+test('H-01: a rotated journal (archive shard) still feeds profileAdds', () => {
+  const now = Date.parse('2026-10-05T12:00:00');
+  const paths = workspace();
+  const iso = (t: number): string => new Date(t).toISOString();
+  persistWithJournal(guard, paths.dataDir, {
+    version: 1,
+    partitions: { interest: { entries: [] }, projects: { entries: [] }, comm: { entries: [] }, psy: { entries: [] } },
+  }, {
+    runId: 'r1',
+    applied: [{ op: 'ADD', partition: 'interest', topic: 'audio', subTopic: 'podcast', content: '在折腾播客工具', confidence: 0.5, temporal: 'stable', evidence: [], assignedId: 'a1' } as never],
+    rejected: [],
+  });
+  const journalFile = path.join(paths.dataDir, 'profile_journal.jsonl');
+  fs.writeFileSync(journalFile, fs.readFileSync(journalFile, 'utf8').replace(/"ts":"[^"]*"/, `"ts":"${iso(now - 86_400_000)}"`), 'utf8');
+
+  // Rotate exactly like the maintenance phase does: fold into the snapshot and
+  // move the records into an archive shard, leaving the live journal empty.
+  // The week's ADD must survive that move — before H-01 was fixed it vanished
+  // and the report claimed the profile had learned nothing all week.
+  assert.equal(snapshotProfile(guard, paths.dataDir, now).ok, true);
+  assert.equal(fs.readFileSync(journalFile, 'utf8'), '');
+
+  const facts = collectWeeklyFacts(guard, paths, policy(), now);
+  assert.equal(facts.profileAdds.length, 1);
+  assert.equal(facts.profileAdds[0]!.content, '在折腾播客工具');
 });

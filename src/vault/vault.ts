@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
 import { workspace } from '../core/paths.js';
+import { burnFileSync } from '../core/atomic-fs.js';
 
 const MAGIC = Buffer.from('KHBV1', 'ascii');
 const VAULT_TIMEOUT_MS = 30_000;
@@ -80,7 +81,7 @@ export function loadJson<T>(guard: PathGuard, file: string): T | null {
     runVault(guard, ['unprotect', '-InFile', f, '-OutFile', tmp]);
     return JSON.parse(fs.readFileSync(tmp, 'utf8')) as T;
   } finally {
-    fs.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 
@@ -95,7 +96,7 @@ export function saveJson(guard: PathGuard, file: string, value: unknown): void {
     runVault(guard, ['protect', '-InFile', plain, '-OutFile', enc]);
     fs.renameSync(enc, f);
   } finally {
-    fs.rmSync(plain, { force: true });
+    burnFileSync(plain);
     fs.rmSync(enc, { force: true });
   }
 }
@@ -119,7 +120,7 @@ export function writeText(guard: PathGuard, file: string, content: string): void
     fs.writeFileSync(tmp, content, 'utf8');
     fs.renameSync(tmp, f);
   } finally {
-    fs.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 
@@ -133,7 +134,7 @@ export function loadEncryptedText(guard: PathGuard, file: string): string | null
     runVault(guard, ['unprotect', '-InFile', f, '-OutFile', tmp]);
     return fs.readFileSync(tmp, 'utf8');
   } finally {
-    fs.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 
@@ -148,7 +149,7 @@ export function saveEncryptedText(guard: PathGuard, file: string, content: strin
     runVault(guard, ['protect', '-InFile', plain, '-OutFile', enc]);
     fs.renameSync(enc, f);
   } finally {
-    fs.rmSync(plain, { force: true });
+    burnFileSync(plain);
     fs.rmSync(enc, { force: true });
   }
 }

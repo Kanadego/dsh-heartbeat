@@ -8,7 +8,6 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type { PathGuard } from '../core/path-guard.js';
 import { loadJson, saveJson, readText, writeText } from '../vault/vault.js';
-import { atomicWriteFileSync } from '../core/atomic-fs.js';
 import type { Policy } from '../config/schema.js';
 import {
   CONFIDENCE_CAP,
@@ -115,6 +114,21 @@ export function replayJournal(guard: PathGuard, dataDir: string): ReplayResult {
   stats.isLive = true;
   replayText(doc, readText(guard, journalFilePath(dataDir), ''), baselineTs, stats);
   return { doc, truncatedTail: stats.truncatedTail, records: stats.records };
+}
+
+/** Every plaintext journal text in chronological order: archive shards first,
+ *  then the live journal — the RAW record timeline, for callers that need the
+ *  history itself rather than the accumulated doc (the weekly report counts
+ *  the week's ADD ops). A rotation must not hide history from them (H-01). */
+export function readJournalTexts(guard: PathGuard, dataDir: string): string[] {
+  const texts: string[] = [];
+  for (const file of listArchiveFiles(guard, dataDir)) {
+    try {
+      texts.push(fs.readFileSync(path.join(dataDir, file), 'utf8'));
+    } catch { /* unreadable shard: skip */ }
+  }
+  texts.push(readText(guard, journalFilePath(dataDir), ''));
+  return texts;
 }
 
 export function loadProfile(guard: PathGuard, file: string): ProfileDoc {

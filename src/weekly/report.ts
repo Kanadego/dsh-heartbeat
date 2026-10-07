@@ -9,6 +9,8 @@ import path from 'node:path';
 import { atomicWriteJsonSync } from '../core/atomic-fs.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
 import type { PathGuard } from '../core/path-guard.js';
+import { workspace } from '../core/paths.js';
+import { appendAuditLine } from '../core/audit-log.js';
 import type { WeeklyFacts } from './collect.js';
 
 export const WEEKLY_INTERVAL_MS = 7 * 86_400_000;
@@ -34,11 +36,41 @@ function reportFileName(endIso: string): string {
   return `report-${endIso.slice(0, 10)}.json`;
 }
 
-/** Last generation time from the weekly state file; 0 = never. */
+/**
+ * Last generation time from the weekly state file; 0 = never anchored.
+ *
+ * H-54: "missing" and "present but unparseable" are NOT the same thing. The
+ * old code folded both into 0, so `ensureWeeklyAnchor` "repaired" a corrupt
+ * file by stamping NOW — silently, and at the cost of pushing the next report
+ * a full interval out. A corrupt anchor now keeps its file, writes an audit
+ * line, and falls back to the file's mtime so the schedule keeps its place.
+ */
 export function lastWeeklyGeneratedAt(guard: PathGuard, dataDir: string): number {
+  const file = stateFilePath(dataDir);
+  let raw: string;
   try {
-    const raw = JSON.parse(fs.readFileSync(guard.assert(stateFilePath(dataDir)), 'utf8')) as { lastGeneratedAt?: number };
-    return Number(raw.lastGeneratedAt) || 0;
+    raw = fs.readFileSync(guard.assert(file), 'utf8');
+  } catch {
+    return 0; // absent: a fresh install, legitimately never anchored
+  }
+  try {
+    const parsed = JSON.parse(raw) as { lastGeneratedAt?: number };
+    const n = Number(parsed.lastGeneratedAt);
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    /* unparseable — handled by the fallback below */
+  }
+  try {
+    appendAuditLine(path.join(workspace().logsDir, 'heartbeat.jsonl'), {
+      event: 'weekly_anchor_corrupt',
+      file: path.basename(file),
+      bytes: Buffer.byteLength(raw),
+    });
+  } catch {
+    /* audit is diagnostic; never let it break the schedule */
+  }
+  try {
+    return fs.statSync(file).mtimeMs;
   } catch {
     return 0;
   }

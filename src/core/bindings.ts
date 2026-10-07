@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PathGuard } from './path-guard.js';
+import { atomicWriteFileSync } from './atomic-fs.js';
 
 export interface SessionBinding {
   sessionId: string;
@@ -36,7 +37,7 @@ export function loadBindings(guard: PathGuard, settingsDir: string): BindingsFil
 export function saveBindings(guard: PathGuard, settingsDir: string, data: BindingsFile): void {
   const file = guard.assert(bindingsFilePath(settingsDir));
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+  atomicWriteFileSync(file, JSON.stringify(data, null, 2));
 }
 
 export function addBinding(

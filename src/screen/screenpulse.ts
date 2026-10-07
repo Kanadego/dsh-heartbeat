@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { encryptFile, decryptFile } from '../vault/vault.js';
+import { burnFileSync } from '../core/atomic-fs.js';
 
 export interface ScreenPulseSummary {
   ok: boolean;
@@ -102,7 +103,7 @@ export function readScreenJson(guard: PathGuard, paths: WorkspacePaths): ScreenJ
   } catch {
     return null;
   } finally {
-    fs.rmSync(tmp, { force: true });
+    burnFileSync(tmp);
   }
 }
 
@@ -114,10 +115,18 @@ export function unlockShot(guard: PathGuard, paths: WorkspacePaths): string | nu
   const f = screenJpgPath(paths);
   if (!fs.existsSync(guard.assert(f))) return null;
   const tmp = path.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
-  decryptFile(guard, f, guard.assert(tmp));
+  try {
+    decryptFile(guard, f, guard.assert(tmp));
+  } catch (e) {
+    // H-11: a failed decrypt can still have left a partial plaintext file —
+    // burn it before surfacing the error (the caller keeps vision off).
+    burnFileSync(tmp);
+    throw e;
+  }
   return tmp;
 }
 
+/** Plaintext screenshot window: burn (not merely unlink) after use (H-59). */
 export function burnUnlocked(guard: PathGuard, tmpPath: string): void {
-  fs.rmSync(guard.assert(tmpPath), { force: true });
+  burnFileSync(guard.assert(tmpPath));
 }

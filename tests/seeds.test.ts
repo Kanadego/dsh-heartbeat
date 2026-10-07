@@ -256,6 +256,25 @@ test('spec ④: chat seed retires after ONE surfacing without newer evidence', a
   assert.equal(report.consumed, 1);
 });
 
+test('H-22: evidence newer than the previous use spares a seed at its limit', () => {
+  // Same path, same limit — the only difference is the evidence watermark.
+  const spared = addSeed(guard, file, policy, { text: '有新证据的话题', source: 'browse', tag: 'scene' }, now);
+  surfaceSeed(guard, file, policy, spared.seed.id, now + DAY);
+  const db = loadPool(guard, file);
+  db.seeds.find((x) => x.id === spared.seed.id)!.lastEvidenceAt = new Date(now + DAY + 1000).toISOString();
+  savePool(guard, file, db);
+  const s = surfaceSeed(guard, file, policy, spared.seed.id, now + 2 * DAY);
+  assert.equal(s!.used, 2);
+  assert.equal(s!.status, 'active'); // fresh evidence arrived after the first use
+
+  const retired = addSeed(guard, file, policy, { text: '没有新证据的话题', source: 'browse', tag: 'scene' }, now);
+  surfaceSeed(guard, file, policy, retired.seed.id, now + DAY);
+  const r = surfaceSeed(guard, file, policy, retired.seed.id, now + 2 * DAY);
+  assert.equal(r!.used, 2);
+  assert.equal(r!.status, 'archived');
+  assert.equal(r!.retireReason, 'consumed');
+});
+
 test('v1.9.0 archive cap: gc trims the archive area beyond seeds.archiveCap, oldest-retired first', () => {
   const cap = policy.seeds.archiveCap;
   // 3 fresh actives + cap+5 archived rows with staggered retiredAt

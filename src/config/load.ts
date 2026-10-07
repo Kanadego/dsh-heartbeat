@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { PathGuard } from '../core/path-guard.js';
 import { assertPolicy, deepMerge, type Policy } from './schema.js';
+import { atomicWriteFileSync } from '../core/atomic-fs.js';
 
 export const USER_POLICY_FILE = 'policy.json';
 
@@ -50,6 +51,6 @@ export function updateUserPolicy(guard: PathGuard, settingsDir: string, patch: R
   }
   const merged = deepMerge(user, patch) as Record<string, unknown>;
   fs.mkdirSync(path.dirname(userPath), { recursive: true });
-  fs.writeFileSync(userPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+  atomicWriteFileSync(userPath, JSON.stringify(merged, null, 2) + '\n');
   return merged;
 }
