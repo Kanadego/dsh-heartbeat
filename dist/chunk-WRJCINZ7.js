@@ -191,7 +191,7 @@ function inHhMmWindow(start, end, mins) {
 
 // src/browse/browse.ts
 function emptyBrowseState() {
-  return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {} } };
+  return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {}, sessionCount: {} } };
 }
 function browseStatePath(paths) {
   return path3.join(paths.dataDir, "browse.json");
@@ -216,6 +216,7 @@ function normalizeBrowseState(raw) {
   out.wander.focusHistory = numberRecord(w.focusHistory);
   out.wander.focusCount = numberRecord(w.focusCount);
   out.wander.refillCount = numberRecord(w.refillCount);
+  out.wander.sessionCount = numberRecord(w.sessionCount);
   if (typeof w.last_wander_at === "number" && Number.isFinite(w.last_wander_at)) out.wander.last_wander_at = w.last_wander_at;
   return out;
 }
@@ -229,6 +230,17 @@ function numberRecord(v) {
 }
 function loadState(guard, paths) {
   return normalizeBrowseState(loadJson(guard, browseStatePath(paths)));
+}
+function resolveSchedule(interests, policy) {
+  const sc = interests._schedule ?? {};
+  return {
+    windows: sc.windows?.length ? sc.windows : policy.browse.windows,
+    minIntervalHours: sc.min_interval_hours ?? policy.browse.minIntervalHours,
+    maxSeedsPerFocus: sc.max_seeds_per_focus ?? policy.browse.maxSeedsPerVisit,
+    dailySessions: sc.daily_sessions ?? 0,
+    focusPerSession: Math.max(1, sc.focus_per_session ?? 1),
+    focusCooldownDays: sc.focus_cooldown_days ?? 3
+  };
 }
 function inWanderWindow(now, windows) {
   const mins = minutesOfDay(now);
@@ -264,25 +276,45 @@ function pickFocus(state, interests, now, pref) {
 function adviseWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
   const state = loadState(guard, paths);
   const interests = loadInterests(paths);
-  const windows = interests._schedule?.windows?.length ? interests._schedule.windows : policy.browse.windows;
-  const win = inWanderWindow(now, windows);
+  const sched = resolveSchedule(interests, policy);
+  const budget = { maxSeeds: sched.maxSeedsPerFocus };
+  const win = inWanderWindow(now, sched.windows);
   if (!win) {
     const hh = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    return { focus: null, query: null, skipped: `window(now=${hh})` };
+    return { focus: null, query: null, skipped: `window(now=${hh})`, ...budget };
   }
-  const minGap = policy.browse.minIntervalHours * 36e5;
+  const today = localDayKey(now);
+  const sessionsToday = state.wander.sessionCount?.[today] ?? 0;
+  if (sched.dailySessions > 0 && sessionsToday >= sched.dailySessions) {
+    return { focus: null, query: null, skipped: `daily-sessions(${sessionsToday})`, ...budget };
+  }
+  const minGap = sched.minIntervalHours * 36e5;
   if (now.getTime() - state.wander.last_wander_at < minGap) {
-    return { focus: null, query: null, skipped: "min-interval" };
+    return { focus: null, query: null, skipped: "min-interval", ...budget };
   }
-  const focus = pickFocus(state, interests, now.getTime(), loadPreference(guard, preferenceFilePath(paths.dataDir)));
-  if (!focus) return { focus: null, query: null, skipped: "no-focus" };
-  return { focus, query: `${focus} 2026 \u6700\u65B0`, skipped: null };
+  const pref = loadPreference(guard, preferenceFilePath(paths.dataDir));
+  const pool = interests.interests ?? [];
+  const candidates = [];
+  for (let i = 0; i < sched.focusPerSession; i++) {
+    const rest = pool.filter((t) => !candidates.includes(t));
+    if (rest.length === 0) break;
+    const picked = pickFocus(state, { ...interests, interests: rest }, now.getTime(), pref);
+    if (!picked) break;
+    candidates.push(picked);
+  }
+  if (candidates.length === 0) return { focus: null, query: null, skipped: "no-focus", ...budget };
+  return { focus: candidates[0], query: `${candidates[0]} 2026 \u6700\u65B0`, skipped: null, candidates, ...budget };
 }
 function completeWander(guard, paths, focus, now = Date.now(), opts = {}) {
   const state = loadState(guard, paths);
   state.wander.focusHistory[focus] = now;
   state.wander.focusCount[focus] = (state.wander.focusCount[focus] ?? 0) + 1;
   state.wander.last_wander_at = now;
+  if (!opts.refill) {
+    const day = localDayKey(new Date(now));
+    state.wander.sessionCount = state.wander.sessionCount ?? {};
+    state.wander.sessionCount[day] = (state.wander.sessionCount[day] ?? 0) + 1;
+  }
   let refillsToday;
   if (opts.refill) {
     const today = localDayKey(new Date(now));
@@ -534,4 +566,4 @@ export {
   buildWeeklyPrompt,
   renderTemplateReport
 };
-//# sourceMappingURL=chunk-7LYA2BKN.js.map
+//# sourceMappingURL=chunk-WRJCINZ7.js.map

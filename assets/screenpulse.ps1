@@ -14,7 +14,10 @@
 #   - title/process text is sensitive -> DPAPI-encrypted by caller, or burned
 
 param(
-    [string]$outdir
+    [string]$outdir,
+    # H-68 (2026-10-07): visible-window cap comes from busy-rules.json
+    # (`rules.visible_window_cap`); the caller passes it, 20 is the fallback.
+    [ValidateRange(1, 200)][int]$cap = 20
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,7 +112,6 @@ if ($focusH -ne [IntPtr]::Zero -and $focusH -ne $h) {
 }
 
 $visible = @()
-$cap = 20
 $seen = New-Object 'System.Collections.Generic.HashSet[string]'
 foreach ($w in [WinForeground]::VisibleTopLevel()) {
     if ($visible.Count -ge $cap) { break }

@@ -802,9 +802,10 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
 async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | null }> {
   const { deps, now } = bc;
   const { guard, paths } = deps;
-  const screen = await collectScreen(guard, paths, now);
-  const sj = readScreenJson(guard, paths);
   const rules = loadBusyRules(paths.configDir);
+  // H-68: the window cap is a configured threshold, not a collector constant.
+  const screen = await collectScreen(guard, paths, now, rules.rules.visible_window_cap);
+  const sj = readScreenJson(guard, paths);
   const env = await collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now));
   recordPresence(paths, env, now);
   const pulse = readPulse(guard, paths);
@@ -1086,7 +1087,7 @@ async function wanderPhase(bc: BeatContext): Promise<boolean> {
   const advice = adviseWander(guard, paths, policy, new Date(now));
   if (!advice.focus || !bc.agent) return false;
   const prompt = wanderPrompt(advice.focus, advice.query!).join('\n');
-  return runWanderTurn(bc, prompt, advice.focus, { label: 'wander' });
+  return runWanderTurn(bc, prompt, advice.focus, { label: 'wander', maxSeeds: advice.maxSeeds });
 }
 
 /**
@@ -1108,7 +1109,7 @@ async function runWanderTurn(
   bc: BeatContext,
   prompt: string,
   focus: string,
-  opts: { label: 'wander' | 'refill_wander' },
+  opts: { label: 'wander' | 'refill_wander'; maxSeeds?: number },
 ): Promise<boolean> {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
@@ -1116,7 +1117,9 @@ async function runWanderTurn(
   let registered = 0;
   try {
     const parsed = parseJsonBlock(raw) as { items?: { text?: string; topic?: string }[] };
-    for (const item of (parsed.items ?? []).slice(0, policy.browse.maxSeedsPerVisit)) {
+    // H-69: the per-focus seed cap comes from the wander advice, which reads
+    // `interests._schedule.max_seeds_per_focus` (falling back to policy).
+    for (const item of (parsed.items ?? []).slice(0, opts.maxSeeds ?? policy.browse.maxSeedsPerVisit)) {
       if (!item.text) continue;
       addSeed(guard, seedsFilePath(paths.dataDir), policy, {
         text: item.text, topic: item.topic ?? focus, tag: 'news', source: 'browse', confidence: 0.4,

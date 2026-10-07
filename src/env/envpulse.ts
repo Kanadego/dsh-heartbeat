@@ -20,10 +20,17 @@ export const IDLE_FLOOR_SECONDS = 30;  // < 30s: typing; busy/idle decided by wi
 
 export type Presence = 'unknown' | 'away' | 'present' | 'active';
 
-export function presenceOf(idleSec: number, windowClass: string): Presence {
+/**
+ * H-68 (2026-10-07): the thresholds live in `busy-rules.json`'s `rules` block;
+ * the exported constants remain as the fallback so callers without a rules
+ * object keep their old behaviour.
+ */
+export function presenceOf(idleSec: number, windowClass: string, rules?: BusyRules): Presence {
+  const awayAfter = rules?.rules.idle_away_seconds ?? IDLE_AWAY_SECONDS;
+  const floorAt = rules?.rules.idle_floor_seconds ?? IDLE_FLOOR_SECONDS;
   if (idleSec < 0) return 'unknown';
-  if (idleSec >= IDLE_AWAY_SECONDS) return 'away';
-  if (idleSec >= IDLE_FLOOR_SECONDS) return 'present';
+  if (idleSec >= awayAfter) return 'away';
+  if (idleSec >= floorAt) return 'present';
   return windowClass === 'busy' ? 'active' : 'present';
 }
 
@@ -88,7 +95,7 @@ export async function collectPulse(
   const snapshot: EnvSnapshot = {
     takenAt: now.toISOString(),
     idleSeconds: idle,
-    presence: presenceOf(idle, windowClass),
+    presence: presenceOf(idle, windowClass, rules),
     windowClass,
     daypart: t.daypart,
     weekday: t.weekday,

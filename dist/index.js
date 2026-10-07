@@ -27,7 +27,7 @@ import {
   sessionEventCount,
   sessionEvents,
   startOrchestrator
-} from "./chunk-GE6QLMNH.js";
+} from "./chunk-HT57FOEF.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -36,7 +36,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-7LYA2BKN.js";
+} from "./chunk-WRJCINZ7.js";
 import {
   getRuntime,
   setRuntime
@@ -1208,6 +1208,14 @@ ${statusLine}`;
 
 // src/rpc.ts
 var RPC_ROUTE_PATH = "/api/heartbeat";
+var DESTRUCTIVE_ENDPOINTS = /* @__PURE__ */ new Set([
+  "seeds.delete",
+  "migrate.import",
+  "bindings.remove",
+  "config.set",
+  "profile.export",
+  "interests.remove"
+]);
 var ok = (value) => ({ ok: true, value });
 var err = (code, message) => ({ ok: false, error: { code, message, details: {} } });
 var cachedVersion = null;
@@ -1524,10 +1532,25 @@ function installHeartbeatRpc(ctx, deps) {
       }
     };
     const endpoints = buildEndpoints(deps, isLive);
+    const gate = remoteCtx.connection;
+    const hostGuarded = typeof gate.admit === "function" || typeof gate.requestRejection === "function";
+    if (!hostGuarded) {
+      try {
+        appendAuditLine(deps.guard.assert(deps.paths.logsDir + "/heartbeat.jsonl"), {
+          event: "rpc_host_gate_missing",
+          detail: "connection.admit/requestRejection absent; destructive endpoints disabled",
+          destructive: [...DESTRUCTIVE_ENDPOINTS]
+        });
+      } catch {
+      }
+    }
     const handler = async (endpoint, payload) => {
       const p = payload ?? {};
       const fn = typeof endpoint === "string" ? endpoints[endpoint] : void 0;
       if (!fn) return err("bad-request", `unknown endpoint ${JSON.stringify(endpoint)}`);
+      if (!hostGuarded && DESTRUCTIVE_ENDPOINTS.has(endpoint)) {
+        return err("forbidden", `host gate unavailable; ${endpoint} is refused (H-41)`);
+      }
       try {
         return await fn(p);
       } catch (e) {

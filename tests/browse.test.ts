@@ -15,6 +15,7 @@ import {
   inWanderWindow,
   normalizeBrowseState,
   pickFocus,
+  resolveSchedule,
 } from '../src/browse/browse.js';
 
 let sandbox = '';
@@ -189,4 +190,40 @@ test('spec ⑤/⑥: loadPool rows carry category so refill counting matches the 
   const db = loadPool(guard, seedFile());
   const cats = activeSeeds(db).map((s) => normalizeCategory(s.category)).sort();
   assert.deepEqual(cats, ['chat', 'topic']);
+});
+
+// ── H-69: `interests._schedule` drives the wander flow ───────────────────
+
+test('H-69: resolveSchedule prefers _schedule and falls back to policy.browse', () => {
+  const fallback = resolveSchedule({ interests: [] }, policy);
+  assert.equal(fallback.minIntervalHours, policy.browse.minIntervalHours);
+  assert.equal(fallback.maxSeedsPerFocus, policy.browse.maxSeedsPerVisit);
+  assert.equal(fallback.dailySessions, 0);
+
+  const custom = resolveSchedule(
+    { _schedule: { daily_sessions: 3, focus_per_session: 2, max_seeds_per_focus: 5, focus_cooldown_days: 7, min_interval_hours: 1 } },
+    policy,
+  );
+  assert.equal(custom.dailySessions, 3);
+  assert.equal(custom.focusPerSession, 2);
+  assert.equal(custom.maxSeedsPerFocus, 5);
+  assert.equal(custom.focusCooldownDays, 7);
+  assert.equal(custom.minIntervalHours, 1);
+});
+
+test('H-69: daily_sessions caps the day and max_seeds_per_focus reaches the advice', () => {
+  fs.mkdirSync(paths.settingsDir, { recursive: true });
+  fs.writeFileSync(path.join(paths.settingsDir, 'interests.json'), JSON.stringify({
+    interests: ['测试话题'],
+    _schedule: { daily_sessions: 1, max_seeds_per_focus: 4, min_interval_hours: 0 },
+  }), 'utf8');
+
+  const first = adviseWander(guard, paths, policy, NOON);
+  assert.equal(first.focus, '测试话题');
+  assert.equal(first.maxSeeds, 4);
+
+  completeWander(guard, paths, first.focus!, NOON.getTime());
+  const second = adviseWander(guard, paths, policy, NOON);
+  assert.equal(second.focus, null);
+  assert.match(second.skipped ?? '', /daily-sessions/);
 });
