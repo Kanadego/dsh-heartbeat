@@ -7,7 +7,7 @@ import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/pat
 import { createPathGuard } from '../src/core/path-guard.js';
 import { loadPolicy } from '../src/config/load.js';
 import type { Policy } from '../src/config/schema.js';
-import { loadProfileSchema } from '../src/profile/schema.js';
+import { loadProfileSchema, type ProfileSchema } from '../src/profile/schema.js';
 import {
   applyOpsToDoc,
   loadProfile,
@@ -27,7 +27,7 @@ const DAY = 86_400_000;
 let sandbox = '';
 let guard: ReturnType<typeof createPathGuard>;
 let policy: Policy;
-let schema: ReturnType<typeof loadProfileSchema>;
+let schema: ProfileSchema;
 
 const ev = (kind: 'chat' | 'screen' | 'browse' = 'chat', atMs = NOW) => ({
   kind, at: new Date(atMs).toISOString(), ref: `logs/heartbeat.jsonl#${kind}-test`,
@@ -40,7 +40,7 @@ beforeEach(() => {
   initWorkspace();
   guard = createPathGuard(workspace().dataDir);
   policy = loadPolicy(guard, workspace().configDir, workspace().settingsDir);
-  schema = loadProfileSchema(workspace());
+  schema = loadProfileSchema(workspace()).schema!;
   // the ref existence check needs the referenced file to exist
   appendAuditLine(path.join(workspace().dataDir, 'logs', 'heartbeat.jsonl'), { event: 'test' });
 });
@@ -220,4 +220,31 @@ test('rebuild tolerates a torn journal tail and reports it explicitly', () => {
   assert.equal(report.ok, true);
   assert.equal(report.truncatedTail > 0, true);
   assert.ok(fs.readFileSync(path.join(workspace().dataDir, 'logs', 'rebuild-report.txt'), 'utf8').includes('truncated'));
+});
+
+test('H-17: a broken user schema falls back to the factory copy instead of throwing', () => {
+  const userPath = path.join(workspace().settingsDir, 'profile-schema.json');
+  fs.mkdirSync(path.dirname(userPath), { recursive: true });
+  fs.writeFileSync(userPath, '{ "partitions": ', 'utf8');
+  const loaded = loadProfileSchema(workspace());
+  assert.equal(loaded.source, 'factory');
+  assert.ok(loaded.schema);
+  assert.match(loaded.fallbackReason!, /user profile-schema\.json unusable/);
+});
+
+test('H-17: an unusable factory schema yields no schema and still records ADDs', (t) => {
+  // configDir points at the REPO's config/, not a sandbox copy — whatever this
+  // test writes here outlives the test and would break every later run.
+  const factoryPath = path.join(workspace().configDir, 'profile-schema.json');
+  const backup = fs.readFileSync(factoryPath, 'utf8');
+  t.after(() => { fs.writeFileSync(factoryPath, backup, 'utf8'); });
+  fs.writeFileSync(factoryPath, 'not json', 'utf8');
+  const loaded = loadProfileSchema(workspace());
+  assert.equal(loaded.source, 'none');
+  assert.equal(loaded.schema, undefined);
+  // with no whitelist left, the partition set is the only boundary — ADDs land
+  const doc = emptyProfile();
+  const r = applyOpsToDoc(guard, workspace().dataDir, doc, [addOp()], undefined, policy, NOW);
+  assert.equal(r.applied.length, 1);
+  assert.equal(doc.partitions.interest!.entries.length, 1);
 });

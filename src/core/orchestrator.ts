@@ -27,13 +27,13 @@ import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
-import { runGate, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
+import { runGate, canSend, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
 import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
 import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
 import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
-import { adviseWander, adviseRefillWander, checkWatchlist, completeWander, browseStatePath } from '../browse/browse.js';
+import { adviseWander, adviseRefillWander, completeWander, browseStatePath } from '../browse/browse.js';
 import { shouldConsolidate, runConsolidation } from '../profile/consolidate.js';
 import { snapshotIfDue } from '../profile/snapshot.js';
 import { buildDigest, profileTopicEntries } from '../profile/digest.js';
@@ -113,16 +113,20 @@ interface HostAgent {
 
 /** Read a session's event log across harness versions. 0.1.2-rc.1 dropped
  * `Session.events`, so prefer the official snapshot accessor and keep the
- * legacy property as a fallback for ≤0.1.1-rc.2. */
-export function sessionEvents(session: HostSession | undefined): HostEvent[] {
+ * legacy property as a fallback for ≤0.1.1-rc.2.
+ *
+ * H-05: pass `fromSeq` when paging — the host filters BY SEQ, so the cursor
+ * keeps meaning the right thing even after auto-compaction rewrites the log. */
+export function sessionEvents(session: HostSession | undefined, fromSeq?: number): HostEvent[] {
   if (!session) return [];
   if (typeof session.snapshotEvents === 'function') {
     try {
-      const snapshot = session.snapshotEvents();
+      const snapshot = fromSeq === undefined ? session.snapshotEvents() : session.snapshotEvents(fromSeq);
       if (Array.isArray(snapshot)) return snapshot;
     } catch { /* fall through to the legacy accessor */ }
   }
-  return Array.isArray(session.events) ? session.events : [];
+  const all = Array.isArray(session.events) ? session.events : [];
+  return fromSeq === undefined ? all : all.slice(fromSeq);
 }
 
 /** Current event count; `seq` is the log length and costs no array copy. */
@@ -174,6 +178,32 @@ let beating = false;
  * update aborted with "Host did not complete graceful task teardown" while a
  * beat was mid-flight). */
 let beatCancel: (() => void) | undefined;
+let beatWatchdog: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * H-03: the beat is single-flight and `beating` is only ever cleared by the
+ * `finally` in `beat()`. A single permanently wedged phase — a hung
+ * subprocess, a fetch that never settles — would therefore silence the
+ * heartbeat until DSH restarts, leaving no trace beyond a beat that never
+ * ends. The watchdog clears the flag and records why, so the next natural tick
+ * runs; it deliberately does NOT start a catch-up beat (a wedged task may
+ * still be alive and piling another one on top is worse than losing a tick).
+ */
+const BEAT_WATCHDOG_MS = 45 * 60_000;
+
+function clearBeatWatchdog(): void {
+  if (beatWatchdog !== undefined) {
+    clearTimeout(beatWatchdog);
+    beatWatchdog = undefined;
+  }
+}
+
+/** H-03: per-phase ceilings, so one wedged phase cannot eat the whole beat (the
+ *  watchdog above is the last resort). Generous versus the normal path — the
+ *  longest legitimate step is a single agent turn at IDLE_WAIT_TIMEOUT_MS. */
+const MAINTENANCE_TIMEOUT_MS = 10 * 60_000;
+const COLLECT_TIMEOUT_MS = 5 * 60_000;
+const WANDER_TIMEOUT_MS = 15 * 60_000;
 /** Reactive rotation request: set when an engine-room turn dies of context
  * overflow; consumed (home rotated) at the next beat start. */
 let homeRotatePending: string | null = null;
@@ -716,10 +746,10 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
 async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | null }> {
   const { deps, now } = bc;
   const { guard, paths } = deps;
-  const screen = collectScreen(guard, paths, now);
+  const screen = await collectScreen(guard, paths, now);
   const sj = readScreenJson(guard, paths);
   const rules = loadBusyRules(paths.configDir);
-  const env = collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now));
+  const env = await collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now));
   recordPresence(paths, env, now);
   const pulse = readPulse(guard, paths);
   void pulse;
@@ -732,6 +762,67 @@ async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | n
  * new user messages since the stored cursor into the profile inbox (pointer +
  * first sentence only, ≤ observe.maxChars; plugin-injected messages skipped).
  */
+/**
+ * H-05: cursors hold HOST EVENT SEQS, not array indices into a snapshot.
+ * `snapshotEvents(fromSeq)` filters by seq, so the cursor survives the host's
+ * auto-compaction (the old index-based cursor silently pointed at the wrong
+ * rows once the log was rewritten). Files written before this change carry no
+ * `version` key and are discarded wholesale — the next beat re-scans each
+ * session once from seq 0, and `dedupeItems` absorbs the overlap.
+ */
+interface CursorFile { version: 2; sessions: Record<string, number> }
+
+function loadCursors(file: string): { sessions: Record<string, number>; discardedLegacy: boolean } {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; sessions?: unknown };
+    if (raw?.version === 2 && raw.sessions && typeof raw.sessions === 'object') {
+      const sessions: Record<string, number> = {};
+      for (const [id, v] of Object.entries(raw.sessions as Record<string, unknown>)) {
+        if (typeof v === 'number' && Number.isFinite(v) && v >= 0) sessions[id] = Math.floor(v);
+      }
+      return { sessions, discardedLegacy: false };
+    }
+    return { sessions: {}, discardedLegacy: true };
+  } catch {
+    return { sessions: {}, discardedLegacy: false }; // no cursor file yet
+  }
+}
+
+/**
+ * H-67: strip thinking blocks and tool-call trailing tags, then take the last
+ * line carrying Chinese — the target agent's turn may end on a tool call, so
+ * the sentence she actually spoke sits further up.
+ */
+function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
+  const lines = raw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
+    .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
+  const cnLine = [...lines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+  const text = (cnLine ?? lines[lines.length - 1] ?? '').slice(0, 200);
+  return { text, spokeText: Boolean(text && /[\u4e00-\u9fff]/.test(text)) };
+}
+
+/**
+ * H-67: the objective record of "she actually said something". The delivery
+ * turn's idle wait can time out *after* the model streamed its answer into the
+ * session, so the timeout path must not be reported as a plain failure — it
+ * looks for Chinese assistant text appended past `fromSeq` instead.
+ */
+function spokeTextSince(session: HostSession | undefined, fromSeq: number): string | null {
+  for (const e of sessionEvents(session, fromSeq)) {
+    if (typeof e.type !== 'string' || !e.type.startsWith('assistant/')) continue;
+    const d = e.data as {
+      content?: { type?: string; text?: string }[];
+      message?: { content?: { type?: string; text?: string }[] };
+    } | undefined;
+    const parts = d?.content ?? d?.message?.content ?? [];
+    const text = parts.filter((c) => c.type === 'text').map((c) => c.text ?? '').join('').trim();
+    if (!text) continue;
+    const picked = pickSpokenLine(text);
+    if (picked.spokeText) return picked.text;
+  }
+  return null;
+}
+
 async function observeBoundSessions(bc: BeatContext): Promise<void> {
   const { deps, now } = bc;
   const { guard, paths } = deps;
@@ -741,24 +832,30 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
   const targets = observeTargets(data);
   if (targets.length === 0) return;
   const cursorFile = path.join(paths.dataDir, 'cursors.json');
-  let cursors: Record<string, number> = {};
-  try {
-    cursors = JSON.parse(fs.readFileSync(cursorFile, 'utf8')) as Record<string, number>;
-  } catch { /* first run */ }
+  const loaded = loadCursors(cursorFile);
+  const cursors = loaded.sessions;
+  if (loaded.discardedLegacy) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'cursor_format_discarded',
+      reason: 'pre-H-05 index-based cursors; re-scanning each session once from seq 0',
+    });
+  }
   const inboxFile = inboxFilePath(paths.dataDir);
   for (const b of targets) {
     try {
       const agent = ctx_getAgent(deps, b.sessionId);
       if (!agent) continue; // not live: nothing to observe this beat
-      const events = sessionEvents(agent.session);
-      const cursor = cursors[b.sessionId] ?? 0;
-      let last = cursor;
-      let added = 0;
+      const cursor = Math.max(cursors[b.sessionId] ?? 0, 0);
       // Depth knobs (v1.8.0): perBeat caps messages per session per beat,
       // maxChars caps the note kept per message (first sentence).
       const { maxChars, perBeat } = deps.policy.observe;
-      for (let i = cursor; i < events.length && added < perBeat; i++) {
-        const e = events[i]!;
+      const events = sessionEvents(agent.session, cursor);
+      let seq = cursor;
+      let added = 0;
+      for (const e of events) {
+        if (added >= perBeat) break;
+        const at = seq; // seq of this event
+        seq += 1;
         if (e.type !== 'user/message') continue;
         const d = e.data as { source?: { kind?: string; plugin?: string }; content?: { type?: string; text?: string }[] } | undefined;
         // never observe our own injections — 'heartbeat' = v1.7.0 producer
@@ -770,16 +867,17 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
         inboxAppend(guard, inboxFile, {
           kind: 'chat',
           at: new Date(now).toISOString(),
-          ref: `cursors.json#${b.sessionId}:${i}`,
+          ref: `cursors.json#${b.sessionId}:${at}`,
           note: text.split(/[。！？\n]/)[0]!.slice(0, maxChars),
         });
         added += 1;
-        last = i + 1;
       }
-      cursors[b.sessionId] = Math.max(cursors[b.sessionId] ?? 0, last);
-      if (added > 0) {
-        atomicWriteJsonSync(cursorFile, cursors);
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observed', sessionId: b.sessionId, added });
+      // H-05: persist progress even when the slice held no user text at all —
+      // otherwise every beat re-scans the same stretch of non-text events.
+      if (seq > (cursors[b.sessionId] ?? 0)) {
+        cursors[b.sessionId] = seq;
+        atomicWriteJsonSync(cursorFile, { version: 2, sessions: cursors });
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observed', sessionId: b.sessionId, added, cursor: seq });
       }
     } catch (e) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observe_error', sessionId: b.sessionId, error: String(e).slice(0, 120) });
@@ -835,7 +933,7 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
     // Toast skips quiet hours — a 3 a.m. "your report is ready" is noise.
     if (!inQuietHours(policy, now)) {
       try {
-        sendWeeklyReadyHint(paths);
+        await sendWeeklyReadyHint(paths);
       } catch { /* toast is best-effort */ }
     }
   } catch (e) {
@@ -1067,26 +1165,45 @@ async function deliverPackage(
         : {}),
     });
 
+    // H-67: run the quiet-hours / daily-cap check immediately before delivery.
+    // The gate decision happened two model turns ago, so a stale "ok" could
+    // speak into the night or spend a slot that no longer exists.
+    const pre = canSend(guard, policy, paths, Date.now());
+    if (!pre.ok) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: pre.reason });
+      noteBeat('spoke_failed', { reason: pre.reason });
+      return;
+    }
     // 表达轮失败（目标忙 / 超时）不再把整跳打成 beat_error：那句话留在下一跳重来。
     const turnStart = Date.now(); // 报账对账窗口起点（2026-10-06）
+    // H-67: watermark for the objective "did she speak" test below. `seq` is the
+    // host's own log length, so scanning from it finds only what this turn added.
+    const beforeSeq = voiceAgent.session?.seq ?? sessionEvents(voiceAgent.session).length;
     let spokenRaw: string;
     try {
       spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
     } catch (e) {
+      // H-67: a timed-out idle wait is not proof she stayed silent — the answer
+      // may already have been streamed into the session. Only defer when the
+      // session really gained nothing.
+      const late = spokeTextSince(voiceAgent.session, beforeSeq);
+      if (!late) {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+          event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
+        });
+        noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
+        return;
+      }
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-        event: 'spoke_deferred', reason: 'target session busy', error: String(e).slice(0, 120),
+        event: 'spoke_late', reason: 'turn did not settle in time but her text is in the session',
+        text: late.slice(0, 80),
       });
-      noteBeat('spoke_failed', { reason: '目标会话正忙，本轮未投递' });
-      return;
+      spokenRaw = late;
     }
     // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
     // '</tool_calls>' 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
     // 目标 agent 回合以工具调用收尾时，末行是 '</tool_calls>' 而真正要说的在更前面。
-    const spokenLines = spokenRaw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
-      .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
-    const cnLine = [...spokenLines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
-    const text = (cnLine ?? spokenLines[spokenLines.length - 1] ?? '').slice(0, 200);
-    const spokeText = Boolean(text && /[\u4e00-\u9fff]/.test(text));
+    const { text, spokeText } = pickSpokenLine(spokenRaw);
     // 报账对账（2026-10-06）：陪伴 agent 的 seed_report 优先，决策轮 D23 seed_ids
     // 作后备，都没有就记零——宁可漏记不假记（包含匹配已删）。
     // v1.9.0：按投递编号取本次的那条（同窗口里点名了别的包的报账一律不用），
@@ -1122,11 +1239,16 @@ async function deliverPackage(
     }
 
     // ⑥ 投递 + ⑦ 留痕：表达已落在目标会话；确认计数、素材归账、偏好记账、toast 提示。
+    // H-67: the pre-flight above already passed and the words are in her session
+    // now, so the books are settled unconditionally. A refusal here only means a
+    // second look (minutes later) found the state had moved on: record it and
+    // carry on — refusing to book a sentence she did say is how the old code
+    // lost deliveries it had actually made.
     const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
     if (!confirm.ok) {
-      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: confirm.reason });
-      noteBeat('spoke_failed', { reason: confirm.reason });
-      return;
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'spoke_late', reason: `booked after the gate moved on: ${confirm.reason}`, text: text.slice(0, 80),
+      });
     }
     // 素材归账：只认对账后的显式 id（报告 > 决策轮）。画像条目 id 不在池里，
     // surfaceSeed 安全返回 null，不会误归账；画像采用走偏好统计与报账流水。
@@ -1147,7 +1269,7 @@ async function deliverPackage(
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
       }
     }
-    sendNewMessageHint(paths);
+    await sendNewMessageHint(paths);
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
       event: 'spoke', text: text.slice(0, 80), seeds: account.seedIds,
       profile_ids: account.profileIds, source: account.source, spoken: account.spoken,
@@ -1169,7 +1291,7 @@ async function deliverPackage(
 async function expressionPhases(bc: BeatContext): Promise<void> {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
-  const decision = runGate(guard, policy, paths, now);
+  const decision = await runGate(guard, policy, paths, now);
   if (decision.verdict === 'SILENT') {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: decision.reason });
     noteBeat('silent', { reason: decision.reason });
@@ -1382,10 +1504,10 @@ export const TOKEN_SAVER_IDLE_SECONDS = 1800;
  * model contact while the user is away (idle ≥ 30 min) or the workstation is
  * locked. Probe failure fails open (never pauses on a broken probe).
  */
-function tokenSaverActive(deps: OrchestratorDeps): boolean {
+async function tokenSaverActive(deps: OrchestratorDeps): Promise<boolean> {
   if (!getRuntime().flags.tokenSaver()) return false;
-  if (probeWorkstationLocked()) return true;
-  const idle = probeIdleSeconds(deps.guard, deps.paths);
+  if (await probeWorkstationLocked()) return true;
+  const idle = await probeIdleSeconds(deps.guard, deps.paths);
   return idle >= TOKEN_SAVER_IDLE_SECONDS; // idle < 0 (probe failed) fails open
 }
 
@@ -1394,6 +1516,19 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
   beating = true;
   const now = Date.now();
   const { paths } = deps;
+  // H-03: arm the watchdog before anything that can hang (phases, fetches,
+  // subprocesses). It only clears the flag — see the constant's comment.
+  clearBeatWatchdog();
+  beatWatchdog = setTimeout(() => {
+    if (!beating) return;
+    beating = false;
+    beatCancel = undefined;
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'beat_watchdog',
+      reason: `beat still running after ${Math.round(BEAT_WATCHDOG_MS / 60_000)} min — flag cleared, waiting for the next natural tick`,
+    });
+  }, BEAT_WATCHDOG_MS);
+  beatWatchdog.unref?.();
   try {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_start' });
     const beatStart = new Date(now).toISOString();
@@ -1428,22 +1563,22 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
       const bc: BeatContext = { deps, agent, now };
-      if (tokenSaverActive(deps)) {
+      if (await tokenSaverActive(deps)) {
         // Pause before maintenance/collect: a token saver that still paid for
         // consolidation would defeat its purpose. Status stays "silent".
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'token-saver' });
         noteBeat('silent', { reason: 'token-saver（你不在，心跳挂起）' });
       } else {
-        await maintenancePhase(bc);
+        await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance');
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
         await weeklyPhase(bc);
-        await collectPhase(bc);
+        await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect');
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'collect' });
-        wandered = await wanderPhase(bc);
+        wandered = await withTimeout(wanderPhase(bc), WANDER_TIMEOUT_MS, 'wander');
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'wander' });
         // spec ⑥: refill wander is independent and may stack with a normal
         // wander in the same beat (user decision 2026-09-18).
-        const refilled = await refillWanderPhase(bc);
+        const refilled = await withTimeout(refillWanderPhase(bc), WANDER_TIMEOUT_MS, 'refill_wander');
         if (refilled) {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'refill_wander' });
         }
@@ -1454,8 +1589,8 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
       // Agentless beat (deferred acquisition): data-side phases still run so
       // collection/retention never stall; expression needs the agent and skips.
       const bc: BeatContext = { deps, agent: null, now };
-      await maintenancePhase(bc);
-      await collectPhase(bc);
+      await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance');
+      await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect');
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_agentless' });
       scheduleDeferredRetry(deps);
     }
@@ -1468,6 +1603,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     noteBeat('error', { reason: String(e).slice(0, 120) });
     } catch { /* never rethrow from the heartbeat */ }
   } finally {
+    clearBeatWatchdog();
     beating = false;
     beatCancel = undefined;
   }
@@ -1507,6 +1643,7 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       // the current turn running, and the host waits for graceful task teardown
       // before it can exit (desktop update once stalled on exactly this).
       const cancelledInFlight = beating && beatCancel !== undefined;
+      clearBeatWatchdog(); // H-03: the disposer must not leave a timer behind
       try {
         beatCancel?.();
       } catch { /* never rethrow from the disposer */ }
@@ -1514,5 +1651,5 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       deps.ctx.logger.info('heartbeat: orchestrator timer disposed');
     };
   }, 'heartbeat: timer');
-  ensureRegistered(deps.paths);
+  void ensureRegistered(deps.paths);
 }

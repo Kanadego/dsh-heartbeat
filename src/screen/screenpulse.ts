@@ -9,7 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { runPowerShellFile } from '../core/ps.js';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { encryptFile, decryptFile } from '../vault/vault.js';
@@ -50,16 +50,14 @@ export function screenJpgPath(paths: WorkspacePaths): string {
  * Run the collector and encrypt results into data/screen.json + screen.jpg.
  * Failure degrades gracefully: heartbeat continues with text-only signals.
  */
-export function collectScreen(guard: PathGuard, paths: WorkspacePaths, now = Date.now()): ScreenPulseSummary {
+export async function collectScreen(guard: PathGuard, paths: WorkspacePaths, now = Date.now()): Promise<ScreenPulseSummary> {
   // The collector writes fixed names into outdir (data/tmp); single-flight in
   // the orchestrator prevents concurrent beats from stomping these files.
   const rawJson = path.join(paths.tmpDir, 'screen.raw.json');
   const rawJpg = path.join(paths.tmpDir, 'screen.raw.jpg');
   let encJson = '';
   try {
-    const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(paths.assetsDir, 'screenpulse.ps1'), '-outdir', paths.tmpDir],
-      { timeout: 45_000, encoding: 'utf8' });
+    const r = await runPowerShellFile(path.join(paths.assetsDir, 'screenpulse.ps1'), ['-outdir', paths.tmpDir], 45_000);
     if (r.status !== 0) {
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }

@@ -186,7 +186,7 @@ test('digest: low-activity stable entries are flagged 久未验证; budget respe
   const { profileFilePath, persistWithJournal } = await import('../src/profile/store.js');
   const { emptyProfile } = await import('../src/profile/types.js');
   const { loadProfileSchema } = await import('../src/profile/schema.js');
-  const schema = loadProfileSchema(workspace());
+  const schema = loadProfileSchema(workspace()).schema!;
   const doc = emptyProfile();
   const { applyOpsToDoc: apply } = { applyOpsToDoc };
   apply(guard, paths.dataDir, doc, [

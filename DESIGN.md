@@ -26,7 +26,7 @@
 ```
 定时器（intervalMin，首跳 boot+15s，单次）
  ① 维护   seeds gc / 日志 retention / 画像合并触发判断（单飞）/ inbox 健康检查
- ② 采集   screenpulse（截图+前台，加密落盘）→ envpulse（idle+窗口类别，明文）→ watchlist（6h 节流）
+ ② 采集   screenpulse（截图+前台，加密落盘）→ envpulse（idle+窗口类别，明文）
  ②′ 闲逛  条件触发（窗口 11-15/17-21 + ≥4h 间隔 + focus 冷却）；模型调用（仅 web_search）；
           结果由【代码】入池 seeds + completeWander 登记节流（D10，模型不碰登记）
  ③ 闸门   纯代码：静默窗 → 忙时窗口类别 → 在场联动 → 每日 cap → 冷却；判定留痕
@@ -156,7 +156,7 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | `rhythm/` | hour×weekday presence 直方图，30 天滚动 + 指数衰减（τ≈10 天）；纯统计无语义内容，明文 |
 | `screen/` | screenpulse.ps1（前台/焦点/可见窗口≤20/全屏原图截图，spec ①）→ raw 落 `data/tmp` → vault 加密成 screen.json/jpg → 焚 raw；`unlockShot` 用毕即焚 |
 | `env/` | idle.ps1（仅输出空闲秒数）+ presenceOf 三档（<30s 活跃看窗口类别 / 30-1200s present / ≥1200s away）+ timeflow 纯时间函数（节日表） |
-| `browse/` | watchlist（npm/GitHub，6h 节流，首见不产素材；fetcher 可注入便于测试）+ 闲逛裁决（窗口/间隔/focus 冷却轮换）+ `completeWander` 代码登记（D10） |
+| `browse/` | 闲逛裁决（窗口/间隔/focus 冷却轮换，跨夜窗口支持）+ 偏好加权（`preference.ts`）+ `completeWander` 代码登记（D10） |
 | `ledger/` | 唯一账本，Markdown 行格式 `- [YYYY-MM-DD HH:MM][open|done][#id] text`；手写乱行原样保留；`pendingOlderThan` 供跟进时机 |
 | `notify/` | AUMID 自注册（HKCU+开始菜单快捷方式，无需管理员）；**D12：仅"有新消息"提示，不承载正文** |
 | `ui/client.js` | 见 §3 C9 + §14 M6：六分区卡片（心跳状态 30s 轮询/会话绑定/素材池/画像只读/账本/节律配置），全部经 `/heartbeat` RPC 与 host 通信 |
@@ -195,7 +195,6 @@ cli(dist/cli) ── 独立进程，读写 data/（与宿主不共享内存状�
 | 素材池上限/TTL 阶梯/冷板凳/评分权重 | `policy.json` → `seeds.*`（用户层覆盖对应子键即可，如只覆盖 `seeds.maxActive: 30`） | 重启 |
 | 画像合并触发/分区容量/置信度封顶/volatile 14d/stable 180d | `policy.json` → `profile.*` | 重启 |
 | **画像能记什么**（隐私边界） | `data/settings/profile-schema.json`：分区/topic/subtopic 白名单 + 各 sub_topic `allowed`/`default` 档位；**白名单外一概不收** | 重启 |
-| 追踪哪些 npm/GitHub | `config/watchlist.json`（出厂）；在 `data/settings/watchlist.json` 放同名文件则**整体替换** | 重启 |
 | 兴趣种子/闲逛 schedule | `config/interests.json`（出厂）；用户层替换同上 | 重启 |
 | 忙闲类别表（哪些进程算忙） | `config/busy-rules.json`（busy/idle 进程映射 + 全屏游戏规则） | 重启 |
 | 数据目录位置 | profile 的 `cordis.patch.yml` → `id: heartbeat, config.dataDir`（本机已钉到工作区）；或 env `HEARTBEAT_DATA_DIR` | 重启 |
@@ -298,7 +297,7 @@ node dist/cli/index.js burn              # 焚毁预演（--yes 执行，--all �
 ## 9. 测试
 
 - 运行：`npm test`（node --test + tsx，91 个）；`npm run typecheck`；`npm run build`。
-- 必测项与锚点：路径守卫 5 组向量（含 junction 逃逸）、闸门五闸顺序与 A5 语义、淘汰四规则+保护+合并、画像守卫（白名单/evidence/封顶/INVALIDATE 归属/老化）、journal verify/rebuild（含撕裂尾）、inbox 去重截断、闲逛裁决与 watchlist 假 fetcher、burn 预演与设置保留、配置两层合并与 fail-closed。
+- 必测项与锚点：路径守卫 5 组向量（含 junction 逃逸）、闸门五闸顺序与 A5 语义、淘汰四规则+保护+合并、画像守卫（白名单/evidence/封顶/INVALIDATE 归属/老化）、journal verify/rebuild（含撕裂尾）、inbox 去重截断、闲逛裁决与跨夜窗口、burn 预演与设置保留、配置两层合并与 fail-closed。
 - 时间全部注入（`now` 参数），无 sleep 依赖；vault 类测试真实 spawn PowerShell。
 
 ## 10. 开发工作流要点

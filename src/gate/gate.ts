@@ -7,10 +7,11 @@
 // delivery channel succeeded; a failed delivery must not consume cap/cooldown.
 
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { runPowerShellFile } from '../core/ps.js';
 import fs from 'node:fs';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
+import { inHhMmWindow, minutesOfDay } from '../core/time-window.js';
 import { loadJson, saveJson } from '../vault/vault.js';
 import type { Policy } from '../config/schema.js';
 import { classifyWindow, loadBusyRules, type BusyRules, type WindowInfo } from './busy-rules.js';
@@ -55,13 +56,7 @@ export function readSentState(guard: PathGuard, paths: WorkspacePaths, now = Dat
 
 export function inQuietHours(policy: Policy, now = Date.now()): boolean {
   const q = policy.gate.quietHours;
-  const d = new Date(now);
-  const mins = d.getHours() * 60 + d.getMinutes();
-  const [sh, sm] = q.start.split(':').map(Number);
-  const [eh, em] = q.end.split(':').map(Number);
-  const start = sh! * 60 + sm!;
-  const end = eh! * 60 + em!;
-  return start > end ? mins >= start || mins < end : mins >= start && mins < end;
+  return inHhMmWindow(q.start, q.end, minutesOfDay(new Date(now)));
 }
 
 // ── pure decision core (unit-tested without any IO) ─────────────────────
@@ -105,13 +100,11 @@ export function evaluateGate(input: GateInputs): GateDecision {
 
 // ── probing (IO layer) ──────────────────────────────────────────────────
 
-function probeFrontWindowLive(guard: PathGuard, paths: WorkspacePaths): WindowInfo | null {
+async function probeFrontWindowLive(guard: PathGuard, paths: WorkspacePaths): Promise<WindowInfo | null> {
   const tmp = path.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
   try {
     const out = guard.assert(tmp);
-    const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(paths.assetsDir, 'frontwin.ps1'), '-out', out],
-      { timeout: 10_000, encoding: 'utf8' });
+    const r = await runPowerShellFile(path.join(paths.assetsDir, 'frontwin.ps1'), ['-out', out], 10_000);
     if (r.status !== 0 || !fs.existsSync(out)) return null;
     return JSON.parse(fs.readFileSync(out, 'utf8')) as WindowInfo;
   } catch {
@@ -136,12 +129,12 @@ function probeFrontWindowSnapshot(
   };
 }
 
-function frontWindowClass(
+async function frontWindowClass(
   guard: PathGuard,
   paths: WorkspacePaths,
   rules: BusyRules,
-): { cls: 'busy' | 'idle' | 'unknown'; why: string; source: string } {
-  const live = probeFrontWindowLive(guard, paths);
+): Promise<{ cls: 'busy' | 'idle' | 'unknown'; why: string; source: string }> {
+  const live = await probeFrontWindowLive(guard, paths);
   if (live) {
     const c = classifyWindow(live, rules);
     return { ...c, source: 'live' };
@@ -155,15 +148,15 @@ function frontWindowClass(
 }
 
 /** Gather inputs and evaluate. SILENT reasons are audit-ready strings. */
-export function runGate(
+export async function runGate(
   guard: PathGuard,
   policy: Policy,
   paths: WorkspacePaths,
   now = Date.now(),
-): GateDecision {
+): Promise<GateDecision> {
   const rules = loadBusyRules(paths.configDir);
   const sent = readSentState(guard, paths, now);
-  const front = frontWindowClass(guard, paths, rules);
+  const front = await frontWindowClass(guard, paths, rules);
   const pulse = readPulse(guard, paths);
   return evaluateGate({
     now,
@@ -177,9 +170,35 @@ export function runGate(
 }
 
 /**
+ * H-67: the pure half of `confirmSend` — read-only, no state change. The
+ * orchestrator runs it immediately before the delivery turn, so quiet hours and
+ * the daily cap are judged against the state as it is at the moment of
+ * speaking instead of minutes earlier (two model turns sit between the gate
+ * decision and the delivery).
+ */
+export function canSend(
+  guard: PathGuard,
+  policy: Policy,
+  paths: WorkspacePaths,
+  now = Date.now(),
+): { ok: true } | { ok: false; reason: string } {
+  const sent = readSentState(guard, paths, now);
+  if (inQuietHours(policy, now)) return { ok: false, reason: 'quiet hours' };
+  if (sent.items.length >= policy.gate.maxDailySend) {
+    return { ok: false, reason: `daily cap reached (${policy.gate.maxDailySend})` };
+  }
+  return { ok: true };
+}
+
+/**
  * Record a delivered expression. Called ONLY after the delivery channel
  * succeeded (r4 A5). Re-reads state from disk, refuses on quiet hours / cap
  * (fail-closed), then persists atomically.
+ *
+ * H-67: the returned verdict is advisory for the caller — by the time this runs
+ * the words are already in the target session, so a refusal here must not be
+ * read as "she did not speak"; it only means the books were stale when the
+ * second look happened.
  */
 export function confirmSend(
   guard: PathGuard,
@@ -189,11 +208,9 @@ export function confirmSend(
   summary: string,
   now = Date.now(),
 ): { ok: true; sent: SentState } | { ok: false; reason: string } {
+  const check = canSend(guard, policy, paths, now);
+  if (!check.ok) return check;
   const sent = readSentState(guard, paths, now);
-  if (inQuietHours(policy, now)) return { ok: false, reason: 'quiet hours' };
-  if (sent.items.length >= policy.gate.maxDailySend) {
-    return { ok: false, reason: `daily cap reached (${policy.gate.maxDailySend})` };
-  }
   sent.items.push({
     ts: now,
     iso: new Date(now).toISOString(),

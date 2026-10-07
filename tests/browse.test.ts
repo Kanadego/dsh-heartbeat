@@ -10,9 +10,10 @@ import type { Policy } from '../src/config/schema.js';
 import {
   adviseWander,
   browseStatePath,
-  checkWatchlist,
   completeWander,
+  emptyBrowseState,
   inWanderWindow,
+  normalizeBrowseState,
   pickFocus,
 } from '../src/browse/browse.js';
 
@@ -45,6 +46,30 @@ test('inWanderWindow matches noon/evening windows only', () => {
   assert.equal(inWanderWindow(new Date('2026-09-06T16:00:00.000+08:00'), policy.browse.windows), null);
 });
 
+test('H-14: a wander window crossing midnight still matches', () => {
+  const windows = [{ start: '22:00', end: '02:00' }];
+  assert.equal(inWanderWindow(new Date('2026-09-06T22:00:00.000+08:00'), windows), '22:00-02:00');
+  assert.equal(inWanderWindow(new Date('2026-09-06T23:30:00.000+08:00'), windows), '22:00-02:00');
+  assert.equal(inWanderWindow(new Date('2026-09-07T01:15:00.000+08:00'), windows), '22:00-02:00');
+  assert.equal(inWanderWindow(new Date('2026-09-07T02:00:00.000+08:00'), windows), null); // right-open
+  assert.equal(inWanderWindow(new Date('2026-09-06T12:00:00.000+08:00'), windows), null);
+  // a malformed entry never matches, and does not poison the entries after it
+  assert.equal(inWanderWindow(NOON, [{ start: 'oops', end: '15:00' }]), null);
+  assert.equal(inWanderWindow(NOON, [{ start: 'oops', end: '15:00' }, { start: '11:00', end: '15:00' }]), '11:00-15:00');
+});
+
+test('H-65: a malformed browse state degrades to defaults instead of throwing', () => {
+  assert.deepEqual(normalizeBrowseState(null), emptyBrowseState());
+  assert.deepEqual(normalizeBrowseState({ wander: {} }), emptyBrowseState());
+  const half = normalizeBrowseState({ wander: { focusHistory: { a: 1, b: 'x' }, last_wander_at: 'soon' } });
+  assert.deepEqual(half.wander.focusHistory, { a: 1 });
+  assert.equal(half.wander.last_wander_at, 0);
+  // legacy pre-H-12 watchlist keys are ignored rather than carried forward
+  const legacy = normalizeBrowseState({ targets: { dsh: { seen: 'npm:1' } }, last_check_at: 123 });
+  assert.deepEqual(legacy, emptyBrowseState());
+  assert.deepEqual(normalizeBrowseState({ wander: { focusCount: { a: Number.NaN, b: 2 } } }).wander.focusCount, { b: 2 });
+});
+
 test('adviseWander: outside window -> skipped with time', () => {
   const a = adviseWander(guard, paths, policy, new Date('2026-09-06T09:00:00.000+08:00'));
   assert.equal(a.focus, null);
@@ -75,42 +100,11 @@ test('adviseWander: focus cooldown rotates to the next interest (3 days)', () =>
 test('pickFocus round-robins by least-recent history', () => {
   const interests = { interests: ['甲', '乙', '丙'], _schedule: { focus_cooldown_days: 0 } };
   const st = {
-    targets: {},
-    last_check_at: 0,
     wander: { focusHistory: { 甲: 5, 乙: 2 } as Record<string, number>, focusCount: {} as Record<string, number>, last_wander_at: 0 },
   };
   assert.equal(pickFocus(st, interests, 10), '丙');
   st.wander.focusHistory['丙'] = 9;
   assert.equal(pickFocus(st, interests, 10), '乙');
-});
-
-test('checkWatchlist: first sight registers silently, change produces material', async () => {
-  let npmCalls = 0;
-  const fetcher = async (url: string) => {
-    if (url.includes('registry.npmjs.org')) {
-      npmCalls += 1;
-      const version = npmCalls >= 3 ? '2.0.0' : '1.0.0';
-      return { ok: true, status: 200, json: async () => ({ version }) };
-    }
-    return { ok: false, status: 404, json: async () => ({}) }; // github targets: no releases -> skipped
-  };
-  const one = await checkWatchlist(guard, paths, { fetcher, throttleOk: true });
-  assert.equal(one.items.length, 0); // 首见不产素材
-  assert.equal(one.checked > 0, true);
-  const two = await checkWatchlist(guard, paths, { fetcher, throttleOk: true });
-  assert.equal(two.items.length, 0); // same version -> no news
-  const three = await checkWatchlist(guard, paths, { fetcher, throttleOk: true });
-  assert.equal(three.items.length, 1); // version change -> material
-  assert.match(three.items[0]!.text, /1\.0\.0 -> 2\.0\.0/);
-  assert.equal(three.items[0]!.confidence, 0.4);
-});
-
-test('checkWatchlist throttles to 6h by default', async () => {
-  const fetcher = async () => { throw new Error('should not be called'); };
-  await checkWatchlist(guard, paths, { fetcher: async () => ({ ok: true, status: 200, json: async () => ({ version: '9' }) }), throttleOk: true });
-  const second = await checkWatchlist(guard, paths, { fetcher });
-  assert.equal(second.checked, 0);
-  assert.equal(second.items.length, 0);
 });
 
 test('completeWander records throttle timestamps (browse.json encrypted)', () => {
