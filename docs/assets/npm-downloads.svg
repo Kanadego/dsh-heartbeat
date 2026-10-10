@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="300" viewBox="0 0 820 300" role="img" aria-label="npm downloads per day for @kanadego/dsh-heartbeat">
+<title>npm downloads per day - @kanadego/dsh-heartbeat</title>
+<style>
+  :root { --bg:#ffffff; --fg:#334155; --dim:#7c8ba1; --grid:#e6ebf2; --axis:#c8d2e0; --line:#e0a03a; --line2:#f2c879; --daily:rgba(224,160,58,.55); --fill:rgba(224,160,58,.18); }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#d7dee9; --dim:#8b9bb0; --grid:#242c3a; --axis:#39424f; --line:#f0b552; --line2:#ffd894; --daily:rgba(240,181,82,.50); --fill:rgba(240,181,82,.20); } }
+  text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .title { font-size: 15px; font-weight: 600; fill: var(--fg); }
+  .sub { font-size: 12px; fill: var(--dim); }
+  .tick { font-size: 11px; fill: var(--dim); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--axis); stroke-width: 1; }
+  .line { fill: none; stroke: var(--daily); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+  .ma { fill: none; stroke: url(#stroke); stroke-width: 2.6; stroke-linejoin: round; stroke-linecap: round; }
+  .legend-dim { fill: none; stroke: var(--daily); stroke-width: 2.6; stroke-linecap: round; }
+  .legend-line { fill: none; stroke: var(--line); stroke-width: 2.6; stroke-linecap: round; }
+  .area { fill: url(#fill); }
+  .dot { fill: var(--line); }
+  .dot-dim { fill: var(--daily); }
+</style>
+<defs>
+  <linearGradient id="stroke" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" style="stop-color:var(--line)"/>
+    <stop offset="100%" style="stop-color:var(--line2)"/>
+  </linearGradient>
+  <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" style="stop-color:var(--fill)"/>
+    <stop offset="100%" style="stop-color:transparent"/>
+  </linearGradient>
+</defs>
+<rect x="0" y="0" width="820" height="300" fill="var(--bg)"/>
+<text x="58" y="24" class="title">npm downloads / day</text>
+<text x="58" y="42" class="sub">@kanadego/dsh-heartbeat · 23 days · total 3,415 · peak 479 · updated 2026-10-08</text>
+  <line x1="616" y1="20" x2="636" y2="20" class="legend-dim"/>
+  <text x="642" y="24" class="sub">daily</text>
+  <line x1="712" y1="20" x2="732" y2="20" class="legend-line"/>
+  <text x="738" y="24" class="sub">7-day avg</text>
+  <line x1="58" y1="260.0" x2="792.0" y2="260.0" class="grid"/>
+  <text x="48" y="264.0" class="tick" text-anchor="end">0</text>
+  <line x1="58" y1="208.0" x2="792.0" y2="208.0" class="grid"/>
+  <text x="48" y="212.0" class="tick" text-anchor="end">125</text>
+  <line x1="58" y1="156.0" x2="792.0" y2="156.0" class="grid"/>
+  <text x="48" y="160.0" class="tick" text-anchor="end">250</text>
+  <line x1="58" y1="104.0" x2="792.0" y2="104.0" class="grid"/>
+  <text x="48" y="108.0" class="tick" text-anchor="end">375</text>
+  <line x1="58" y1="52.0" x2="792.0" y2="52.0" class="grid"/>
+  <text x="48" y="56.0" class="tick" text-anchor="end">500</text>
+<line x1="58" y1="260.0" x2="792.0" y2="260.0" class="axis"/>
+<path d="M58.0,187.2 L91.4,218.8 L124.7,213.7 L158.1,204.2 L191.5,175.5 L224.8,185.3 L258.2,192.8 L291.5,200.3 L324.9,184.5 L358.3,187.4 L391.6,195.2 L425.0,219.3 L458.4,220.6 L491.7,202.9 L525.1,190.5 L558.5,201.5 L591.8,200.5 L625.2,199.9 L658.5,198.8 L691.9,185.7 L725.3,206.5 L758.6,206.6 L792.0,202.9 L792.0,260.0 L58.0,260.0 Z" class="area"/>
+<path d="M258.2,192.8 L291.5,200.3 L324.9,184.5 L358.3,187.4 L391.6,195.2 L425.0,219.3 L458.4,220.6 L491.7,202.9 L525.1,190.5 L558.5,201.5 L591.8,200.5 L625.2,199.9 L658.5,198.8 L691.9,185.7 L725.3,206.5 L758.6,206.6 L792.0,202.9" class="ma"/>
+<path d="M58.0,187.2 L91.4,250.4 L124.7,203.4 L158.1,175.6 L191.5,60.7 L224.8,234.6 L258.2,237.5 L291.5,240.0 L324.9,139.4 L358.3,224.2 L391.6,230.0 L425.0,229.2 L458.4,243.8 L491.7,114.0 L525.1,152.7 L558.5,216.3 L591.8,217.6 L625.2,225.9 L658.5,221.7 L691.9,151.4 L725.3,260.0 L758.6,153.5 L792.0,190.1" class="line"/>
+<circle cx="191.5" cy="60.7" r="3" class="dot-dim"/>
+<circle cx="792.0" cy="190.1" r="4.5" class="dot"/>
+<text x="784.0" y="178.1" class="sub" text-anchor="end">168</text>
+  <text x="58.0" y="282.0" class="tick" text-anchor="start">09-16</text>
+  <text x="191.5" y="282.0" class="tick" text-anchor="middle">09-20</text>
+  <text x="324.9" y="282.0" class="tick" text-anchor="middle">09-24</text>
+  <text x="458.4" y="282.0" class="tick" text-anchor="middle">09-28</text>
+  <text x="591.8" y="282.0" class="tick" text-anchor="middle">10-02</text>
+  <text x="725.3" y="282.0" class="tick" text-anchor="middle">10-06</text>
+  <text x="792.0" y="282.0" class="tick" text-anchor="end">10-08</text>
+</svg>
