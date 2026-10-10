@@ -368,6 +368,29 @@ interface PathGuard {
     check(target: string): string | null;
 }
 
+type RelocateResult = {
+    action: 'relocated';
+    /** Package-local tree the data came from (now deleted). */
+    srcDir: string;
+    dstDir: string;
+    backupDir: string;
+    files: number;
+    bytes: number;
+    /** Plaintext JSON/JSONL that does not parse (verified byte-identical). */
+    warnings: string[];
+    /** Paths that could not be deleted after the move (cosmetic leftovers). */
+    leftovers: string[];
+} | {
+    action: 'skipped';
+    reason: 'source-missing' | 'no-payload' | 'destination-exists';
+} | {
+    action: 'failed';
+    stage: 'backup' | 'copy' | 'verify' | 'commit';
+    problems: string[];
+    /** Null when the backup itself could not be created. */
+    backupDir: string | null;
+};
+
 interface WorkspacePaths {
     /** Guard boundary and the only writable tree at runtime. */
     dataDir: string;
@@ -379,6 +402,11 @@ interface WorkspacePaths {
     packageRoot: string;
     configDir: string;
     assetsDir: string;
+    /**
+     * Set only when a legacy package-local data dir was found: the outcome of
+     * the one-time relocation. Absent for explicit dirs and fresh installs.
+     */
+    relocation?: RelocateResult;
 }
 
 interface OrchestratorDeps {
@@ -403,6 +431,11 @@ interface OrchestratorDeps {
     policy: Policy;
     /** Agent preset the heartbeat agent joins (composition entry `agentPreset`). */
     agentPreset?: string;
+    /** Awaited right before the preset mount: the plugin registers its preset at
+     * runtime (issue #2 — the composition must not name a host package), and the
+     * mount must not race that registration. Resolves at once when registration
+     * was skipped or the host has no registry API. */
+    presetRegistration?: () => Promise<void>;
     /** Extra tool names the engine-room allow-list should include (config
      * `extraTools`, comma-separated in the composition entry). Only names that
      * actually exist in the global layer are applied. */

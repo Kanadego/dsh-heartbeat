@@ -20,7 +20,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-WRJCINZ7.js";
+} from "./chunk-IG6YMUHW.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -31,17 +31,17 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-KOOQOMQY.js";
+} from "./chunk-JDH2LDFS.js";
 import {
   dedupeItems,
   inboxClear,
   inboxCount,
   inboxDrain,
   inboxFilePath
-} from "./chunk-BQCXYE7N.js";
+} from "./chunk-3MDBU6WY.js";
 import {
   snapshotIfDue
-} from "./chunk-QOQ7EPZZ.js";
+} from "./chunk-KB5SMG3F.js";
 import {
   appendAuditLine,
   applyOpsToDoc,
@@ -53,7 +53,7 @@ import {
   readAuditLines,
   readJournalTexts,
   runDeterministicAging
-} from "./chunk-OYVNWB5G.js";
+} from "./chunk-CUOSICYJ.js";
 import {
   decryptFile,
   encryptFile,
@@ -63,7 +63,7 @@ import {
   saveEncryptedText,
   saveJson,
   writeText
-} from "./chunk-7TW6DD6Q.js";
+} from "./chunk-K5Y6JP2B.js";
 import {
   atomicWriteJsonSync,
   burnFileSync
@@ -990,7 +990,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
     const report = applyOpsToDoc(guard, paths.dataDir, doc, profileOpsCast, schema, policy, now);
     const aged = runDeterministicAging(doc, policy, now);
     persistWithJournal(guard, paths.dataDir, doc, { runId, applied: report.applied, rejected: report.rejected });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-B34NTH6D.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-UTXQJJ5C.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -1277,6 +1277,13 @@ function applyHeartbeatInterval(deps, intervalMin) {
   reschedule?.(v);
   appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "interval_changed", intervalMin: v });
 }
+function looksPermanentResumeFailure(error) {
+  return [
+    /SessionFormatUnsupportedError/i,
+    /refuses the transformed artifact/i,
+    /session migration[^]*refus/i
+  ].some((re) => re.test(error));
+}
 function sessionEvents(session, fromSeq) {
   if (!session) return [];
   if (typeof session.snapshotEvents === "function") {
@@ -1398,6 +1405,11 @@ function makeHomeSetup(deps) {
   return async (agentCtx) => {
     const notes = [];
     const presetId = deps.agentPreset ?? "heartbeat";
+    try {
+      await withTimeout(deps.presetRegistration?.() ?? Promise.resolve(), 3e4, "preset registration timeout (30s)");
+    } catch (e) {
+      notes.push(`preset-register=threw(${String(e).slice(0, 120)})`);
+    }
     try {
       const presets = agentCtx.get("agentPresets");
       if (typeof presets?.mount !== "function") {
@@ -1539,12 +1551,15 @@ async function ensureAgent(deps) {
             agent = unwrap(handle);
             appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_resume_ok", sessionId: savedId, model: agent.options?.model ?? "(none)" });
           } catch (resumeErr) {
+            const resumeMessage = String(resumeErr);
             appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
               event: "agent_resume_failed",
               sessionId: savedId,
-              error: String(resumeErr).slice(0, 160)
+              error: resumeMessage.slice(0, 160)
             });
-            if (!/not found/i.test(String(resumeErr))) {
+            const gone = /not found/i.test(resumeMessage);
+            const permanent = !gone && looksPermanentResumeFailure(resumeMessage);
+            if (!gone && !permanent) {
               appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
                 event: "agent_deferred",
                 sessionId: savedId,
@@ -1552,6 +1567,13 @@ async function ensureAgent(deps) {
               });
               agentPromise = null;
               return null;
+            }
+            if (permanent) {
+              appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+                event: "agent_resume_permanent",
+                sessionId: savedId,
+                error: resumeMessage.slice(0, 160)
+              });
             }
             try {
               const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, ...agentOptions ? { agentOptions } : {}, setup })), 3e4, "agents.create (self-heal) timeout");
@@ -1760,7 +1782,7 @@ async function observeBoundSessions(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const { loadBindings, observeTargets } = await import("./bindings-225SI7KC.js");
-  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-JLT5G7TL.js");
+  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-P26DDMWC.js");
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
@@ -2428,6 +2450,7 @@ export {
   StatusReader,
   buildDigest,
   applyHeartbeatInterval,
+  looksPermanentResumeFailure,
   sessionEvents,
   sessionEventCount,
   HOME_ROTATE_EVENT_COUNT,
@@ -2451,4 +2474,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-HT57FOEF.js.map
+//# sourceMappingURL=chunk-AJ5HLAL7.js.map

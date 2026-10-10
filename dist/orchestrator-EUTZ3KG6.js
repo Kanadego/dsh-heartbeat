@@ -11,6 +11,7 @@ import {
   homeSessionId,
   isContextOverflowError,
   loadCursors,
+  looksPermanentResumeFailure,
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pickSpokenLine,
@@ -22,15 +23,15 @@ import {
   shouldRotateHome,
   spokeTextSince,
   startOrchestrator
-} from "./chunk-HT57FOEF.js";
-import "./chunk-WRJCINZ7.js";
+} from "./chunk-AJ5HLAL7.js";
+import "./chunk-IG6YMUHW.js";
 import "./chunk-3QJJRXIR.js";
-import "./chunk-KOOQOMQY.js";
-import "./chunk-BQCXYE7N.js";
+import "./chunk-JDH2LDFS.js";
+import "./chunk-3MDBU6WY.js";
 import "./chunk-IV2ZWQA3.js";
-import "./chunk-QOQ7EPZZ.js";
-import "./chunk-OYVNWB5G.js";
-import "./chunk-7TW6DD6Q.js";
+import "./chunk-KB5SMG3F.js";
+import "./chunk-CUOSICYJ.js";
+import "./chunk-K5Y6JP2B.js";
 import "./chunk-WRUTATW4.js";
 export {
   ENGINE_ROOM_EXTRA_TOOLS,
@@ -45,6 +46,7 @@ export {
   homeSessionId,
   isContextOverflowError,
   loadCursors,
+  looksPermanentResumeFailure,
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pickSpokenLine,
@@ -57,4 +59,4 @@ export {
   spokeTextSince,
   startOrchestrator
 };
-//# sourceMappingURL=orchestrator-2ZLU7RGE.js.map
+//# sourceMappingURL=orchestrator-EUTZ3KG6.js.map
