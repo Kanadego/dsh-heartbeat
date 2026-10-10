@@ -8,7 +8,9 @@
 #   - id: heartbeat
 #     config:
 #       dataDir: D:/your/workspace/data
-# Default: <packageRoot>/data.
+# Default: <DSH_HOME>/heartbeat-data (i.e. ~/.dsh/heartbeat-data), outside the
+# package. Data written by v1.9.1 and earlier sits at <packageRoot>/data and is
+# migrated out automatically on first start (backup, verify, then delete).
 - insert:
     - id: heartbeat
       name: '@kanadego/dsh-heartbeat'
