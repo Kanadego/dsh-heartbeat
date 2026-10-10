@@ -22,6 +22,7 @@ import { registerStatusbarSection, noteTrack, pinTrack } from './statusbar/track
 import { StatusReader } from './statusbar/store.js';
 import { renderStatusText } from './statusbar/track.js';
 import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
+import { registerHeartbeatPreset } from './core/preset-definition.js';
 import { buildLedgerTool } from './ledger/tool.js';
 import { buildSeedReportTool, reportFilePath } from './seeds/report.js';
 import { ledgerFilePath } from './ledger/ledger.js';
@@ -124,6 +125,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     ctx, paths, guard, policy,
     agentPreset: config.agentPreset || 'heartbeat',
     extraTools: (config.extraTools ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    presetRegistration: () => presetRegistration ?? Promise.resolve(),
   };
   setRuntime({
     paths,
@@ -137,32 +139,66 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     },
   });
 
-  // ── Bundled preset self-install (C13) ───────────────────────────────────
-  // The preset is what lets the heartbeat agent see `web_search` at all, and
-  // hand-copying two YAML files was the most error-prone step of setup, so the
-  // plugin installs its own template on first run. The target comes from the
-  // roster's own roots (`agentPresets.roots`, trust === "user") instead of a
-  // guessed `~/.dsh`, so `$DSH_HOME`/a configured home are honoured; an existing
-  // preset is never overwritten. Audit line: `preset_install`.
+  // Runtime preset registration (issue #2). The `agentPresets` inject below
+  // assigns it; the acquire path awaits it before mounting the preset.
+  let presetRegistration: Promise<void> | undefined;
+
+  // ── Preset: runtime registration + filesystem install (C13 / issue #2) ───
+  // The preset is what lets the heartbeat agent see `web_search` at all, so
+  // the plugin owns it in both senses:
+  //
+  //  1. RUNTIME REGISTRATION (0.1.7+). The registry takes a definition
+  //     straight from the declaring plugin (`AgentPresetRegistry.register`),
+  //     so nothing in the composition has to name
+  //     `@deepseek-ai/dsh-agent-preset`. That matters: a profile cannot always
+  //     resolve it, and its peer closure contains Cordis's own loader — a
+  //     profile that ships those by hand double-instances the machinery, and
+  //     then every session refuses to resume ("prompt section
+  //     deployment:persona-prefix is already registered"), while one that
+  //     cannot resolve the package fails the WHOLE plugin tree at load
+  //     (reported 2026-10-10, both with reproductions). A host whose registry
+  //     has no `register` degrades to an audit line, never a throw.
+  //  2. FILESYSTEM INSTALL, kept for hosts that still scan the roster's user
+  //     root (`agentPresets.roots`, trust === "user"): first run writes the
+  //     bundled template under the roster's OWN root instead of a guessed
+  //     `~/.dsh`, so `$DSH_HOME`/a configured home are honoured; an existing
+  //     preset is never overwritten.
+  //
+  // `installPreset: false` means "the operator manages the preset by hand", so
+  // it switches BOTH off. Audit lines: `preset_register`, `preset_install`.
   ctx.inject(['agentPresets'], (presetCtx: unknown) => {
     const service = (presetCtx as {
       agentPresets?: { roots?: Array<{ path?: string; trust?: string }> };
     }).agentPresets;
+    const presetId = config.agentPreset || 'heartbeat';
+    const installEnabled = config.installPreset !== false;
+    const audit = (entry: Record<string, unknown>): void => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+      } catch (e) {
+        ctx.logger.warn('heartbeat: preset audit failed (%s)', String(e).slice(0, 120));
+      }
+    };
+
+    presetRegistration = registerHeartbeatPreset(service, presetId, installEnabled).then((result) => {
+      audit({ event: 'preset_register', ...result });
+      if (result.action === 'error') {
+        ctx.logger.warn('heartbeat: preset register failed (%s) — the engine room runs without it', result.detail ?? '');
+      } else if (result.action === 'registered') {
+        ctx.logger.info('heartbeat: preset %s registered at runtime', result.id);
+      } else {
+        ctx.logger.info('heartbeat: preset registration skipped (%s)', result.action);
+      }
+    });
+
     const root = userPresetRoot(service?.roots);
     const result = installBundledPreset({
       moduleUrl: import.meta.url,
-      id: config.agentPreset || 'heartbeat',
+      id: presetId,
       ...(root === undefined ? { rosterKnown: service !== undefined } : { root }),
-      enabled: config.installPreset !== false,
+      enabled: installEnabled,
     });
-    try {
-      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
-        event: 'preset_install',
-        ...result,
-      });
-    } catch (e) {
-      ctx.logger.warn('heartbeat: preset_install audit failed (%s)', String(e).slice(0, 120));
-    }
+    audit({ event: 'preset_install', ...result });
     const line = describeInstall(result);
     if (result.action === 'error' || result.action === 'skipped-no-root') {
       ctx.logger.warn('heartbeat: %s', line);
@@ -274,6 +310,39 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     guard.assert(paths.logsDir + '/heartbeat.jsonl'),
     { event: 'plugin_init', dataDir: paths.dataDir },
   );
+
+  // issue #2: a package-local data dir is moved out of the package on first
+  // sight. The audit line is the only durable trace; a failed move keeps
+  // serving the legacy tree (and never deletes it).
+  if (paths.relocation) {
+    const auditFile = guard.assert(paths.logsDir + '/heartbeat.jsonl');
+    if (paths.relocation.action === 'relocated') {
+      appendAuditLine(auditFile, {
+        event: 'data_dir_relocated',
+        from: paths.relocation.srcDir,
+        to: paths.relocation.dstDir,
+        files: paths.relocation.files,
+        bytes: paths.relocation.bytes,
+        warnings: paths.relocation.warnings,
+        leftovers: paths.relocation.leftovers,
+      });
+      ctx.logger.info(
+        'heartbeat: data dir moved out of the package (%s files, %s bytes)',
+        paths.relocation.files,
+        paths.relocation.bytes,
+      );
+    } else if (paths.relocation.action === 'failed') {
+      appendAuditLine(auditFile, {
+        event: 'data_dir_relocate_failed',
+        stage: paths.relocation.stage,
+        problems: paths.relocation.problems,
+      });
+      ctx.logger.warn(
+        'heartbeat: data dir relocation failed (%s); continuing in the package dir',
+        paths.relocation.stage,
+      );
+    }
+  }
 
   // ── M6 拓展：正式 RPC 通道（决策 1 = B 方案，探针已验证）──────────
   // connection 晚挂载 → ctx.inject(['connection'], ...) 声明式等待；

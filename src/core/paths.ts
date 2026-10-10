@@ -2,12 +2,17 @@
 //
 // The data dir is the ONLY directory the plugin writes to at runtime
 // (requirement 8). Resolution order: env override > plugin config > default
-// (packageRoot/data). All fs writes must go through the path guard created
+// (`$DSH_HOME/heartbeat-data`) — with a legacy fallback to `packageRoot()/data`
+// for installs that predate v1.9.2, which is relocated out of the package on
+// first sight (issue #2: a reinstall replaced the package dir and took the
+// user's data with it). All fs writes must go through the path guard created
 // from this dir (see core/path-guard.ts).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hasPayload, relocateDataDir, type RelocateResult } from './data-relocate.js';
 
 export interface WorkspacePaths {
   /** Guard boundary and the only writable tree at runtime. */
@@ -20,6 +25,11 @@ export interface WorkspacePaths {
   packageRoot: string;
   configDir: string;
   assetsDir: string;
+  /**
+   * Set only when a legacy package-local data dir was found: the outcome of
+   * the one-time relocation. Absent for explicit dirs and fresh installs.
+   */
+  relocation?: RelocateResult;
 }
 
 export interface WorkspaceConfigInput {
@@ -44,15 +54,45 @@ export function packageRoot(): string {
 }
 
 /**
+ * Default data dir: `$DSH_HOME/heartbeat-data` (or `~/.dsh/heartbeat-data`).
+ * Deliberately outside the package tree — reinstalling or upgrading the plugin
+ * replaces that directory and must not touch user data (issue #2).
+ */
+export function defaultDataDir(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string {
+  const override = env.DSH_HOME?.trim();
+  const root = override && override.length > 0 ? override : path.join(home, '.dsh');
+  return path.join(root, 'heartbeat-data');
+}
+
+/**
  * Resolve and create the workspace layout. Idempotent; must be called once
  * from the plugin entry before any fs write happens.
  */
 export function initWorkspace(config: WorkspaceConfigInput = {}): WorkspacePaths {
   if (resolved) return resolved;
   const root = packageRoot();
-  const dataDir = path.resolve(
-    process.env.HEARTBEAT_DATA_DIR || config.dataDir || path.join(root, 'data'),
-  );
+  const explicit = process.env.HEARTBEAT_DATA_DIR || config.dataDir;
+  const homeDir = path.resolve(defaultDataDir());
+  const legacyDir = path.join(root, 'data');
+  let dataDir: string;
+  let relocation: RelocateResult | undefined;
+  if (explicit) {
+    // Explicit configuration always wins, and never moves anything.
+    dataDir = path.resolve(explicit);
+  } else if (hasPayload(homeDir)) {
+    // Already on the new home (a previous run, or a reinstall that kept it).
+    dataDir = homeDir;
+  } else if (hasPayload(legacyDir)) {
+    // Pre-v1.9.2 install: the data lived inside the package. Move it out, and
+    // keep serving the legacy tree unless the move verified end to end.
+    relocation = relocateDataDir({ srcDir: legacyDir, dstDir: homeDir });
+    dataDir = relocation.action === 'relocated' ? homeDir : legacyDir;
+  } else {
+    dataDir = homeDir;
+  }
   const paths: WorkspacePaths = {
     dataDir,
     settingsDir: path.join(dataDir, 'settings'),
@@ -62,6 +102,7 @@ export function initWorkspace(config: WorkspaceConfigInput = {}): WorkspacePaths
     packageRoot: root,
     configDir: path.join(root, 'config'),
     assetsDir: path.join(root, 'assets'),
+    ...(relocation ? { relocation } : {}),
   };
   // Bootstrap creation happens before the guard exists; creating exactly one
   // directory tree at a known location is the safe window for this.

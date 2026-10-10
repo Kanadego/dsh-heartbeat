@@ -68,6 +68,11 @@ export interface OrchestratorDeps {
   policy: Policy;
   /** Agent preset the heartbeat agent joins (composition entry `agentPreset`). */
   agentPreset?: string;
+  /** Awaited right before the preset mount: the plugin registers its preset at
+   * runtime (issue #2 — the composition must not name a host package), and the
+   * mount must not race that registration. Resolves at once when registration
+   * was skipped or the host has no registry API. */
+  presetRegistration?: () => Promise<void>;
   /** Extra tool names the engine-room allow-list should include (config
    * `extraTools`, comma-separated in the composition entry). Only names that
    * actually exist in the global layer are applied. */
@@ -83,6 +88,29 @@ export function applyHeartbeatInterval(deps: OrchestratorDeps, intervalMin: numb
   deps.policy.heartbeat.intervalMin = v;
   reschedule?.(v);
   appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'interval_changed', intervalMin: v });
+}
+
+/** Resume errors that will never succeed on retry.
+ *
+ * Deferral exists for errors that age out (write-handle ownership races at
+ * startup, transient persistence states). A refused session migration is not
+ * one of those: the artifact stays refused, so a deferred beat repeats forever
+ * behind an unrecoverable home session — its history untouched and every hop
+ * agentless (issue #2, 2026-10-10: a 172 KB v3 file with a dangling tool call,
+ * 7.9k rounds of history, "有身体没大脑"). These get the create path instead,
+ * which already falls back to a fresh session when even that fails.
+ *
+ * Matched on the serialized error: `agents.resume` surfaces host errors as
+ * strings, e.g. `agent_resume_failed: SessionFormatUnsupportedError: Session
+ * migration from v3 to v4 refuses the transformed artifact: step/end leaves
+ * unresolved tool call call_00_…`.
+ */
+export function looksPermanentResumeFailure(error: string): boolean {
+  return [
+    /SessionFormatUnsupportedError/i,
+    /refuses the transformed artifact/i,
+    /session migration[^]*refus/i,
+  ].some((re) => re.test(error));
 }
 
 interface HostEvent {
@@ -371,6 +399,15 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
     // rolls the creation back.
     const notes: string[] = [];
     const presetId = deps.agentPreset ?? 'heartbeat';
+    // The runtime registration must land BEFORE the mount, or a beat starting
+    // moments after load would mount a preset the registry does not know yet.
+    // Bounded, and never fatal: a slow/failed registration degrades to
+    // `preset=no-api`, which the agent acquire path already tolerates.
+    try {
+      await withTimeout(deps.presetRegistration?.() ?? Promise.resolve(), 30_000, 'preset registration timeout (30s)');
+    } catch (e) {
+      notes.push(`preset-register=threw(${String(e).slice(0, 120)})`);
+    }
     try {
       const presets = agentCtx.get('agentPresets') as
         | { mount?(ctx: unknown, id?: string): Promise<unknown> }
@@ -563,24 +600,38 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
             agent = unwrap(handle);
             appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_ok', sessionId: savedId, model: agent.options?.model ?? '(none)' });
           } catch (resumeErr) {
+            const resumeMessage = String(resumeErr);
             appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
               event: 'agent_resume_failed', sessionId: savedId,
-              error: String(resumeErr).slice(0, 160),
+              error: resumeMessage.slice(0, 160),
             });
-            // Fresh-create ONLY when the saved session is confirmed GONE
-            // ("not found"). Everything else — write-handle ownership races at
-            // startup (2026-09-13: SessionAlreadyOwnedError orphaned the engine
-            // room to a blank session), transient persistence states, migration
-            // refusals — is DEFERRED: keep savedId, run this beat agentless,
-            // retry with backoff. A blank session is unrecoverable continuity
-            // loss; a deferred beat costs one quiet hop.
-            if (!/not found/i.test(String(resumeErr))) {
+            // Fresh-create when the saved session is confirmed GONE ("not
+            // found") — and also when resuming it can never succeed (see
+            // looksPermanentResumeFailure). Everything else — write-handle
+            // ownership races at startup (2026-09-13: SessionAlreadyOwnedError
+            // orphaned the engine room to a blank session), transient
+            // persistence states — is DEFERRED: keep savedId, run this beat
+            // agentless, retry with backoff. A blank session is unrecoverable
+            // continuity loss; a deferred beat costs one quiet hop.
+            //
+            // Deferral is for errors that age out; a refused migration does
+            // not, and deferring it stranded the engine room permanently
+            // (issue #2). That is the only reason this branch exists.
+            const gone = /not found/i.test(resumeMessage);
+            const permanent = !gone && looksPermanentResumeFailure(resumeMessage);
+            if (!gone && !permanent) {
               appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
                 event: 'agent_deferred', sessionId: savedId,
                 reason: 'transient acquire error, retrying with backoff',
               });
               agentPromise = null; // allow the retry to re-attempt acquisition
               return null;
+            }
+            if (permanent) {
+              appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+                event: 'agent_resume_permanent', sessionId: savedId,
+                error: resumeMessage.slice(0, 160),
+              });
             }
             try {
               const handle = await withTimeout(Promise.resolve(ctx.agents.create({ sessionId: savedId, meta: { cwd: paths.dataDir }, ...(agentOptions ? { agentOptions } : {}), setup })), 30_000, 'agents.create (self-heal) timeout');
