@@ -3,7 +3,7 @@ import {
   collectMigrationEntries,
   decryptContainer,
   encryptContainer
-} from "../chunk-2NB4QILF.js";
+} from "../chunk-XFNCTOW7.js";
 import {
   BUNDLED_PRESET_ID,
   conventionalUserPresetRoot,
@@ -28,7 +28,7 @@ import {
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-WRJCINZ7.js";
+} from "../chunk-IG6YMUHW.js";
 import {
   activeSeeds,
   addSeed,
@@ -38,7 +38,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-KOOQOMQY.js";
+} from "../chunk-JDH2LDFS.js";
 import "../chunk-IV2ZWQA3.js";
 import {
   appendAuditLine,
@@ -47,11 +47,11 @@ import {
   pruneAuditFile,
   rebuildProfile,
   verifyProfile
-} from "../chunk-OYVNWB5G.js";
+} from "../chunk-CUOSICYJ.js";
 import {
   initWorkspace,
   writeText
-} from "../chunk-7TW6DD6Q.js";
+} from "../chunk-K5Y6JP2B.js";
 import {
   atomicWriteFileSync,
   shredFileSync
@@ -532,7 +532,7 @@ async function verbProfile(c) {
       return 0;
     }
     case "snapshot": {
-      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-JQDJ346Z.js");
+      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-K5VHETTK.js");
       const { needed, lines } = snapshotDue(guard, paths.dataDir);
       console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
       if (!needed && !rest.includes("--force")) {
@@ -637,7 +637,7 @@ async function verbSessions(c) {
   const root = path2.join(os.homedir(), ".dsh", "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-2ZLU7RGE.js");
+    const { homeSessionId } = await import("../orchestrator-EUTZ3KG6.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -656,7 +656,7 @@ async function verbBind(c) {
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-2ZLU7RGE.js");
+      const { homeSessionId } = await import("../orchestrator-EUTZ3KG6.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -684,7 +684,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-2ZLU7RGE.js");
+      const { resetHomeSession } = await import("../orchestrator-EUTZ3KG6.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }

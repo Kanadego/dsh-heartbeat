@@ -27,7 +27,7 @@ import {
   sessionEventCount,
   sessionEvents,
   startOrchestrator
-} from "./chunk-HT57FOEF.js";
+} from "./chunk-AJ5HLAL7.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -36,7 +36,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-WRJCINZ7.js";
+} from "./chunk-IG6YMUHW.js";
 import {
   getRuntime,
   setRuntime
@@ -49,19 +49,19 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-KOOQOMQY.js";
-import "./chunk-BQCXYE7N.js";
+} from "./chunk-JDH2LDFS.js";
+import "./chunk-3MDBU6WY.js";
 import "./chunk-IV2ZWQA3.js";
-import "./chunk-QOQ7EPZZ.js";
+import "./chunk-KB5SMG3F.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath
-} from "./chunk-OYVNWB5G.js";
+} from "./chunk-CUOSICYJ.js";
 import {
   initWorkspace,
   writeText
-} from "./chunk-7TW6DD6Q.js";
+} from "./chunk-K5Y6JP2B.js";
 import {
   atomicWriteFileSync,
   atomicWriteJsonSync
@@ -1483,7 +1483,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-WDVFHUP7.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-D4VKAKYT.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
@@ -1495,7 +1495,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-WDVFHUP7.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-D4VKAKYT.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");
@@ -1680,6 +1680,47 @@ function registerStatusbarSection(ctx, guard, paths, opts) {
   });
 }
 
+// src/core/preset-definition.ts
+function heartbeatPresetDefinition(id = "heartbeat") {
+  return {
+    id,
+    name: "\u5FC3\u8DF3\u6A21\u5F0F",
+    description: "\u5FC3\u8DF3 agent \u4E13\u7528\uFF1A\u4EC5 web_search + \u4E0A\u4E0B\u6587\u6298\u53E0\uFF1B\u65E0 shell\u3001\u65E0\u6587\u4EF6\u3001\u65E0\u5B50\u4EE3\u7406\u3002",
+    order: 20,
+    plugins: [
+      {
+        id: "compaction",
+        name: "cordis:group",
+        group: true,
+        isolate: { compaction: true, toolResultPruner: true },
+        config: [
+          { id: "compaction-basic", name: "@deepseek-ai/dsh-compaction-basic" },
+          { id: "command-compact", name: "@deepseek-ai/dsh-command-compact" },
+          {
+            id: "tool-result-pruner",
+            name: "@deepseek-ai/dsh-compaction-tool-result-pruner",
+            config: { thresholdChars: 8192, headChars: 4096, tailChars: 1024 }
+          }
+        ]
+      },
+      { id: "tool-web", name: "@deepseek-ai/dsh-tool-web", config: { fetch: false, searchTimeoutMs: 6e4 } }
+    ]
+  };
+}
+async function registerHeartbeatPreset(service, id = "heartbeat", enabled = true) {
+  if (!enabled) return { action: "skipped-disabled", id };
+  const registrar = service;
+  if (registrar === void 0 || registrar === null || typeof registrar.register !== "function") {
+    return { action: "skipped-no-api", id };
+  }
+  try {
+    await registrar.register(heartbeatPresetDefinition(id));
+    return { action: "registered", id };
+  } catch (e) {
+    return { action: "error", id, detail: String(e).slice(0, 200) };
+  }
+}
+
 // src/ledger/tool.ts
 var MAX_TEXT = 120;
 function clean(v) {
@@ -1809,7 +1850,8 @@ function apply(ctx, config = {}) {
     guard,
     policy,
     agentPreset: config.agentPreset || "heartbeat",
-    extraTools: (config.extraTools ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+    extraTools: (config.extraTools ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    presetRegistration: () => presetRegistration ?? Promise.resolve()
   };
   setRuntime({
     paths,
@@ -1822,23 +1864,36 @@ function apply(ctx, config = {}) {
       tokenSaver: () => tokenSaverRef
     }
   });
+  let presetRegistration;
   ctx.inject(["agentPresets"], (presetCtx) => {
     const service = presetCtx.agentPresets;
+    const presetId = config.agentPreset || "heartbeat";
+    const installEnabled = config.installPreset !== false;
+    const audit = (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+      } catch (e) {
+        ctx.logger.warn("heartbeat: preset audit failed (%s)", String(e).slice(0, 120));
+      }
+    };
+    presetRegistration = registerHeartbeatPreset(service, presetId, installEnabled).then((result2) => {
+      audit({ event: "preset_register", ...result2 });
+      if (result2.action === "error") {
+        ctx.logger.warn("heartbeat: preset register failed (%s) \u2014 the engine room runs without it", result2.detail ?? "");
+      } else if (result2.action === "registered") {
+        ctx.logger.info("heartbeat: preset %s registered at runtime", result2.id);
+      } else {
+        ctx.logger.info("heartbeat: preset registration skipped (%s)", result2.action);
+      }
+    });
     const root = userPresetRoot(service?.roots);
     const result = installBundledPreset({
       moduleUrl: import.meta.url,
-      id: config.agentPreset || "heartbeat",
+      id: presetId,
       ...root === void 0 ? { rosterKnown: service !== void 0 } : { root },
-      enabled: config.installPreset !== false
+      enabled: installEnabled
     });
-    try {
-      appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), {
-        event: "preset_install",
-        ...result
-      });
-    } catch (e) {
-      ctx.logger.warn("heartbeat: preset_install audit failed (%s)", String(e).slice(0, 120));
-    }
+    audit({ event: "preset_install", ...result });
     const line = describeInstall(result);
     if (result.action === "error" || result.action === "skipped-no-root") {
       ctx.logger.warn("heartbeat: %s", line);
@@ -1917,6 +1972,35 @@ function apply(ctx, config = {}) {
     guard.assert(paths.logsDir + "/heartbeat.jsonl"),
     { event: "plugin_init", dataDir: paths.dataDir }
   );
+  if (paths.relocation) {
+    const auditFile = guard.assert(paths.logsDir + "/heartbeat.jsonl");
+    if (paths.relocation.action === "relocated") {
+      appendAuditLine(auditFile, {
+        event: "data_dir_relocated",
+        from: paths.relocation.srcDir,
+        to: paths.relocation.dstDir,
+        files: paths.relocation.files,
+        bytes: paths.relocation.bytes,
+        warnings: paths.relocation.warnings,
+        leftovers: paths.relocation.leftovers
+      });
+      ctx.logger.info(
+        "heartbeat: data dir moved out of the package (%s files, %s bytes)",
+        paths.relocation.files,
+        paths.relocation.bytes
+      );
+    } else if (paths.relocation.action === "failed") {
+      appendAuditLine(auditFile, {
+        event: "data_dir_relocate_failed",
+        stage: paths.relocation.stage,
+        problems: paths.relocation.problems
+      });
+      ctx.logger.warn(
+        "heartbeat: data dir relocation failed (%s); continuing in the package dir",
+        paths.relocation.stage
+      );
+    }
+  }
   const uiGet = () => ({
     intervalMin: getRuntime().policy.heartbeat.intervalMin,
     maxDailySend: getRuntime().policy.gate.maxDailySend,
