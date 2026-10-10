@@ -398,5 +398,3 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 ## 下载量
 
 <img src="docs/assets/npm-downloads.svg" alt="npm daily downloads" width="820">
-
-数据来自 npm registry 的公开统计接口（当日数字尚未结算，曲线末端比今天早两三天）。图由 [`scripts/npm-downloads-chart.mjs`](scripts/npm-downloads-chart.mjs) 生成，想刷新就跑一下它。
