@@ -23,8 +23,9 @@
 | 平台 | **Windows 专属**：PowerShell 探针、DPAPI 加解密、WinRT toast；`package.json` 声明 `os: ["win32"]` |
 | 技术栈 | TypeScript（strict、`noUncheckedIndexedAccess`）、ESM、tsup 构建、Node ≥ 22.19 |
 | 产物 | `dist/index.js`（插件入口）、`dist/cli/index.js`（CLI）、`dist/index.d.ts`（类型）、`client.js`（前端卡片，手写、不参与构建） |
-| 测试 | node:test + tsx，**282 个**（约 90 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
-| 运行数据 | `dataDir`，默认 `<包根>/data`；可在 profile 的插件配置里按插件 id 覆盖 |
+| 测试 | node:test + tsx，**300 个**（约 78 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
+| 运行数据 | `dataDir` 默认 `<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`），**在包外**，重装 / 升级 / 卸载都不会碰它；换位置用插件配置 `dataDir` 或环境变量 `HEARTBEAT_DATA_DIR`（v1.9.2 / issue #2） |
+| 老数据 | v1.9.1 及更早默认装在包内 `data/`（在 `node_modules` 下面），升级后首次启动自动搬出去：先备份、逐文件校验通过才删原件，失败原地不动并留痕（见 C13b） |
 | 心跳节律 | 出厂 20 分钟一拍（设置页 / CLI 可调）；沉默拍**零模型调用** |
 | 主循环 | `src/core/orchestrator.ts` 的 `beat()` |
 | 代码规模 | 50 个 `.ts` 文件；核心是 `orchestrator.ts`（约 1730 行）与 `rpc.ts` |
@@ -94,7 +95,7 @@ src/
 ├── client.js             （包根）web 设置卡片，手写
 ├── core/                 地基
 │   ├── orchestrator.ts   ★ 主循环 beat() 与各个相
-│   ├── paths.ts          dataDir 解析与工作区初始化
+│   ├── paths.ts          dataDir 解析（env > 配置 > 包外默认）、老数据搬迁与工作区初始化
 │   ├── path-guard.ts     路径白名单守卫
 │   ├── atomic-fs.ts      原子写与粉碎删除
 │   ├── audit-log.ts      JSONL 审计的读写与裁剪
@@ -104,7 +105,9 @@ src/
 │   ├── runtime.ts        运行时单例
 │   ├── bindings.ts       会话绑定
 │   ├── material.ts       素材组装与归账（纯函数，好测）
-│   └── preset-install.ts 随包预设的安装与校验
+│   ├── preset-install.ts 随包预设的安装与校验（≤0.1.5 的文件系统路径）
+│   ├── preset-definition.ts 心跳预设的运行时注册（0.1.7+；issue #2 之后）
+│   └── data-relocate.ts  老数据从包内搬到包外（备份 → 校验 → 原子落地 → 清源；永不抛）
 ├── config/               三层配置的加载与校验
 ├── vault/                DPAPI 加密、焚毁、换机迁移
 ├── gate/                 分寸闸门
@@ -206,8 +209,27 @@ prompt variable "{{model}}" has no value for this assembly (section "deployment:
 修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async；要求 `scopeOf(agentCtx)` 有效；id 缺省用 `defaultId`）。
 
 - 预设目录布局（≤0.1.5）：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`，id 需匹配 `[a-z0-9][a-z0-9-]*`。
-- 0.1.7 起宿主**不再加载文件系统用户根**，预设改为**组合声明行**（`@deepseek-ai/dsh-agent-preset`，与官方 `preset-standard` 同机制）。包内置 `preset-heartbeat` 行，内容 = `compaction` 组 + `tool-web`（`fetch:false`），**故意没有 persona 行**——人格沿用部署 persona。
+- **0.1.7 起：运行时注册**（v1.9.2，issue #2）。中间那段时间走的是"组合声明行"（`@deepseek-ai/dsh-agent-preset`，与官方 `preset-standard` 同机制），它要求 **profile 自己能解析那个包**——代价见 C13a。
+- 现在预设定义活在本插件里：`src/core/preset-definition.ts` 的 `heartbeatPresetDefinition(id)` = `compaction` 组 + `tool-web`（`fetch:false`），**故意没有 persona 行**——人格沿用部署 persona。插件加载时调 `agentPresets.register(definition)`（该 API 的 docstring 就是"Parsed configuration supplied by the declaring plugin"），`cordis.patch.yml` 里**不再有任何宿主包引用**。
 - `list()` 每次调用都重新 readdir（无缓存），所以运行期新建的预设目录对下一次 `mount()` 立即可见，不需要重启宿主。
+
+**C13a · 预设为什么改成运行时注册（issue #2，2026-10-10）**
+
+以前心跳的预设是写在 `cordis.patch.yml` 里的一行声明（`@deepseek-ai/dsh-agent-preset`），由宿主在装载时读它。这一行本身很轻，但它牵进来的依赖里包含 cordis 的装载机制本身，于是出现两种死法：
+
+- **profile 解析不到这个包**（pnpm 默认不自动装 peer 依赖）→ 宿主的装载直接中断，`plugin tree failed to load: … Cannot find package '@deepseek-ai/dsh-agent-preset'`，**整个 DSH 起不来**——不是心跳不工作，是宿主挂了。
+- **用户为了让它启动、把缺的依赖手工补进 profile** → 心跳能加载了，但 profile 与宿主各持一套装载机制，注册互相打架（`persona-prefix is already registered`、`requires a scoped preset Context`），结果是**任何会话都无法恢复**。对照实验：把那批包移除，立刻恢复正常。
+
+我们本机一直没撞上，是因为共享层 `<dshHome>/profiles/node_modules/@deepseek-ai/` 里恰好有几条 junction 指向宿主自带的副本——运气好，不能当成设计成立。
+
+所以 v1.9.2 把那行删掉了，改成本插件加载时自己向宿主注册（`src/core/preset-definition.ts` 的 `heartbeatPresetDefinition()` / `registerHeartbeatPreset()`）。profile 从此不需要认识任何宿主包，宿主也不再可能有两套装载机制；预设的注册失败只影响预设本身，不牵连启动。四种结果都留一条审计（`preset_register`）：
+
+| 结果 | 什么时候出现 | 意味着什么 |
+|---|---|---|
+| `registered` | 宿主提供了注册服务 | 预设正常 |
+| `skipped-no-api` | 宿主没有这个服务（残缺的旧版） | 心跳退化成没有预设的裸 agent——闲逛相看不到 `web_search`，但宿主照常启动 |
+| `skipped-disabled` | 配置里 `installPreset: false` | 预设完全交给运维自己管 |
+| `error` | 注册时抛错 | 写进审计 `detail`，宿主不受影响 |
 
 **C18 · 随包预设的自动安装（≤0.1.5 的文件系统路径）**
 插件启动时取 `agentPresets.roots`（公开 getter）里 `trust === 'user'` 的那一项当目标根——不猜 `~/.dsh`，也不依赖 `@deepseek-ai/dsh-home-paths`（那个包不在 profile 的 node_modules 里，import 不到）。`installBundledPreset()` 的四种结果：
@@ -219,6 +241,27 @@ prompt variable "{{model}}" has no value for this assembly (section "deployment:
 | `exists` | 已有 composition 文件，**一个字节都没动**（手改过的自定义预设是安全的） |
 | `restored` | 只有 `--force` 才会走到，覆盖 |
 | `skipped-disabled` / `skipped-no-root` / `skipped-custom-id` | `installPreset:false` / roster 里没有 user 根 / `agentPreset` 不是 `heartbeat` |
+
+**C13b · 数据目录为什么搬出包外、怎么搬（issue #2，v1.9.2）**
+
+老版本的运行数据默认住在包目录里的 `data/`。麻烦在于它在 `node_modules` 下面，而 `dsh plugin add` 与版本升级都是「把整个包目录换掉」——画像、素材池、正身记录（`gate.json`）会跟着一起没。按设计只有显式 `burn` 才该销毁这些数据，所以这是事故，不是使用方式的问题。
+
+v1.9.2 起默认落在包外：`<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`）。启动时按这个顺序决定用哪个目录（`paths.ts` 的 `initWorkspace()`）：
+
+1. 环境变量 `HEARTBEAT_DATA_DIR`
+2. 插件配置里的 `dataDir`
+3. 包外默认（如果那儿已经有数据）
+4. 包内 `data/`（如果那儿有数据 → 触发搬迁）
+5. 包外默认
+
+搬迁（`data-relocate.ts` 的 `relocateDataDir()`）比「拷过去再删」谨慎得多：先在源目录旁边做一份备份，再把数据复制到目标旁边的临时目录，逐文件比对（文件清单、大小、sha256 三项全一致才算过），确认无误才原子地挪到目标位置，最后才删原目录与备份。任何一步出问题都停在原地——**源数据一个字节都不动**，继续用包里那份，审计留一条 `data_dir_relocate_failed`。
+
+两处判断上的取舍：
+
+- 「这个文件解不开」只算警告、不算失败。源文件本身坏掉时，一份字节完全相同的副本仍然是用户的数据；因为解不开就拒绝搬迁，等于把它永久留在一个随时会被升级删掉的地方。
+- 「有没有数据」只认实质内容：只有空骨架（`settings/`、`logs/` 等空目录）不算数据，`tmp/` 里的东西是临时文件也不算——否则一次干净的安装会平白搬一趟。
+
+跳过搬迁的三种情况：源目录不存在、源里没有实质数据、目标已经有一份数据（不动用户自己的）。显式配过 `dataDir` 或 `HEARTBEAT_DATA_DIR` 的一律不搬——用户自己钉的位置归用户。成功则留一条 `data_dir_relocated`。
 
 ### 3.3 事件、会话与持久化
 
@@ -330,7 +373,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 | 文件 | 干什么 | 要动它时注意 |
 |---|---|---|
-| `paths.ts` | dataDir 解析 + 包定位 | 优先级：env `HEARTBEAT_DATA_DIR` > 插件配置 `dataDir` > `<包根>/data`；`initWorkspace` 幂等建目录 |
+| `paths.ts` | dataDir 解析 + 包定位 | 优先级：env `HEARTBEAT_DATA_DIR` > 插件配置 `dataDir` > 包外默认（已有数据时）> 包内 `data/`（有数据时搬迁）> 包外默认；`initWorkspace` 幂等建目录。搬迁细节见 C13b |
 | `path-guard.ts` | 路径白名单守卫 | 先把路径 realpath 规范化（目标不存在时：realpath 最深的存在祖先 + 回拼缺失的尾巴），再与规范化后的 dataDir 做**大小写不敏感、带分隔符边界**的前缀比对。必测向量：`..` 穿越 / 符号链接 / 8.3 短名 / 大小写 / UNC |
 | `atomic-fs.ts` | 原子写 | 同目录随机 tmp + rename（Windows 上是替换写）；`shredFileSync` 覆写 N 次后删除 |
 | `audit-log.ts` | JSONL 审计 | `appendAuditLine` / `readAuditLines`（坏行保留为标记）/ `pruneAuditFile`（按龄裁剪，原子重写）。**写入永不抛**，失败只落 stderr——审计故障不该拖垮业务 |
@@ -340,7 +383,9 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 | `runtime.ts` | 运行时单例 | paths / guard / policy / UI 开关的统一读取口；测试用 `resetRuntimeForTest` |
 | `bindings.ts` | 会话绑定 | 读写 `data/settings/bindings.json`；`deliverTargets` / `observeTargets` 两个过滤器 |
 | `material.ts` | 素材组装与归账 | 纯函数、好测：`assembleCandidates`（组候选）、`buildMaterialPrompt`（素材包三段式）、`buildRuminationPrompt`（反刍备料）、`reconcileDelivery`（归账） |
-| `preset-install.ts` | 随包预设的安装与校验 | 见 C18 |
+| `preset-install.ts` | 随包预设的安装与校验 | ≤0.1.5 的文件系统路径，见 C18 |
+| `preset-definition.ts` | 心跳预设的运行时注册 | `heartbeatPresetDefinition()` + `registerHeartbeatPreset()`（容错语义见 C13a）；0.1.7+ 走这条 |
+| `data-relocate.ts` | 老数据搬出包外 | `hasPayload()` / `verifyTrees()`（清单 + size + sha256 是硬闸门，`unparseable` 只算 warning）/ `relocateDataDir()`（备份 → 复制 → 校验 → 原子落地 → 清源；**永不抛、失败不删源**），见 C13b |
 
 ### 4.2 orchestrator.ts —— 主循环
 
@@ -481,7 +526,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 ## 5. 数据文件字典
 
-下面所有路径都相对 **dataDir**（默认在包根下的 `data/`，可被环境变量或插件配置覆盖，见 §1）。
+下面所有路径都相对 **dataDir**（默认 `<DSH_HOME>/heartbeat-data`，可被环境变量 `HEARTBEAT_DATA_DIR` 或插件配置 `dataDir` 覆盖——解析链与自动搬迁见 §1 / C13b）。
 
 > **怎么判断一个文件是不是密文**：文件头是 ASCII 的 `KHBV1` 就是走 DPAPI 加密的；能直接 `type` 出人话就是明文。想知道某处该用哪种，看它调的是哪一对函数——`loadEncryptedText` / `saveEncryptedText`、`encryptFile` / `decryptFile`、`loadJson` / `saveJson` 都进加密通道；`readText` / `writeText` 是明文。
 
@@ -681,6 +726,9 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 |---|---|
 | `plugin_init` | 插件装载完成，记版本与生效配置 |
 | `preset_install` | 随包预设的安装结果（`created` / `repaired` / `exists` / `skipped-*`，见 C18） |
+| `preset_register` | 预设运行时注册的结果（`registered` / `skipped-no-api` / `skipped-disabled` / `error`，见 C13a） |
+| `data_dir_relocated` | 老数据已从包内搬到包外（带 `from` / `to` / `files` / `bytes` / `warnings` / `leftovers`，见 C13b） |
+| `data_dir_relocate_failed` | 搬迁失败，**继续用包内目录**（带 `stage` / `problems`，见 C13b） |
 | `orchestrator_started` / `orchestrator_disposed` | 编排器起停。**正常**——两条挨着出现说明插件在重载 |
 | `rpc_registered` | 数据通道挂上了（带 route） |
 | `rpc_host_gate_missing` | 宿主没有闸门钩子，危险端点已降级为拒绝（C24） |
@@ -704,7 +752,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 | `agent_resume_start` / `agent_create_start` | 正在尝试唤起或新建引擎室会话（长时间没动静时，看这一步有没有对应的成功事件） |
 | `agent_reuse_live` / `agent_resume_ok` / `agent_create_ok` | 三种获取路径成功（都带 `model`） |
 | `agent_resume_failed` / `agent_acquire_failed` | 获取失败，看 `error` |
-| `agent_deferred` | 失败后退避重试（退避 1 → 2 → 4… 分钟，封顶 30） |
+| `agent_deferred` | 失败后退避重试（退避 1 → 2 → 4… 分钟，封顶 30）。**只对暂时性失败**：除字符串不含 `not found` 外，还要过 `looksPermanentResumeFailure()`（会话格式迁移被拒一类的永久失败不走 defer，直接走创建路径；创建也失败则自愈到新会话——issue #2） |
 | `agent_cache_discarded` | 缓存的 agent 已失效，丢弃 |
 | `home_rotate_start` / `_done` / `_archive` / `_failed` | 引擎室轮换的四步 |
 | `home_reset` | 正身被移除（设置卡片操作），带 `oldSessionId` |
@@ -1002,7 +1050,14 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 ## 14. 变更日志
 
-**当前版本 v1.9.1**（已发布 npm，`package.json` 同版）——在 v1.9.0 之上做的一次代码审查修复（86 项发现，分五批落地：静默失败类 → 数据完整性 → 边界与体验 → 工程基建 → 结构性重构）。
+**当前版本 v1.9.2**（仓库已改、**尚未发版**）——修 issue #2 的两条 bug：
+
+1. **预设改为运行时注册**（C13 / C13a）：`cordis.patch.yml` 不再声明 `@deepseek-ai/dsh-agent-preset`，定义搬进 `src/core/preset-definition.ts`，加载时经 `agentPresets.register()` 注册；服务缺失时只记一条 `preset_register` 审计、宿主照常启动。修掉「profile 解析不到宿主包 → 整个 DSH 起不来」与「手工补 peer 闭包 → 所有会话无法恢复」两种炸法。
+2. **resume 失败分类**（§7.1 的 `agent_deferred` 行）：新增 `looksPermanentResumeFailure()`，会话格式迁移被拒不再被当成暂时性错误无限退避，改走创建路径；创建也失败则自愈到新会话。
+3. **README 事实修正**：卸载节不再声称"`data/` 默认保留"（`dsh plugin add` 会替换包目录、数据一起没），并给出把 `dataDir` 钉到包外的做法；预设注册方式的描述同步改写。
+4. **数据目录默认移出包外**（C13b）：`dataDir` 默认改为 `<DSH_HOME>/heartbeat-data`；老版本装在包内的 `data/` 首次启动自动搬迁——备份 → 逐文件校验（清单 / size / sha256）→ 才删原件与备份，失败原地不动并留痕。新增 `src/core/data-relocate.ts` 与 10 条用例（测试 290 → 300）。
+
+**v1.9.1**（已发布 npm，`package.json` 同版）——在 v1.9.0 之上做的一次代码审查修复（86 项发现，分五批落地：静默失败类 → 数据完整性 → 边界与体验 → 工程基建 → 结构性重构）。
 
 历史版本的详细记录在 **`docs/releases/`**：v1.6.2 起每版一份，更早的合并进同目录的 `legacy-changelog.md`；README 的"版本更新"章节保留 v1.5 起的关键改动。
 
