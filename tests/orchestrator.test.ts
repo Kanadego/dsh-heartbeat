@@ -20,6 +20,7 @@ import {
   homeSessionId,
   isContextOverflowError,
   loadCursors,
+  looksPermanentResumeFailure,
   parseJsonBlock,
   pickSpokenLine,
   resetHomeSession,
@@ -30,6 +31,23 @@ import {
   spokeTextSince,
   type HostSession,
 } from '../src/core/orchestrator.js';
+
+// issue #2 (2026-10-10): a refused session migration is not transient, so it
+// must not be deferred forever — it takes the create path (which self-heals to
+// a fresh session when even that fails).
+test('looksPermanentResumeFailure separates refused migrations from transient errors', () => {
+  assert.equal(
+    looksPermanentResumeFailure(
+      'agent_resume_failed: SessionFormatUnsupportedError: Session migration from v3 to v4 refuses the transformed artifact: step/end leaves unresolved tool call call_00_3XxDvt3FxtN3xBh46j',
+    ),
+    true,
+  );
+  assert.equal(looksPermanentResumeFailure('Session migration from v3 to v4 refuses the transformed artifact'), true);
+  // Still transient: these age out, so they keep the deferred/backoff path.
+  assert.equal(looksPermanentResumeFailure('SessionAlreadyOwnedError: session is already open'), false);
+  assert.equal(looksPermanentResumeFailure('Error: session session-abc not found'), false);
+  assert.equal(looksPermanentResumeFailure(''), false);
+});
 
 let sandbox = '';
 let guard: ReturnType<typeof createPathGuard>;

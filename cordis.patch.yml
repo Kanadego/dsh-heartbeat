@@ -13,41 +13,18 @@
     - id: heartbeat
       name: '@kanadego/dsh-heartbeat'
 
-# ── Agent preset heartbeat（0.1.7 声明式预设，v1.7.1）─────────────────
-# 0.1.7 起 agentPresets 名册不再挂载文件系统用户根（~/.dsh/.agent-presets），
-# 预设改为组合里的 @deepseek-ai/dsh-agent-preset 声明行（与官方 preset-standard
-# 同款机制）。内容 = assets/presets/heartbeat/agent.cordis.yml 的移植：
-# compaction 组 + 唯一模型工具 tool-web(fetch:false)。
-# 刻意没有 persona 行：部署人格（soul card）+ 心跳提示词已够，绝不能让
-# "You are a coding agent" 盖掉人格。≤0.1.5 宿主继续走文件系统预设自装。
-- insert:
-    - id: preset-heartbeat
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: heartbeat
-        name: 心跳模式
-        description: 心跳 agent 专用：仅 web_search + 上下文折叠；无 shell、无文件、无子代理。
-        order: 20
-        plugins:
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-              toolResultPruner: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
-              - id: command-compact
-                name: '@deepseek-ai/dsh-command-compact'
-              - id: tool-result-pruner
-                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
-                config:
-                  thresholdChars: 8192
-                  headChars: 4096
-                  tailChars: 1024
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: false
-              searchTimeoutMs: 60000
+# ── Agent preset heartbeat（改为插件运行时注册，v1.9.2 / issue #2）────────
+# 这里**故意不再**声明 `@deepseek-ai/dsh-agent-preset` 行。那行会让 profile
+# 必须自己能解析该包，而它的 peer 闭包里含着 cordis 自己的装载机制
+# （cordis-plugin-loader / -include / -group）：
+#   · profile 解析不到 → 整个插件树加载失败（0.1.5-rc.2 实测）；
+#   · 手工补进 peer 闭包 → 装载机制双实例，之后**任何会话 resume 全部失败**
+#     （`prompt section "deployment:persona-prefix" is already registered`，
+#     0.2.0-rc.2 实测）。
+# 两种都在 2026-10-10 被复现（见 issue #2）。现在预设定义活在插件里
+# （src/core/preset-definition.ts），加载时经 `agentPresets.register()` 运行时
+# 注册——declaring plugin 自己提供 definition 正是该 API 的用途；宿主没有这个
+# API 时只记一条审计，绝不让宿主挂掉。老宿主（仍扫名册文件系统用户根）继续由
+# preset-install 自装维持。内容与 assets/presets/heartbeat/agent.cordis.yml 一致：
+# compaction 组 + 唯一模型工具 tool-web(fetch:false)；刻意没有 persona 行——
+# 部署人格（soul card）+ 心跳提示词已够，绝不能让 "You are a coding agent" 盖掉人格。
