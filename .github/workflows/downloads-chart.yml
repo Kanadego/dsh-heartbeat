@@ -1,0 +1,38 @@
+name: Downloads chart
+
+# 每周一重新生成 docs/assets/npm-downloads.svg 并在有变化时提交。
+# 曲线按天画、一周推一次就够：npm 的当日数字本就要等两三天才结算，
+# 挑 03:17 UTC 只是避开整点的排队高峰。
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: downloads-chart
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Regenerate the chart
+        run: node scripts/npm-downloads-chart.mjs
+      - name: Commit when it changed
+        run: |
+          if git diff --quiet -- docs/assets/npm-downloads.svg; then
+            echo "chart unchanged today"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/assets/npm-downloads.svg
+          git commit -m "chore(chart): refresh npm downloads"
+          git push
