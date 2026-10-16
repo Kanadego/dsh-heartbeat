@@ -32,7 +32,7 @@ import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickRep
 import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
 import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
-import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
+import { loadEncryptedText, saveEncryptedText, upgradeOneLegacyVaultFile } from '../vault/vault.js';
 import { adviseWander, adviseRefillWander, completeWander, browseStatePath } from '../browse/browse.js';
 import { shouldConsolidate, runConsolidation } from '../profile/consolidate.js';
 import { snapshotIfDue } from '../profile/snapshot.js';
@@ -924,6 +924,18 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
   // Journal snapshot basepoint (v1.8.0): fold the journal once it grows past
   // the threshold, so replay cost stays bounded on long deployments.
   snapshotIfDue(guard, paths.dataDir, paths.logsDir + '/heartbeat.jsonl', 'maintenance-threshold', now);
+  // ⑥C: every write already emits KHBV2, so only files that never change again
+  // (old weekly reports, rotated journal shards) keep the legacy container. One
+  // per beat drains them without eating the maintenance window on a back
+  // catalogue; `vault upgrade` still converts the rest in one go.
+  try {
+    const upgraded = upgradeOneLegacyVaultFile(guard, paths.dataDir);
+    if (upgraded) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'vault_upgraded', file: upgraded });
+    }
+  } catch (e) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'vault_upgrade_failed', reason: (e as Error).message });
+  }
   const cons = shouldConsolidate(guard, paths, policy, now);
   if (cons.due) {
     const llm = async (prompt: string): Promise<string> => {

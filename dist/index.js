@@ -27,7 +27,7 @@ import {
   sessionEventCount,
   sessionEvents,
   startOrchestrator
-} from "./chunk-NUQCRTMZ.js";
+} from "./chunk-EKO2JAAF.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -36,7 +36,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-R7PZL7TZ.js";
+} from "./chunk-UCWLBKQE.js";
 import {
   getRuntime,
   setRuntime
@@ -49,19 +49,19 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-OSXVNPEW.js";
-import "./chunk-JJ2X2IVS.js";
-import "./chunk-SATZHOOH.js";
+} from "./chunk-TVX4HV4Y.js";
+import "./chunk-DZ7YCFGX.js";
+import "./chunk-DC5HMCJC.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath
-} from "./chunk-RMIRCKDZ.js";
+} from "./chunk-544QOJN5.js";
 import {
   dshHomeDir,
   initWorkspace,
   writeText
-} from "./chunk-6S3GQPIW.js";
+} from "./chunk-AKIJ4LS2.js";
 import {
   atomicWriteFileSync,
   atomicWriteJsonSync
@@ -645,7 +645,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-G33UI2K7.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-EDCFIIRA.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
@@ -657,7 +657,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-G33UI2K7.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-EDCFIIRA.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");

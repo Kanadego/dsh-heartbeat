@@ -21,7 +21,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-R7PZL7TZ.js";
+} from "./chunk-UCWLBKQE.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -32,17 +32,17 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-OSXVNPEW.js";
+} from "./chunk-TVX4HV4Y.js";
 import {
   dedupeItems,
   inboxCount,
   inboxDrain,
   inboxFilePath,
   inboxRemoveIds
-} from "./chunk-JJ2X2IVS.js";
+} from "./chunk-DZ7YCFGX.js";
 import {
   snapshotIfDue
-} from "./chunk-SATZHOOH.js";
+} from "./chunk-DC5HMCJC.js";
 import {
   appendAuditLine,
   applyOpsToDoc,
@@ -56,7 +56,7 @@ import {
   readAuditLines,
   readJournalTexts,
   runDeterministicAging
-} from "./chunk-RMIRCKDZ.js";
+} from "./chunk-544QOJN5.js";
 import {
   decryptFile,
   encryptFile,
@@ -65,8 +65,9 @@ import {
   readText,
   saveEncryptedText,
   saveJson,
+  upgradeOneLegacyVaultFile,
   writeText
-} from "./chunk-6S3GQPIW.js";
+} from "./chunk-AKIJ4LS2.js";
 import {
   atomicWriteJsonSync,
   burnFileSync
@@ -1096,7 +1097,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
       rejected,
       entries: [...report.entries ?? [], ...aged.entries]
     });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-IBQKS2G2.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-2T6TVS2L.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -1918,6 +1919,14 @@ async function maintenancePhase(bc) {
   pruneAuditFile(paths.logsDir + "/envpulse.jsonl", policy.retention.envPulseHours * 36e5, now);
   pruneAuditFile(paths.logsDir + "/heartbeat.jsonl", policy.retention.decisionLogDays * 864e5, now);
   snapshotIfDue(guard, paths.dataDir, paths.logsDir + "/heartbeat.jsonl", "maintenance-threshold", now);
+  try {
+    const upgraded = upgradeOneLegacyVaultFile(guard, paths.dataDir);
+    if (upgraded) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "vault_upgraded", file: upgraded });
+    }
+  } catch (e) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "vault_upgrade_failed", reason: e.message });
+  }
   const cons = shouldConsolidate(guard, paths, policy, now);
   if (cons.due) {
     const llm = async (prompt) => {
@@ -1988,7 +1997,7 @@ async function observeBoundSessions(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
-  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-HQXQBFL4.js");
+  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-OWBK6PE2.js");
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
@@ -2804,4 +2813,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-NUQCRTMZ.js.map
+//# sourceMappingURL=chunk-EKO2JAAF.js.map

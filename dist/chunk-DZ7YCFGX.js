@@ -2,7 +2,7 @@ import {
   loadEncryptedText,
   saveEncryptedText,
   tryWithFileLock
-} from "./chunk-6S3GQPIW.js";
+} from "./chunk-AKIJ4LS2.js";
 
 // src/profile/inbox.ts
 import fs from "fs";
@@ -140,4 +140,4 @@ export {
   inboxHealthCheck,
   inboxFileExists
 };
-//# sourceMappingURL=chunk-JJ2X2IVS.js.map
+//# sourceMappingURL=chunk-DZ7YCFGX.js.map
