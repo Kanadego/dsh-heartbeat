@@ -145,7 +145,7 @@ test('consolidation: fake LLM ops applied, inbox drained only on success, journa
     note: '他连玩三天杀戮尖塔2',
   });
   const llm = async () => JSON.stringify([
-    { op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'current', content: '在玩《杀戮尖塔2》', temporal: 'volatile', confidence: 0.6, why: '观察', evidence: [{ kind: 'chat', at: new Date(NOW).toISOString(), ref: 'logs/heartbeat.jsonl#k1' }] },
+    { op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'current', content: '在玩《杀戮尖塔2》', temporal: 'volatile', confidence: 0.6, why: '观察', evidence: ['o1'] },
     { op: 'NOOP', why: '无其他变化' },
   ]);
   const run = await runConsolidation(guard, paths, policy, llm, NOW);
@@ -166,12 +166,12 @@ test('consolidation: unusable LLM output leaves the inbox intact (§3.7)', async
 
 test('consolidation: per-run ops cap enforced', async () => {
   for (let i = 0; i < 5; i++) {
-    inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: `cap${i}`, note: `观察${i}` });
+    inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: `logs/heartbeat.jsonl#cap${i}`, note: `观察${i}` });
   }
   const many = Array.from({ length: 20 }, (_, i) => ({
     op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'preference',
     content: `条目${i}`, confidence: 0.5, why: 'x',
-    evidence: [{ kind: 'chat', at: '2026-09-06T12:00:00.000Z', ref: 'logs/heartbeat.jsonl#test' }],
+    evidence: ['o1'],
   }));
   const llm = async () => JSON.stringify(many);
   const run = await runConsolidation(guard, paths, policy, llm, NOW);
