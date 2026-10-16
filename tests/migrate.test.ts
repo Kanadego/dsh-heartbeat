@@ -13,7 +13,9 @@ import {
   encryptContainer,
   decryptContainer,
   applyMigrationEntries,
+  isMigratablePath,
   MIGRATE_MAGIC,
+  MIGRATE_MAX_FILES,
 } from '../src/vault/migrate.js';
 
 let sandbox = '';
@@ -124,4 +126,51 @@ test('export collects plaintext + DPAPI files; import restores them re-encrypted
   const evil = applyMigrationEntries(dstGuard, dstPaths, [{ path: '../evil.json', encrypted: false, content: 'x' }]);
   assert.deepEqual(evil.skipped, ['../evil.json']);
   assert.equal(evil.restored.length, 0);
+});
+test('HB-06: one entry that cannot be staged aborts the whole import', () => {
+  const paths = freshWorkspace('hb06');
+  const guard = createPathGuard(paths.dataDir);
+  fs.writeFileSync(ledgerFilePath(paths.dataDir), '# 账本\n- 原来的事项\n', 'utf8');
+  const result = applyMigrationEntries(guard, paths, [
+    { path: 'ledger.md', encrypted: false, content: '# 账本\n- 新机器带来的事项\n' },
+    { path: '../evil.json', encrypted: false, content: 'x' },
+  ]);
+  assert.deepEqual(result.restored, [], 'a healthy entry is not committed either');
+  assert.deepEqual(result.backedUp, []);
+  assert.deepEqual(result.skipped, ['../evil.json']);
+  assert.match(result.error ?? '', /nothing was imported/);
+  // the local ledger is untouched: no half-migrated memory
+  assert.match(fs.readFileSync(ledgerFilePath(paths.dataDir), 'utf8'), /原来的事项/);
+  const leftovers = fs.readdirSync(paths.dataDir).filter((f) => f.includes('.incoming-'));
+  assert.deepEqual(leftovers, [], 'staged copies are cleaned up');
+});
+
+test('HB-18: a container may only name files an export can produce', () => {
+  assert.equal(isMigratablePath('ledger.md'), true);
+  assert.equal(isMigratablePath('profile_journal.archive-20261017.jsonl'), true);
+  assert.equal(isMigratablePath('weekly/2026-10-17.json'), true);
+  assert.equal(isMigratablePath('settings/policy.json'), false);
+  assert.equal(isMigratablePath('gate.json'), false);
+  assert.equal(isMigratablePath('vault.key'), false);
+  assert.equal(isMigratablePath('weekly/sub/x.json'), false);
+  assert.equal(isMigratablePath('profile_journal.archive-x.jsonl'), false);
+
+  const paths = freshWorkspace('hb18');
+  const guard = createPathGuard(paths.dataDir);
+  const result = applyMigrationEntries(guard, paths, [
+    { path: 'settings/policy.json', encrypted: false, content: '{}' },
+    { path: 'vault.key', encrypted: false, content: 'nope' },
+  ]);
+  assert.equal(result.restored.length, 0);
+  assert.equal(result.skipped.length, 2);
+  assert.equal(fs.existsSync(path.join(paths.dataDir, 'settings', 'policy.json')), false);
+  assert.equal(fs.existsSync(path.join(paths.dataDir, 'vault.key')), false);
+});
+
+test('HB-18: a container listing an absurd number of files is refused', () => {
+  const many = Array.from({ length: MIGRATE_MAX_FILES + 1 }, (_v, i) => ({
+    path: 'weekly/2026-01-01.json', encrypted: false, content: String(i),
+  }));
+  const container = encryptContainer(many, 'pw', new Date());
+  assert.throws(() => decryptContainer(container, 'pw'), /over the 5000 limit/);
 });
