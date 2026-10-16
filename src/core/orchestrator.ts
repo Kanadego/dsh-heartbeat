@@ -208,6 +208,21 @@ let beating = false;
  * beat was mid-flight). */
 let beatCancel: (() => void) | undefined;
 let beatWatchdog: ReturnType<typeof setTimeout> | undefined;
+/**
+ * ⑤A (2026-10-17 review, HB-08): the beat's cancellation handle. The watchdog
+ * and the disposer used to only clear flags — the wedged request, subprocess and
+ * model turn kept running beside the next beat, and could still write when they
+ * finally finished. Everything the beat does now observes this signal at phase
+ * boundaries, before subprocesses, and before writes.
+ */
+let beatAbort: AbortController | null = null;
+/**
+ * ⑤A: ownership token for the running beat. The watchdog clears `beating` while
+ * the cancelled beat is still unwinding, so a new tick may legitimately start
+ * before the old one reaches its `finally`: the token keeps the loser from
+ * clearing the winner's flags (or its watchdog timer).
+ */
+let beatToken = 0;
 
 /**
  * H-03: the beat is single-flight and `beating` is only ever cleared by the
@@ -225,6 +240,33 @@ function clearBeatWatchdog(): void {
     clearTimeout(beatWatchdog);
     beatWatchdog = undefined;
   }
+}
+
+/** ⑤A: a beat (or one of its phases) was cancelled — watchdog, host dispose, or
+ *  a phase that blew its ceiling. Distinct from a failure: it is not an error to
+ *  report, and it must not trigger home rotation or a retry ladder. */
+export class BeatAbortedError extends Error {
+  stage: string;
+  why: string;
+  constructor(stage: string, why: string) {
+    super(`${stage}: beat aborted (${why})`);
+    this.name = 'BeatAbortedError';
+    this.stage = stage;
+    this.why = why;
+  }
+}
+
+function abortText(signal: AbortSignal): string {
+  const reason = signal.reason as unknown;
+  if (typeof reason === 'string' && reason) return reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  return 'aborted';
+}
+
+/** Phase-boundary check (⑤A): cheap, and it is what makes cancellation actually
+ *  stop work rather than only mark the beat as over. */
+export function throwIfAborted(signal: AbortSignal | undefined, stage: string): void {
+  if (signal?.aborted) throw new BeatAbortedError(stage, abortText(signal));
 }
 
 /** H-03: per-phase ceilings, so one wedged phase cannot eat the whole beat (the
@@ -741,16 +783,24 @@ async function hostUserMessage(text: string, label: string): Promise<unknown> {
 }
 
 /** Run one model turn on the heartbeat agent; returns the assistant text. */
-async function agentTurn(
+export async function agentTurn(
   deps: OrchestratorDeps,
   agent: HostAgent,
   prompt: string,
   label: string,
   idleWaitMs: number = IDLE_WAIT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<string> {
+  throwIfAborted(signal, label);
   const before = sessionEventCount(agent.session);
   agent.followup(await hostUserMessage(prompt, label));
-  await withTimeout(agent.whenIdle(), idleWaitMs, `${label}: whenIdle timeout`);
+  await withTimeout(agent.whenIdle(), idleWaitMs, `${label}: whenIdle timeout`, {
+    signal,
+    stage: label,
+    // ⑤A: a cancelled beat must not leave this turn running on the host — it
+    // would keep burning tokens after the watchdog already called the beat off.
+    onAbort: () => { try { (agent as { cancel?: () => unknown }).cancel?.(); } catch { /* best effort */ } },
+  });
   const events = sessionEvents(agent.session);
   // Scan backwards: the LAST assistant text wins (final step over reasoning).
   for (let i = events.length - 1; i >= before; i--) {
@@ -779,15 +829,48 @@ async function agentTurn(
   return '';
 }
 
-async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+export interface TimeoutOpts {
+  /** The beat's signal: when it fires the race rejects at once. */
+  signal?: AbortSignal;
+  /** Abort this on a ceiling hit (⑤A: a timed-out phase must not keep running
+   *  beside the next beat — its subprocesses and turns are cancelled with it). */
+  cancelBeat?: AbortController;
+  /** Runs when the signal fires, before the rejection settles (e.g. cancel the
+   *  agent turn the beat is waiting on). */
+  onAbort?: () => void;
+  /** Phase name for the error's `stage` when the human-readable `label` carries
+   *  extra detail (e.g. "expression" vs "expression: whenIdle timeout"). */
+  stage?: string;
+}
+
+export async function withTimeout<T>(p: Promise<T>, ms: number, label: string, opts: TimeoutOpts = {}): Promise<T> {
+  const { signal, cancelBeat, onAbort } = opts;
+  const stage = opts.stage ?? label;
+  if (signal?.aborted) {
+    onAbort?.();
+    throw new BeatAbortedError(stage, abortText(signal));
+  }
   let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(label)), ms);
+  let listener: (() => void) | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const why = `timeout after ${Math.round(ms / 1000)}s`;
+      if (cancelBeat && !cancelBeat.signal.aborted) cancelBeat.abort(why);
+      reject(new BeatAbortedError(stage, why));
+    }, ms);
+    if (signal) {
+      listener = () => {
+        onAbort?.();
+        reject(new BeatAbortedError(stage, abortText(signal)));
+      };
+      signal.addEventListener('abort', listener, { once: true });
+    }
   });
   try {
-    return await Promise.race([p, timeout]);
+    return await Promise.race([p, guard]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (listener && signal) signal.removeEventListener('abort', listener);
   }
 }
 
@@ -814,6 +897,8 @@ interface BeatContext {
   deps: OrchestratorDeps;
   agent: HostAgent | null;
   now: number;
+  /** ⑤A: the beat's cancellation signal; every phase checks it at its boundaries. */
+  signal: AbortSignal;
 }
 
 /** Seed lifecycle audit sink (v1.9.0): pool mutations land in heartbeat.jsonl.
@@ -830,6 +915,7 @@ function seedAuditSink(paths: WorkspacePaths): (entry: Record<string, unknown>) 
 
 /** ① 维护相 */
 async function maintenancePhase(bc: BeatContext): Promise<void> {
+  throwIfAborted(bc.signal, 'maintenance');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   gcPool(guard, seedsFilePath(paths.dataDir), policy, now, seedAuditSink(paths));
@@ -844,7 +930,7 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
       if (!bc.agent) throw new Error('no heartbeat agent');
       return agentTurn(bc.deps, bc.agent,
         '你是用户画像的合并裁决器。不要使用任何工具。只输出一个 JSON 数组的 ops。\n\n' + prompt,
-        'consolidation');
+        'consolidation', IDLE_WAIT_TIMEOUT_MS, bc.signal);
     };
     await runConsolidation(guard, paths, policy, llm, now);
   }
@@ -852,13 +938,16 @@ async function maintenancePhase(bc: BeatContext): Promise<void> {
 
 /** ② 采集相 */
 async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | null }> {
+  throwIfAborted(bc.signal, 'collect');
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const rules = loadBusyRules(paths.configDir);
   // H-68: the window cap is a configured threshold, not a collector constant.
-  const screen = await collectScreen(guard, paths, now, rules.rules.visible_window_cap);
+  const screen = await collectScreen(guard, paths, now, rules.rules.visible_window_cap, bc.signal);
+  throwIfAborted(bc.signal, 'collect');
   const sj = readScreenJson(guard, paths);
-  const env = await collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now));
+  const env = await collectPulse(guard, paths, rules, sj?.process ?? null, new Date(now), bc.signal);
+  throwIfAborted(bc.signal, 'collect');
   recordPresence(paths, env, now);
   const pulse = readPulse(guard, paths);
   void pulse;
@@ -933,6 +1022,7 @@ export function spokeTextSince(session: HostSession | undefined, fromSeq: number
 }
 
 async function observeBoundSessions(bc: BeatContext): Promise<void> {
+  throwIfAborted(bc.signal, 'observe');
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const { loadBindings, observeTargets } = await import('./bindings.js');
@@ -1001,6 +1091,7 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
  * back over RPC. Generation is an ordinary engine-room turn (zero tools), so
  * an LLM failure degrades to the deterministic template, never an error. */
 async function weeklyPhase(bc: BeatContext): Promise<void> {
+  throwIfAborted(bc.signal, 'weekly');
   const { deps, agent, now } = bc;
   const { guard, paths, policy } = deps;
   if (policy.weekly.enabled === false) return;
@@ -1025,7 +1116,7 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
     let text = '';
     let source: 'llm' | 'template' = 'template';
     try {
-      text = (await agentTurn(deps, agent, buildWeeklyPrompt(facts), 'weekly', IDLE_WAIT_TIMEOUT_MS)).trim();
+      text = (await agentTurn(deps, agent, buildWeeklyPrompt(facts), 'weekly', IDLE_WAIT_TIMEOUT_MS, bc.signal)).trim();
       if (text) source = 'llm';
     } catch (e) {
       audit({ event: 'weekly_llm_failed', error: String(e).slice(0, 160) });
@@ -1139,6 +1230,7 @@ function wanderPrompt(focus: string, query: string): string[] {
 }
 
 async function wanderPhase(bc: BeatContext): Promise<boolean> {
+  throwIfAborted(bc.signal, 'wander');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const advice = adviseWander(guard, paths, policy, new Date(now));
@@ -1153,6 +1245,7 @@ async function wanderPhase(bc: BeatContext): Promise<boolean> {
  * 每个本地日至多 2 次（browse.json refillCount 计数，completeWander 登记）。
  */
 async function refillWanderPhase(bc: BeatContext): Promise<boolean> {
+  throwIfAborted(bc.signal, 'refill_wander');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const advice = adviseRefillWander(guard, paths, policy, new Date(now));
@@ -1168,9 +1261,13 @@ async function runWanderTurn(
   focus: string,
   opts: { label: 'wander' | 'refill_wander'; maxSeeds?: number },
 ): Promise<boolean> {
+  throwIfAborted(bc.signal, 'wander');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
-  const raw = await agentTurn(bc.deps, bc.agent!, prompt, opts.label);
+  const raw = await agentTurn(bc.deps, bc.agent!, prompt, opts.label, IDLE_WAIT_TIMEOUT_MS, bc.signal);
+  // ⑤A: the turn may have finished after the beat was cancelled — the pool
+  // write stops here instead of landing in a beat that no longer exists.
+  throwIfAborted(bc.signal, 'wander');
   let registered = 0;
   try {
     const parsed = parseJsonBlock(raw) as { items?: { text?: string; topic?: string }[] };
@@ -1234,6 +1331,7 @@ async function deliverPackage(
   materials: MaterialInput[],
   opts: { seedIds: string[]; doing?: string },
 ): Promise<void> {
+  throwIfAborted(bc.signal, 'expression');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const homeId = bc.agent?.session?.id ?? null;
@@ -1284,6 +1382,9 @@ async function deliverPackage(
     // H-67: run the quiet-hours / daily-cap check immediately before delivery.
     // The gate decision happened two model turns ago, so a stale "ok" could
     // speak into the night or spend a slot that no longer exists.
+    // ⑤A: last cancellation gate before anything is said or spent. Past this
+    // point the sentence exists and the books MUST settle (H-67).
+    throwIfAborted(bc.signal, 'expression');
     const pre = canSend(guard, policy, paths, Date.now());
     if (!pre.ok) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: pre.reason });
@@ -1297,7 +1398,7 @@ async function deliverPackage(
     const beforeSeq = voiceAgent.session?.seq ?? sessionEvents(voiceAgent.session).length;
     let spokenRaw: string;
     try {
-      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS);
+      spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS, bc.signal);
     } catch (e) {
       // H-67: a timed-out idle wait is not proof she stayed silent — the answer
       // may already have been streamed into the session. Only defer when the
@@ -1405,9 +1506,10 @@ async function deliverPackage(
  *  两轮设计（r5）：决策轮的机器输出留在正身（引擎室），开口的表达轮改在
  *  投递目标会话的 agent 上执行——话只出现在用户读的会话里。 */
 async function expressionPhases(bc: BeatContext): Promise<void> {
+  throwIfAborted(bc.signal, 'expression');
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
-  const decision = await runGate(guard, policy, paths, now);
+  const decision = await runGate(guard, policy, paths, now, bc.signal);
   if (decision.verdict === 'SILENT') {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: decision.reason });
     noteBeat('silent', { reason: decision.reason });
@@ -1422,7 +1524,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   // spec ①② (2026-09-18): per-beat vision via ModLens. Only when vision
   // SUCCEEDED do the screen summary and taskbar titles reach the rumination agent; on failure
   // `screen` stays undefined — no image, no titles, no invented "我在干嘛".
-  const screenVision = await describeScreenShot(guard, paths, { moduleUrl: import.meta.url });
+  const screenVision = await describeScreenShot(guard, paths, { moduleUrl: import.meta.url, signal: bc.signal });
   let screen: { vision: string; windows: string[] } | undefined;
   if (screenVision.ok && screenVision.summary) {
     const sj = readScreenJson(guard, paths);
@@ -1480,7 +1582,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   });
   const raw = await (async () => {
     try {
-      return await agentTurn(bc.deps, bc.agent!, ruminationPrompt, 'decision');
+      return await agentTurn(bc.deps, bc.agent!, ruminationPrompt, 'decision', IDLE_WAIT_TIMEOUT_MS, bc.signal);
     } catch (e) {
       // A slow/hung decision turn used to kill the whole beat as beat_error
       // (2026-09-19: `decision: whenIdle timeout` right after vision succeeded
@@ -1682,11 +1784,11 @@ function scheduleTokenSaverWake(deps: OrchestratorDeps): void {
  * from another device (the QQ bot), and replaying that an hour later is worse
  * than spending the beat.
  */
-async function tokenSaverActive(deps: OrchestratorDeps): Promise<boolean> {
+async function tokenSaverActive(deps: OrchestratorDeps, signal?: AbortSignal): Promise<boolean> {
   if (!getRuntime().flags.tokenSaver()) return false;
   if (await userActiveInBoundSessions(deps)) return false;
-  if (await probeWorkstationLocked()) return true;
-  const idle = await probeIdleSeconds(deps.guard, deps.paths);
+  if (await probeWorkstationLocked(signal)) return true;
+  const idle = await probeIdleSeconds(deps.guard, deps.paths, signal);
   return idle >= TOKEN_SAVER_IDLE_SECONDS; // idle < 0 (probe failed) fails open
 }
 
@@ -1725,16 +1827,25 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
   beating = true;
   const now = Date.now();
   const { paths } = deps;
+  // ⑤A: one controller and one ownership token per beat. The watchdog and the
+  // disposer abort the controller; every phase, subprocess and turn observes it.
+  const ctl = new AbortController();
+  const token = ++beatToken;
+  beatAbort = ctl;
   // H-03: arm the watchdog before anything that can hang (phases, fetches,
-  // subprocesses). It only clears the flag — see the constant's comment.
+  // subprocesses).
   clearBeatWatchdog();
   beatWatchdog = setTimeout(() => {
-    if (!beating) return;
+    if (!beating || token !== beatToken) return;
+    // ⑤A: cancel before clearing the flag. The wedged phase stops at its next
+    // await — subprocess killed, model turn cancelled — instead of running on
+    // beside the next tick and writing a stale result when it finally settles.
+    if (!ctl.signal.aborted) ctl.abort(`watchdog: still running after ${Math.round(BEAT_WATCHDOG_MS / 60_000)} min`);
     beating = false;
     beatCancel = undefined;
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
       event: 'beat_watchdog',
-      reason: `beat still running after ${Math.round(BEAT_WATCHDOG_MS / 60_000)} min — flag cleared, waiting for the next natural tick`,
+      reason: `beat still running after ${Math.round(BEAT_WATCHDOG_MS / 60_000)} min — beat cancelled, waiting for the next natural tick`,
     });
   }, BEAT_WATCHDOG_MS);
   beatWatchdog.unref?.();
@@ -1772,8 +1883,8 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     let pausedAway = false;
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
-      const bc: BeatContext = { deps, agent, now };
-      if (await tokenSaverActive(deps)) {
+      const bc: BeatContext = { deps, agent, now, signal: ctl.signal };
+      if (await tokenSaverActive(deps, ctl.signal)) {
         // Pause before maintenance/collect: a token saver that still paid for
         // consolidation would defeat its purpose. Status stays "silent".
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'token-saver' });
@@ -1789,16 +1900,17 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
         clearTokenSaverWake();
         pausedSince = 0;
         heldChecks = 0;
-        await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance');
+        const phase = { signal: ctl.signal, cancelBeat: ctl };
+        await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance', phase);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
         await weeklyPhase(bc);
-        await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect');
+        await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect', phase);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'collect' });
-        wandered = await withTimeout(wanderPhase(bc), WANDER_TIMEOUT_MS, 'wander');
+        wandered = await withTimeout(wanderPhase(bc), WANDER_TIMEOUT_MS, 'wander', phase);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'wander' });
         // spec ⑥: refill wander is independent and may stack with a normal
         // wander in the same beat (user decision 2026-09-18).
-        const refilled = await withTimeout(refillWanderPhase(bc), WANDER_TIMEOUT_MS, 'refill_wander');
+        const refilled = await withTimeout(refillWanderPhase(bc), WANDER_TIMEOUT_MS, 'refill_wander', phase);
         if (refilled) {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'refill_wander' });
         }
@@ -1808,24 +1920,39 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
     } else {
       // Agentless beat (deferred acquisition): data-side phases still run so
       // collection/retention never stall; expression needs the agent and skips.
-      const bc: BeatContext = { deps, agent: null, now };
-      await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance');
-      await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect');
+      const bc: BeatContext = { deps, agent: null, now, signal: ctl.signal };
+      const phase = { signal: ctl.signal, cancelBeat: ctl };
+      await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance', phase);
+      await withTimeout(collectPhase(bc), COLLECT_TIMEOUT_MS, 'collect', phase);
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_agentless' });
       scheduleDeferredRetry(deps);
     }
     writeBeatStatus(deps, { beatStart, wandered, away: pausedAway });
   } catch (e) {
-    deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
-    markHomeRotateIfOverflow(e);
-    try {
-      appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'beat_error', error: String(e).slice(0, 200) });
-    noteBeat('error', { reason: String(e).slice(0, 120) });
-    } catch { /* never rethrow from the heartbeat */ }
+    if (e instanceof BeatAbortedError) {
+      // ⑤A: cancellation is not a failure — no home rotation, no error status;
+      // just a trace naming the stage that was called off, and why.
+      try {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_aborted', stage: e.stage, why: e.why });
+      } catch { /* audit must never break the beat */ }
+      deps.ctx.logger.info('heartbeat: beat aborted (%s: %s)', e.stage, e.why);
+    } else {
+      deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
+      markHomeRotateIfOverflow(e);
+      try {
+        appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'beat_error', error: String(e).slice(0, 200) });
+        noteBeat('error', { reason: String(e).slice(0, 120) });
+      } catch { /* never rethrow from the heartbeat */ }
+    }
   } finally {
-    clearBeatWatchdog();
-    beating = false;
-    beatCancel = undefined;
+    // ⑤A: only the owning beat releases the shared flags — a cancelled beat can
+    // still be unwinding after the watchdog already let the next tick start.
+    if (token === beatToken) {
+      clearBeatWatchdog();
+      beating = false;
+      beatCancel = undefined;
+      if (beatAbort === ctl) beatAbort = null;
+    }
   }
 }
 
@@ -1862,8 +1989,13 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       // Cancel an in-flight beat's agent turn: clearing the timers alone leaves
       // the current turn running, and the host waits for graceful task teardown
       // before it can exit (desktop update once stalled on exactly this).
-      const cancelledInFlight = beating && beatCancel !== undefined;
+      const cancelledInFlight = beating || beatCancel !== undefined;
       clearBeatWatchdog(); // H-03: the disposer must not leave a timer behind
+      // ⑤A: abort first so the phases stop at their next await (subprocesses are
+      // killed, writes are skipped), then cancel the turn that is still running.
+      try {
+        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort('orchestrator disposed');
+      } catch { /* never rethrow from the disposer */ }
       try {
         beatCancel?.();
       } catch { /* never rethrow from the disposer */ }
@@ -1874,6 +2006,8 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       // agent handle was the worst of them: the heartbeat just went quiet).
       reschedule = null;
       agentPromise = null;
+      beatToken += 1; // ⑤A: orphan any beat still unwinding
+      beatAbort = null;
       beating = false;
       beatCancel = undefined;
       homeRotatePending = null;

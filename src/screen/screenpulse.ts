@@ -57,6 +57,7 @@ export async function collectScreen(
   /** H-68: `busy-rules.json` → `rules.visible_window_cap`; the collector keeps
    *  its own 20 as the fallback. */
   windowCap = 20,
+  signal?: AbortSignal,
 ): Promise<ScreenPulseSummary> {
   // The collector writes fixed names into outdir (data/tmp); single-flight in
   // the orchestrator prevents concurrent beats from stomping these files.
@@ -68,7 +69,13 @@ export async function collectScreen(
       path.join(paths.assetsDir, 'screenpulse.ps1'),
       ['-outdir', paths.tmpDir, '-cap', String(windowCap)],
       45_000,
+      signal,
     );
+    // ⑤A: an aborted beat has no use for a fresh pulse, and writing one here
+    // would count as a write after cancellation.
+    if (signal?.aborted) {
+      return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: 'aborted' };
+    }
     if (r.status !== 0) {
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }

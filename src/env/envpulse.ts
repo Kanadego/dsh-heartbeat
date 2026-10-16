@@ -45,11 +45,11 @@ export interface EnvSnapshot {
   festival: string | null;
 }
 
-async function probeIdle(guard: PathGuard, paths: WorkspacePaths): Promise<number> {
+async function probeIdle(guard: PathGuard, paths: WorkspacePaths, signal?: AbortSignal): Promise<number> {
   const tmp = path.join(paths.tmpDir, `idle-${Date.now()}.txt`);
   try {
     const out = guard.assert(tmp);
-    const r = await runPowerShellFile(path.join(paths.assetsDir, 'idle.ps1'), ['-out', out], 20_000);
+    const r = await runPowerShellFile(path.join(paths.assetsDir, 'idle.ps1'), ['-out', out], 20_000, signal);
     if (r.status !== 0 || !fs.existsSync(out)) return -1;
     const v = Number.parseInt(fs.readFileSync(out, 'utf8').trim(), 10);
     return Number.isNaN(v) ? -1 : v;
@@ -61,8 +61,8 @@ async function probeIdle(guard: PathGuard, paths: WorkspacePaths): Promise<numbe
 }
 
 /** Exported for the token-saver gate (v1.7.0): fresh idle seconds on demand. */
-export async function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths): Promise<number> {
-  return probeIdle(guard, paths);
+export async function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths, signal?: AbortSignal): Promise<number> {
+  return probeIdle(guard, paths, signal);
 }
 
 /**
@@ -70,10 +70,11 @@ export async function probeIdleSeconds(guard: PathGuard, paths: WorkspacePaths):
  * the Windows session is locked. Probe failure fails OPEN (false = unlocked)
  * so a broken probe never pauses the heartbeat by itself.
  */
-export async function probeWorkstationLocked(): Promise<boolean> {
+export async function probeWorkstationLocked(signal?: AbortSignal): Promise<boolean> {
   const r = await runPowerShell(
     ['-Command', 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
     10_000,
+    signal,
   );
   // HB-01 (2026-10-17): `includes('locked')` also matched "unlocked", so a
   // live session counted as locked and the whole beat was skipped. Read the
@@ -93,8 +94,11 @@ export async function collectPulse(
   rules: BusyRules,
   fgProcess: string | null = null,
   now = new Date(),
+  /** ⑤A: beaten-stage cancellation — killing the collector is what actually
+   *  stops a stuck beat, since the PowerShell child outlives a JS timeout. */
+  signal?: AbortSignal,
 ): Promise<EnvSnapshot> {
-  const idle = await probeIdle(guard, paths);
+  const idle = await probeIdle(guard, paths, signal);
   const windowClass = classifyProcess(fgProcess, rules);
   const t = timeContext(now);
   const snapshot: EnvSnapshot = {
