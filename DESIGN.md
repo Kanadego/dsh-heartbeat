@@ -20,7 +20,7 @@
 | 形态 | DSH cordis 插件 = 宿主进程内服务（定时器 / 编排 / 探针）+ web 设置卡片 + 独立 CLI |
 | 宿主 | DSH 0.2.0-rc.2 实测运行；0.1.7-rc.2 / 0.2.0-rc.1 / 0.2.0-rc.2 已验收；0.1.5-rc.2 兼容。≤ 0.1.1-rc.2 请用 v1.0（v1.1 起依赖 `snapshotEvents()` 与 agent 预设机制） |
 | 适配声明 | peer 依赖 `@deepseek-ai/dsh-llm`：`^0.1.1-rc.2 \|\| ^0.1.5-rc.2 \|\| ^0.1.7-rc.1 \|\| ^0.2.0-rc.1`。`@deepseek-ai/dsh-settings` 是**运行时真依赖**，必须留在 `dependencies`（原因见 §3.1） |
-| 平台 | **Windows 专属**：PowerShell 探针、DPAPI 加解密、WinRT toast；`package.json` 声明 `os: ["win32"]` |
+| 平台 | **Windows 专属**：PowerShell 探针、DPAPI 保管的数据密钥（数据本身 AES-256-GCM）、WinRT toast；`package.json` 声明 `os: ["win32"]` |
 | 技术栈 | TypeScript（strict、`noUncheckedIndexedAccess`）、ESM、tsup 构建、Node ≥ 22.19 |
 | 产物 | `dist/index.js`（插件入口）、`dist/cli/index.js`（CLI）、`dist/index.d.ts`（类型）、`client.js`（前端卡片，手写、不参与构建） |
 | 测试 | node:test + tsx，**300 个**（约 78 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
@@ -74,8 +74,8 @@
 |---|---|---|
 | 拍级单飞 | 模块状态 `beating` | 同一时刻只允许一拍在跑，重入直接返回 |
 | 合并单飞 | `consolidating` 锁 | 画像合并同一时刻只跑一次 |
-| 相超时 | 维护 10 min / 采集 5 min / 闲逛 15 min | 单相卡死不拖垮整拍（`withTimeout` 包装） |
-| 拍看门狗 | `BEAT_WATCHDOG_MS = 45 min` | 超时只把 `beating` 放回并记 `beat_watchdog`，**不补拍** |
+| 相超时 | 维护 10 min / 采集 5 min / 闲逛 15 min | 单相卡死不拖垮整拍（`withTimeout` 包装）；**超时会连同这一拍的 AbortController 一起 abort**，旧任务不再继续跑、继续写盘 |
+| 拍看门狗 | `BEAT_WATCHDOG_MS = 45 min` | 超时 `abort()` 这一拍的取消链（模型调用、探针、子进程一起停）并记 `beat_watchdog`，**不补拍** |
 | 单次模型轮次 | `TURN_TIMEOUT_MS = 180 s` | `agentTurn` 的兜底超时 |
 | 等会话空闲 | `IDLE_WAIT_TIMEOUT_MS = 240 s` | `whenIdle()` 的上限，超时按轮次各自降级 |
 | 获取退避 | 60 s × 2ⁿ，上限 30 min | 引擎室拿不到时的重试阶梯，成功即复位 |
@@ -109,7 +109,7 @@ src/
 │   ├── preset-definition.ts 心跳预设的运行时注册（0.1.7+；issue #2 之后）
 │   └── data-relocate.ts  老数据从包内搬到包外（备份 → 校验 → 原子落地 → 清源；永不抛）
 ├── config/               三层配置的加载与校验
-├── vault/                DPAPI 加密、焚毁、换机迁移
+├── vault/                加密容器、焚毁、换机迁移
 ├── gate/                 分寸闸门
 ├── seeds/                素材池与投递报账
 ├── profile/              用户画像（收件箱 / 存储 / 白名单 / 合并 / 处境摘要 / 快照）
@@ -341,7 +341,7 @@ client bundle 由宿主**启动时**读入内存并按内容打 immutable 缓存
 **C24 · RPC 通道的宿主闸门**
 插件注册的 `/api/heartbeat`**自身不做鉴权**，靠宿主 `/api` 前缀路由在 dispatch 前调 `connection.admit(req)` → `requestRejection(req)`（Host/Origin fence + 32 字节浏览器认证 secret）把守。
 
-插件在注册时自检宿主 `connection` 上有没有这两个钩子：缺失就写审计 `rpc_host_gate_missing`，并让 `DESTRUCTIVE_ENDPOINTS`（`seeds.delete` / `migrate.import` / `bindings.remove` / `config.set` / `profile.export` / `interests.remove`）一律返回 `forbidden`（fail-closed），只读端点照常服务。
+插件在注册时自检宿主 `connection` 上有没有这两个钩子：缺失就写审计 `rpc_host_gate_missing`，并**让整个通道失败关闭**——只放行 `GATE_SAFE_ENDPOINTS` 里五个只读低敏端点（`status` / `config.get` / `sessions.list` / `bindings.get` / `weekly.list`），其余一律 `forbidden`（曾经只拒六个破坏性端点，等于把画像摘要与素材池向 loopback 敞开）。端点表是 `Map`——普通对象索引会命中原型键，`constructor` / `__proto__` 这类名字曾被当成端点。
 
 **升级 DSH 后如果动了 `src/rpc.ts`，先确认这两个钩子还在。** 都不在 = 通道退化成"任何能 POST 到本机端口的人都算数"。
 
@@ -377,7 +377,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 | `path-guard.ts` | 路径白名单守卫 | 先把路径 realpath 规范化（目标不存在时：realpath 最深的存在祖先 + 回拼缺失的尾巴），再与规范化后的 dataDir 做**大小写不敏感、带分隔符边界**的前缀比对。必测向量：`..` 穿越 / 符号链接 / 8.3 短名 / 大小写 / UNC |
 | `atomic-fs.ts` | 原子写 | 同目录随机 tmp + rename（Windows 上是替换写）；`shredFileSync` 覆写 N 次后删除 |
 | `audit-log.ts` | JSONL 审计 | `appendAuditLine` / `readAuditLines`（坏行保留为标记）/ `pruneAuditFile`（按龄裁剪，原子重写）。**写入永不抛**，失败只落 stderr——审计故障不该拖垮业务 |
-| `file-lock.ts` | 跨进程文件锁 | `withFileLock(target, fn)`：锁文件 `${target}.lock`，`O_EXCL` 创建 + 写 pid；15 秒判死锁、3 秒轮询等待、超时 **fail-open 照常执行**（锁防的是并发损坏，不是授权）。宿主插件与 CLI 是两个进程、会同写 `seeds.jsonl` 与 `profile_inbox.jsonl`，所有"读-改-写"路径都过它 |
+| `file-lock.ts` | 跨进程文件锁 | `withFileLock(target, fn)`：锁文件 `${target}.lock`，`O_EXCL` 创建 + 写 pid；15 秒判陈旧、3 秒轮询等待，**等不到就抛 `FileLockTimeoutError`，fn 一次都不跑**（fail-closed——锁防的是并发损坏，宁可跳过这次写入并留痕）。陈旧锁要同时满足「够老」与「持有进程确实不在了」才回收（读不到 pid 时给 30 秒宽限）；`pid` 是自己时也算活着。只想跳过、不想抛的场景用 `tryWithFileLock`（返回 `null`）。宿主插件与 CLI 是两个进程、会同写 `seeds.jsonl` 与 `profile_inbox.jsonl`，所有"读-改-写"路径都过它 |
 | `ps.ts` | PowerShell 调用收口 | `runPowerShell` / `runPowerShellFile`，**永不 reject**（超时、非零退出、异常一律归一成返回值） |
 | `time-window.ts` | HH:MM 窗口判定 | `parseHhMm` / `minutesOfDay` / `inHhMmWindow`（半开区间，支持跨夜）。静默窗与闲逛窗口共用同一份实现 |
 | `runtime.ts` | 运行时单例 | paths / guard / policy / UI 开关的统一读取口；测试用 `resetRuntimeForTest` |
@@ -396,7 +396,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 | 状态 | 用途 |
 |---|---|
 | `beating` / `beatCancel` | 拍级单飞，以及取消正在跑的那一轮模型 |
-| `beatWatchdog` | 45 分钟看门狗 |
+| `beatWatchdog` | 45 分钟看门狗（到点 abort 当前拍的取消链） |
 | `agentPromise` | 引擎室 agent 的缓存 Promise |
 | `homeRotatePending` | 家轮换的待办理由（溢出标记或尺寸阈值） |
 | `lastBeat` / `droppedStreak` | 最近一拍的结果、连续丢弃计数 |
@@ -427,10 +427,10 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 ### 4.4 vault/ —— 加密与焚毁
 
-- **`assets/vault.ps1`**：DPAPI（CurrentUser）整文件加解密，`KHBV1` ASCII 头；脚本保持 **ASCII-only**（避开 PowerShell 5.1 的代码页坑）。
-- **`vault.ts`**：`loadJson` / `saveJson`（密文自动识别、明文兼容读）、`encryptFile` / `decryptFile`、`loadEncryptedText` / `saveEncryptedText`（素材池、收件箱、journal 用）、`readText` / `writeText`（账本这类明文）。**明文临时窗只落 `data/tmp/`**；所有路径先过守卫；加密失败 fail-closed。
-- **`burn-list.ts`**：**焚毁清单的单一事实源**（曾经两份硬编码漂移、漏掉文件）。burn = 预演 / `--yes` 执行（覆写 ×3 + 删除）/ `--all` 连设置一起清；卸载时的 `--purge` 复用同一套清除核心。焚毁后会重建 journal 并写一条 `BURN_EVENT`。
-- **`migrate.ts`**：换机迁移的导出 / 导入。导入是**两阶段**的——先全部落成 `.incoming-<时间戳>`，再统一改名，失败整体回滚；被替换的原文件留 `.bak-migrate-<时间戳>`。
+- **`vault.ts`**：写路径一律产出 **`KHBV2`** 容器（`KHBV2` magic + version + nonce(12) + tag(16) + AES-256-GCM 密文，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 容器存在 `data/vault.key`，进程启动解一次。读路径三代都认：`KHBV2`（内存解密，**不需要任何明文临时文件**）、`KHBV1`（旧版 DPAPI 容器，走 `assets/vault.ps1` + `data/tmp` 明文窗）、明文（兼容读取）。`loadJson` / `saveJson`、`encryptFile` / `decryptFile`、`loadEncryptedText` / `saveEncryptedText`、`readText` / `writeText` 的对外名与语义不变。**密钥文件存在但解不开直接抛错，绝不另生成一把**；加密文件解密 / 解析失败也抛错，不返回空值（否则调用方会把空库盖回去）。`vault status` 报告各代容器数量，`vault upgrade` 把旧容器一次性改写成新容器——旧的 1.x 数据不会变死数据，反向不行（1.x 读不了 `KHBV2`）。
+- **`assets/vault.ps1`**：只服务旧 `KHBV1` 容器的加解密（含 `vault.key` 的封装 / 解开），保持 **ASCII-only**（避开 PowerShell 5.1 的代码页坑）。
+- **`burn-list.ts`**：**焚毁清单的单一事实源**（曾经两份硬编码漂移、漏掉文件）。burn = 预演 / `--yes` 执行（覆写 ×3 + 删除）/ `--all` 连设置一起清；卸载时的 `--purge` 复用同一套清除核心。除固定文件与前缀外还支持 `match: RegExp` 的「族」——迁移备份 `*.bak-migrate-<时间戳>` 与导入暂存 `*.incoming-<时间戳>`，任意子目录层级都认。焚毁后会重建 journal 并写一条 `BURN_EVENT`。`vault.key` 有意**不在**清单里——烧数据不该顺带烧掉密钥。
+- **`migrate.ts`**：换机迁移的导出 / 导入。导入是**两阶段且两端全或无**的——白名单（`isMigratablePath`：固定文件 + journal 归档 + `weekly/*.json`）之外的名字、越界路径、超预算（**5000 文件 / 64MB**）一律判整包失败；先全部落成 `.incoming-<时间戳>`，任一文件被拒就把已暂存的全部删掉、本地数据原样不动；全部通过才统一改名，被替换的原文件留 `.bak-migrate-<时间戳>`。
 
 ### 4.5 gate/ —— 分寸闸门
 
@@ -459,11 +459,11 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 | 文件 | 职责 |
 |---|---|
-| `types.ts` | 四个分区（interest / projects / comm / psy）的条目结构：双时间戳 + evidence + 时效档位；操作只有四种：ADD / UPDATE / INVALIDATE / NOOP |
+| `types.ts` | 四个分区（interest / projects / comm / psy）的条目结构：双时间戳 + evidence + 时效档位；操作只有四种：ADD / UPDATE / INVALIDATE / NOOP；journal 记录 `{v, ts, runId, applied, rejected, entries}`（v2 的 `entries` 是本轮写入 / 变更条目的**完整终态快照**，v1 老行没有） |
 | `schema.ts` | 白名单：分区 → topic → sub_topic 逐级限定，sub_topic 级还能规定"允许哪些档位 + 默认档"。**白名单外一概不收**。文件坏了走三级降级（用户层 → 出厂层 → 无白名单），并留 `profile_schema_fallback` |
-| `store.ts` | 守卫逐条裁决（白名单 / evidence 强制且 ref 必须存在 / 置信度按来源封顶 / psy 门控 / 分区容量 / UPDATE 升级要二次确认 / INVALIDATE 的归属）+ 确定性老化（volatile 14 天失效、stable 180 天标"低活跃"但不删）+ **journal 唯一权威**（ADD 回写 id 保证重放一致；`verify` 只报不修；`rebuild` 原子替换，撕裂尾会显式报告） |
-| `inbox.ts` | 观察收件箱：去重键 `kind + ref`（同一条观察重复投递只算一次）、note 截断到 120 字、**合并失败时收件箱保留** |
-| `consolidate.ts` | 合并：触发（积压 ≥ 30 条，或距上次 ≥ 12 小时且积压不为 0）→ 排水分组 → 拼裁决提示词 → 调模型 → 守卫 → 应用 + 落 journal + 排水（**成功才清**）。单飞锁防重入，模型调用由编排器注入 |
+| `store.ts` | 守卫逐条裁决（白名单 / evidence 强制 / 置信度按来源封顶 / psy 门控 / 分区容量 / UPDATE 升级要二次确认 / INVALIDATE 的归属）+ 确定性老化（volatile 14 天失效、stable 180 天标"低活跃"但不删）+ **journal 唯一权威**（v2 记规范化之后的终态、重放按 id upsert，与实时路径是同一状态机；v1 老行走 `applyOpPermissive`）。**证据由代码生成**：模型只回观察编号（`o1`…），kind / at / ref 由 `shapes.ts` 从本批次观察里取——伪造引用、或自称 `hand` 把信心钉到 1.0，从构造上不再可达。`verify` 只报不修（坏行计入 `badRecords`）；`rebuild` 原子替换，撕裂尾会显式报告 |
+| `inbox.ts` | 观察收件箱：去重键 `kind + ref`（同一条观察重复投递只算一次）、note 截断到 120 字、**合并失败时收件箱保留**；成功时只删这一轮真正读过的条目（`inboxRemoveIds`），合并期间新到的观察留在箱里 |
+| `consolidate.ts` | 合并：触发（积压 ≥ 30 条，或距上次 ≥ 12 小时且积压不为 0）→ 排水分组（每条观察给一个编号 `o1`…）→ 拼裁决提示词 → 调模型 → 形状校验（`shapes.ts`）→ 证据绑定 → 守卫 → 应用 + 落 journal（老化也在内）+ 只删读过的观察。单飞锁防重入，模型调用由编排器注入 |
 | `digest.ts` | 处境摘要：三个切面（作息 + 沟通 + 窗口类别 / 高置信话题 top N / 高置信兴趣），v2.0 起总预算 6000 字符、三段各有上限、超预算按**整条**跳过并回报丢弃条数（`omitted`）；stable 但久未验证的条目会标"久未验证" |
 | `snapshot.ts` | journal 快照：累积到阈值就把当前状态定格，缩短重放路径 |
 
@@ -528,7 +528,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 下面所有路径都相对 **dataDir**（默认 `<DSH_HOME>/heartbeat-data`，可被环境变量 `HEARTBEAT_DATA_DIR` 或插件配置 `dataDir` 覆盖——解析链与自动搬迁见 §1 / C13b）。
 
-> **怎么判断一个文件是不是密文**：文件头是 ASCII 的 `KHBV1` 就是走 DPAPI 加密的；能直接 `type` 出人话就是明文。想知道某处该用哪种，看它调的是哪一对函数——`loadEncryptedText` / `saveEncryptedText`、`encryptFile` / `decryptFile`、`loadJson` / `saveJson` 都进加密通道；`readText` / `writeText` 是明文。
+> **怎么判断一个文件是不是密文**：文件头是 ASCII 的 `KHBV2` 就是新一代容器（AES-256-GCM），`KHBV1` 是旧一代（DPAPI）；能直接 `type` 出人话就是明文。想知道某处该用哪种，看它调的是哪一对函数——`loadEncryptedText` / `saveEncryptedText`、`encryptFile` / `decryptFile`、`loadJson` / `saveJson` 都进加密通道；`readText` / `writeText` 是明文。
 
 ### 5.1 素材与偏好
 
@@ -544,9 +544,10 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | 文件 | 内容 | 谁在写 |
 |---|---|---|
 | `profile.json` | 画像物化视图（四个分区的全部条目） | `profile/store.ts` |
-| `profile_journal.jsonl` | 操作流水，**重放它才是恢复真相的路径** | 同上 |
+| `profile_journal.jsonl` | 事件流水（v2 记规范化之后的**最终事实**：add / update / invalidate / 老化都作为事件；v1 老行照旧能读），**重放它才是恢复真相的路径** | 同上 |
 | `profile_journal.archive-*` | 轮转出去的历史流水 | 同上（快照时） |
 | `profile_snapshot.json` | journal 轮转基线 | `profile/snapshot.ts` |
+| `vault.key` | 数据密钥（DPAPI 包着的 32 字节随机键）；换机**不随迁移包移动** | `vault/vault.ts` |
 | `profile_inbox.jsonl` | 观察收件箱（待合并的**观察**） | `profile/inbox.ts` |
 | `profile_rhythm.json` | 作息直方图（纯统计，不含内容） | `rhythm/rhythm.ts` |
 | `logs/rebuild-report.txt` | 上一次 `profile rebuild` 的校验报告 | 同上 |
@@ -693,17 +694,17 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 | 常量 | 值 | 位置 |
 |---|---|---|
-| `BEAT_WATCHDOG_MS` | 45 分钟 | `src/core/orchestrator.ts:192` |
-| 四相超时（维护 / 采集 / 闲逛） | 10 / 5 / 15 分钟 | `src/core/orchestrator.ts:204-206` |
-| `TURN_TIMEOUT_MS` / `IDLE_WAIT_TIMEOUT_MS` | 3 / 4 分钟 | `src/core/orchestrator.ts:162-163` |
-| `HOME_ROTATE_EVENT_COUNT` | 3000 | `src/core/orchestrator.ts:150` |
-| `TOKEN_SAVER_IDLE_SECONDS` | 1800 | `src/core/orchestrator.ts:1559` |
-| 文件锁：判死 / 等待 | 15 秒 / 3 秒 | `src/core/file-lock.ts` |
+| `BEAT_WATCHDOG_MS` | 45 分钟 | `src/core/orchestrator.ts:236` |
+| 四相超时（维护 / 采集 / 闲逛） | 10 / 5 / 15 分钟 | `src/core/orchestrator.ts:275-277` |
+| `TURN_TIMEOUT_MS` / `IDLE_WAIT_TIMEOUT_MS` | 3 / 4 分钟 | `src/core/orchestrator.ts:191-192` |
+| `HOME_ROTATE_EVENT_COUNT` | 3000 | `src/core/orchestrator.ts:179` |
+| `TOKEN_SAVER_IDLE_SECONDS` | 1800 | `src/core/orchestrator.ts:1739` |
+| 文件锁：判陈旧 / 等待 | 15 秒 / 3 秒 | `src/core/file-lock.ts` |
 | 作息：`TAU_DAYS` / `CELL_EPSILON` / 双门阈值 | 10 天 / 1e-3 / 0.25 与 5% | `src/rhythm/rhythm.ts` |
 | 摘要预算 `BUDGET_CHARS` | 6000 字符（v2.0；分区上限 `TACT_MAX_CHARS` 2500 / `WANDER_MAX_CHARS` 850 / 话题取剩余且 ≥`TOPIC_MIN_CHARS` 2400） | `src/profile/digest.ts` |
 | `MAX_CHAT_SEEDS_PER_RUN` | 3 | `src/profile/consolidate.ts` |
 | `REPORT_KEEP` | 400 条 | `src/seeds/report.ts` |
-| `DESTRUCTIVE_ENDPOINTS` | 六个端点 | `src/rpc.ts` |
+| `GATE_SAFE_ENDPOINTS` | 五个只读端点（缺宿主闸门时唯一的放行名单） | `src/rpc.ts` |
 
 ---
 
@@ -743,6 +744,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 | `phase_done` | 某一相跑完（`phase`: maintenance / collect / wander / refill_wander） |
 | `beat_error` | **拍级异常**——整拍挂了，看 `error` |
 | `beat_watchdog` | 超时看门狗强制解锁（上一次拍卡死了 45 分钟以上） |
+| `beat_aborted` | 这一拍被取消（看门狗 / 超时 / 插件卸载），带 `stage` 与 `why` |
 | `beat_agentless` | 拿不到 agent，本拍只跑维护与采集 |
 | `silent` | 本拍不开口，`reason` 写原因（冷静期 / 上限 / 静默时段 / 没有候选…） |
 
@@ -865,7 +867,7 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 | 界面 | 谁能碰 | 防线 |
 |---|---|---|
 | 数据通道 `/api/heartbeat` | 本机浏览器页面 | 宿主 `/api` 的 admission（Host / Origin fence + 浏览器认证 secret）；插件自己**不做鉴权**，只自检闸门在不在（C24） |
-| `data/` 下的文件 | 本机、同一 Windows 用户 | DPAPI（CurrentUser 作用域）——换用户或换机器**解不开**，这是特性不是缺陷 |
+| `data/` 下的文件 | 本机、同一 Windows 用户 | AES-256-GCM 整文件加密，数据密钥由 DPAPI（CurrentUser 作用域）保管——换用户或换机器**解不开**，这是特性不是缺陷 |
 | 送进模型的文本 | 远端模型服务 | 只送画像条目字段与 ≤1 句观察引语，不送对话原文、不送证据全量 |
 | 屏幕内容 | 本地视觉桥（可能再转发给它配置的 provider） | 先解密再用、用完即焚，出去的只有识别摘要 |
 
@@ -873,7 +875,7 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 
 ### 8.2 什么走加密
 
-**加密（DPAPI）**：素材池与归档、观察收件箱、投递报账、画像视图 / 快照 / 流水、表达记录、闲逛状态、屏幕快照与截图、闸门状态（含正身 id）、周报正文。
+**加密（AES-256-GCM，数据密钥由 DPAPI 保管）**：素材池与归档、观察收件箱、投递报账、画像视图 / 快照 / 流水、表达记录、闲逛状态、屏幕快照与截图、闸门状态（含正身 id）、周报正文。
 
 **有意保持明文**：
 
@@ -883,9 +885,9 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 
 ### 8.3 加密通道的实现
 
-- `assets/vault.ps1` 做 DPAPI 整文件加解密，输出带 `KHBV1` ASCII 头；**脚本保持 ASCII-only**（PowerShell 5.1 的代码页坑）。
+- `vault.ts` 的写路径产出 `KHBV2`（AES-256-GCM，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次——于是加解密不再需要**每文件起一次 PowerShell**（1.x 是这样做的，97 秒的全量测试里全是它的开销）。旧 `KHBV1` 容器仍能读，那条路走 `assets/vault.ps1` + `data/tmp` 明文窗；脚本保持 ASCII-only（PowerShell 5.1 的代码页坑）。
 - 加解密是**整文件**的，不是流式——所以没有"追加写"这回事。素材池与收件箱的每次写入都是"解密 → 改 → 重加密 → 原子替换"，这也是它们需要文件锁的原因（§4.1）。
-- **明文临时窗只允许出现在 `data/tmp/`**，用完即焚（`burnFileSync`）。别的地方出现明文一律当 bug 处理。
+- **明文临时窗只允许出现在 `data/tmp/`**，用完即焚（`burnFileSync`）。别的地方出现明文一律当 bug 处理。崩溃遗留的残渣（>10 分钟）在进程首次用到密钥时清理，新鲜的留着（可能属于并发进程）。
 
 ### 8.4 焚毁
 
@@ -1053,7 +1055,19 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 ## 14. 变更日志
 
-**当前版本 v1.9.3**（仓库已改、**尚未发版**）——素材包可留白 + 摘要预算分区 + 画像与素材池 UI 重做：
+**当前版本 v2.0.0**（仓库已改、**尚未发版**）——第二次全量代码审查的修复与结构整改（22 项主发现 + 一节低优先级观察，逐条证据见 [`CODE-REVIEW-2026-10-17.md`](CODE-REVIEW-2026-10-17.md)）：
+
+1. **加密换代**（`src/vault/vault.ts`）：写路径产出 `KHBV2`（AES-256-GCM，头做 AAD），数据密钥 32 字节随机、由 DPAPI 包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次；读路径三代都认（`KHBV2` / `KHBV1` / 明文）。每文件一次 PowerShell 的开销随之消失（全量测试 97 s → 12 s）。CLI 新增 `vault status` / `vault upgrade`。**升级后不要退回 1.x**。
+2. **遗忘边界补全**（`src/profile/store.ts` / `src/vault/burn-list.ts`）：`wipe` 改为真遗忘（live 三文件 + 快照 + 归档分片 + 迁移备份 / 暂存残留），`burn` 清单新增 `match: RegExp` 支持那两族；`vault.key` 有意不烧。
+3. **迁移两端全或无**（`src/vault/migrate.ts` / `src/rpc.ts`）：白名单 `isMigratablePath` + 预算 5000 文件 / 64MB；暂存阶段任一文件被拒即整包不导入；RPC 侧带 `error` 的结果不再当成功返回。
+4. **流水事件化 + 证据由代码生成**（`src/profile/store.ts` / `src/profile/shapes.ts` / `src/profile/consolidate.ts`）：journal v2 记终态、重放按 id upsert，与实时同一状态机、老化也入流水；旧 v1 行照读；模型只回观察编号，kind / at / ref 由代码填。新增 `shapes.ts` 统一形状校验（模型输出 / 流水 / 迁移包 / RPC）。
+5. **锁失败关闭**（`src/core/file-lock.ts`）：等不到锁抛 `FileLockTimeoutError`（或 `tryWithFileLock` 返回 `null`），陈旧锁要「够老 + 持有进程确实不在」才回收。
+6. **取消链**（`src/core/orchestrator.ts` / `src/core/ps.ts` 等）：AbortController 贯穿所有阶段，超时 / 看门狗 / 卸载真正取消模型调用与子进程，记 `beat_aborted`。
+7. **画面不认旧图**（`src/screen/screenpulse.ts`）：新增 `screen.capture` 印章，采集失败烧旧图并取消本跳画面资格。
+8. **RPC 失败关闭**（`src/rpc.ts`）：缺宿主闸门时只放行 `GATE_SAFE_ENDPOINTS` 五个只读端点，端点表改 `Map`。
+9. **其余**：观察不再被整箱清空（只删读过的）、投递按说话时刻记账并复查全部条件、判「别说」的表述收紧、原子写先 `fsync`、摘要与账本块加上限、闲逛年份不再写死、CI 增加构建 / `dist` 一致性 / 客户端语法三查（重建了早已过期的 `dist`）。测试 304 → **342**。
+
+**v1.9.3**（**尚未发版**）——素材包可留白 + 摘要预算分区 + 画像与素材池 UI 重做：
 
 1. **素材包可以留白了**（`src/core/material.ts`）：以前素材包默认"必须挑一条说"，agent 想沉默也得硬凑一条。现在改成先判断**要不要开口**——该说才选一条，不该说就把正文留空，只回一次"这轮没开口"和原因（新增一条常驻的 `SILENCE_DECLARE` 声明，`PACKAGE_DECLARE` 改判"要不要开口"）。沉默不再需要客套话。**留白依赖模型自己的指令遵循能力**——觉得效果不稳，可以在系统提示词或长期记忆里补一条规则。
 2. **摘要预算分区**（`src/profile/digest.ts`）：送进引擎室的画像摘要总预算 3200 → 6000 字符，并且 tact / topic / wander 三段各有上限（2500 / ≥2400 / 850）——超预算按**整条**跳过并回报丢弃条数（`omitted`），不再从句子中间切断。
