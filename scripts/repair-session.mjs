@@ -164,15 +164,18 @@ if (mode === 'fix') {
     }
     parts.push(zlib.zstdCompressSync(Buffer.from(chunk.text, 'utf8')));
   }
-  fs.writeFileSync(zstdPath, Buffer.concat(parts));
+  // HB-22 (2026-10-17): write a STAGING file, verify it, and only then swap it
+  // in with a same-directory rename. The old code overwrote the session in
+  // place and verified afterwards — a failed check left a broken log behind.
+  const staging = zstdPath + '.fixing-' + Date.now();
+  fs.writeFileSync(staging, Buffer.concat(parts));
 
-  // Post-fix verification: re-read, first frame still = 1 header line,
-  // and no corrupt events remain.
-  const verify = splitFrames(fs.readFileSync(zstdPath));
-  const verifyFrames = splitFrames(fs.readFileSync(zstdPath));
+  // Post-fix verification: first frame still = 1 header line, and no corrupt
+  // events remain — run against the staged bytes, before touching the real file.
+  const verifyFrames = splitFrames(fs.readFileSync(staging));
   const firstDecoded = zlib.zstdDecompressSync(verifyFrames[0]).toString('utf8').split('\n').filter((l) => l.trim());
   const stillCorrupt = (() => {
-    for (const f of verify) {
+    for (const f of verifyFrames) {
       const t = zlib.zstdDecompressSync(f).toString('utf8');
       for (const line of t.split('\n')) {
         try {
@@ -183,10 +186,13 @@ if (mode === 'fix') {
     }
     return false;
   })();
-  console.log(`verify: first frame lines = ${firstDecoded.length} (must be 1) | still corrupt = ${stillCorrupt}`);
+  console.log(`verify(staging): first frame lines = ${firstDecoded.length} (must be 1) | still corrupt = ${stillCorrupt}`);
   if (firstDecoded.length !== 1 || stillCorrupt) {
-    console.error('VERIFICATION FAILED — restore from backup:', backup);
+    fs.rmSync(staging, { force: true });
+    console.error('VERIFICATION FAILED — the original file was left UNTOUCHED:', zstdPath);
+    console.error('backup (unchanged copy):', backup);
     process.exit(1);
   }
+  fs.renameSync(staging, zstdPath);
   console.log(`FIXED: ${totalChanges} event(s) repaired. Restart DSH and reopen the session.`);
 }

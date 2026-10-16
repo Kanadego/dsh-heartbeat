@@ -13,13 +13,13 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { OrchestratorDeps } from './core/orchestrator.js';
 import { getLastBeat, homeSessionId, resetHomeSession } from './core/orchestrator.js';
 import { appendAuditLine } from './core/audit-log.js';
 import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
+import { dshHomeDir } from './core/paths.js';
 import type { WorkspacePaths } from './core/paths.js';
 import { inQuietHours, readSentState } from './gate/gate.js';
 import {
@@ -140,7 +140,7 @@ function loadSessionTitles(): Record<string, string> {
   };
   // 1) per-record layout (current).
   try {
-    const dir = path.join(os.homedir(), '.dsh', 'storages', 'session_projcache', 'sessions');
+    const dir = path.join(dshHomeDir(), 'storages', 'session_projcache', 'sessions');
     for (const file of fs.readdirSync(dir)) {
       if (!file.endsWith('.json')) continue;
       const id = file.slice(0, -'.json'.length);
@@ -153,7 +153,7 @@ function loadSessionTitles(): Record<string, string> {
   } catch { /* no per-record dir on older hosts */ }
   // 2) legacy aggregate fallback.
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.dsh', 'storages', 'session_projcache.json'), 'utf8')) as unknown;
+    const raw = JSON.parse(fs.readFileSync(path.join(dshHomeDir(), 'storages', 'session_projcache.json'), 'utf8')) as unknown;
     const walk = (node: unknown): void => {
       if (!node || typeof node !== 'object') return;
       for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
@@ -189,7 +189,7 @@ function loadSessionTitles(): Record<string, string> {
  * picker. The heartbeat home is always shown regardless (caller-side). */
 export function loadVisibleSessionIds(registryFile?: string): { visible: Set<string>; registryFound: boolean } {
   try {
-    const file = registryFile ?? path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+    const file = registryFile ?? path.join(dshHomeDir(), 'storages', 'workspace.json');
     const j = JSON.parse(fs.readFileSync(file, 'utf8')) as {
       global?: { archivedSessionIds?: unknown };
       tables?: { workspaces?: Record<string, { sessionIds?: unknown }> };
@@ -266,7 +266,7 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
     },
 
     'sessions.list'() {
-      const root = path.join(os.homedir(), '.dsh', 'sessions');
+      const root = path.join(dshHomeDir(), 'sessions');
       const bindings = loadBindings(guard, paths.settingsDir).bindings;
       const home = homeSessionId(guard, paths);
       const titles = loadSessionTitles();
