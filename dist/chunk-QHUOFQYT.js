@@ -20,7 +20,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-IG6YMUHW.js";
+} from "./chunk-Y37A2HGP.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -560,7 +560,8 @@ function assembleCandidates(seeds, opts = {}) {
   if (topic.length < 4) chat.push(...chatPool.slice(2, 2 + (4 - topic.length)));
   return [...topic, ...chat].slice(0, 6);
 }
-var PACKAGE_DECLARE = "\u8FD9\u662F\u5FC3\u8DF3\u63D2\u4EF6\u7D20\u6750\u6295\u9012,\u8BF7\u4F60\u6839\u636E\u5F53\u524D\u5904\u5883\u5224\u65AD\u8981\u4E0D\u8981\u9009\u4E00\u6761\u8BF4";
+var PACKAGE_DECLARE = "\u8FD9\u662F\u5FC3\u8DF3\u63D2\u4EF6\u7D20\u6750\u6295\u9012,\u8BF7\u4F60\u6839\u636E\u5F53\u524D\u5904\u5883\u5224\u65AD\u8981\u4E0D\u8981\u5F00\u53E3:\u8BE5\u8BF4\u5C31\u9009\u4E00\u6761\u8BF4,\u4E0D\u8BE5\u8BF4\u5C31\u7559\u767D";
+var SILENCE_DECLARE = '(\u51B3\u5B9A\u4E0D\u8BF4\u7684\u65F6\u5019:\u56DE\u590D\u91CC\u4E0D\u8981\u5199\u4EFB\u4F55\u6B63\u6587,\u4E5F\u4E0D\u8981\u5199"\u55EF""\u5728\u7684"\u8FD9\u79CD\u5BA2\u5957,\u53EA\u8C03\u4E00\u6B21 seed_report \u62A5 spoken=silent \u5E76\u5199\u4E0A reason;\u7A7A\u7740\u5C31\u662F\u771F\u7684\u6C89\u9ED8)';
 function materialLines(materials) {
   return materials.map((m) => `- [${m.id}] ${m.text.trim()}`);
 }
@@ -578,13 +579,14 @@ function buildMaterialPrompt(materials, opts = {}) {
   if (wantHonestOption(materials, opts.threshold ?? 2)) {
     lines.push("(\u6216\u8005\u4E5F\u53EF\u4EE5\u8BF4\u4E00\u53E5\u771F\u5FC3\u8BDD,\u4E0D\u5E26\u7D20\u6750)");
   }
+  lines.push(SILENCE_DECLARE);
   if (opts.deliveryId) {
     lines.push(`(\u672C\u6B21\u6295\u9012\u7F16\u53F7:${opts.deliveryId},\u62A5\u8D26\u65F6\u539F\u6837\u586B\u8FDB delivery_id)`);
   }
   lines.push(REPORT_DECLARE);
   return lines.join("\n");
 }
-var REPORT_DECLARE = "\u6700\u540E,\u65E0\u8BBA\u521A\u624D\u8BF4\u4E0D\u8BF4\u8BDD\u3001\u7528\u6CA1\u7528\u7D20\u6750,\u90FD\u8981\u8C03\u7528\u4E00\u6B21 seed_report \u5DE5\u5177\u62A5\u8D26:spoken=material(\u8BF4\u4E86\u7D20\u6750)/heartfelt(\u8BF4\u4E86\u4E0D\u5E26\u7D20\u6750\u7684\u8BDD)/silent(\u6CA1\u8BF4\u8BDD);\u7528\u4E86\u7D20\u6750\u5C31\u628A\u7D20\u6750\u7F16\u53F7\u586B\u8FDB seed_ids(\u53EF\u591A\u6761,\u53EA\u586B\u7F16\u53F7\u672C\u8EAB);\u7528\u4E86\u753B\u50CF\u6761\u76EE\u5F53\u8BDD\u9898\u5C31\u586B profile_ids;\u6CA1\u7528\u7D20\u6750\u65F6\u7528 reason \u7B80\u5355\u8BB0\u4E00\u7B14\u539F\u56E0(\u4E0D\u60F3\u8BF4\u8BDD/\u7D20\u6750\u4E0D\u642D/\u5728\u5FD9\u6216\u521A\u804A\u8FC7,\u65E0\u9700\u7D20\u6750);\u5E76\u628A\u672C\u6B21\u6295\u9012\u7F16\u53F7\u586B\u8FDB delivery_id\u3002";
+var REPORT_DECLARE = "\u6700\u540E,\u65E0\u8BBA\u521A\u624D\u8BF4\u4E0D\u8BF4\u8BDD\u3001\u7528\u6CA1\u7528\u7D20\u6750,\u90FD\u8981\u8C03\u7528\u4E00\u6B21 seed_report \u5DE5\u5177\u62A5\u8D26(\u4E0D\u8BF4\u8BDD\u65F6\u6B63\u6587\u5C31\u7559\u7A7A):spoken=material(\u8BF4\u4E86\u7D20\u6750)/heartfelt(\u8BF4\u4E86\u4E0D\u5E26\u7D20\u6750\u7684\u8BDD)/silent(\u6CA1\u8BF4\u8BDD);\u7528\u4E86\u7D20\u6750\u5C31\u628A\u7D20\u6750\u7F16\u53F7\u586B\u8FDB seed_ids(\u53EF\u591A\u6761,\u53EA\u586B\u7F16\u53F7\u672C\u8EAB);\u7528\u4E86\u753B\u50CF\u6761\u76EE\u5F53\u8BDD\u9898\u5C31\u586B profile_ids;\u6CA1\u7528\u7D20\u6750\u65F6\u7528 reason \u7B80\u5355\u8BB0\u4E00\u7B14\u539F\u56E0(\u4E0D\u60F3\u8BF4\u8BDD/\u7D20\u6750\u4E0D\u642D/\u5728\u5FD9\u6216\u521A\u804A\u8FC7,\u65E0\u9700\u7D20\u6750);\u5E76\u628A\u672C\u6B21\u6295\u9012\u7F16\u53F7\u586B\u8FDB delivery_id\u3002";
 function explicitIds(candidates, ids = []) {
   const known = new Set(candidates.map((c) => c.id));
   return [...new Set(ids)].filter((id) => known.has(id));
@@ -2474,4 +2476,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-AJ5HLAL7.js.map
+//# sourceMappingURL=chunk-QHUOFQYT.js.map
