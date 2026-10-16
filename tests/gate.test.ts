@@ -129,7 +129,7 @@ test('confirmSend persists and gateStatus reflects it (encrypted at rest)', () =
   assert.equal(st.quiet, false);
   // sent.json must be DPAPI-encrypted
   const raw = fs.readFileSync(path.join(workspace().dataDir, 'sent.json'));
-  assert.equal(raw.subarray(0, 5).toString('ascii'), 'KHBV1');
+  assert.equal(raw.subarray(0, 5).toString('ascii'), 'KHBV2');
 });
 
 test('confirmSend refuses when cap is reached (fail-closed)', () => {

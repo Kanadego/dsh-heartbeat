@@ -57,7 +57,13 @@ import {
   applyMigrationEntries,
 } from '../vault/migrate.js';
 import { listWeeklyReports, readWeeklyReport, weeklyDirPath } from '../weekly/report.js';
-import { writeText } from '../vault/vault.js';
+import {
+  containerKind,
+  upgradeVaultTree,
+  vaultKeyPath,
+  writeText,
+} from '../vault/vault.js';
+import { matchFilesRecursive } from '../core/fs-walk.js';
 import {
   BUNDLED_PRESET_ID,
   conventionalUserPresetRoot,
@@ -99,6 +105,8 @@ function usage(): string {
     '  profile wipe                      wipe profile data (asks --yes)',
     '  weekly list                       list generated weekly reports',
     '  weekly show [file]                print a report (default: newest)',
+    '  vault status                      encryption containers on disk + master key file',
+    '  vault upgrade                     rewrite legacy KHBV1 files as KHBV2 (in place)',
     '  migrate export [file]             pack memory files into a passphrase container (passphrase: 2 stdin lines)',
     '  migrate import <file>             restore a container into this workspace (passphrase: 1 stdin line)',
     '  burn [--yes] [--all]              shred runtime data (settings kept unless --all)',
@@ -671,6 +679,38 @@ async function verbPreset(c: CliCtx): Promise<number> {
   return 1;
 }
 
+/**
+ * Encryption containers on disk. `upgrade` is the migration step v2.0 owes the
+ * users of 1.x: reads already accept the legacy container, this rewrites the
+ * files so the plugin stops shelling out to PowerShell for each of them.
+ */
+async function verbVault(c: CliCtx): Promise<number> {
+  const { guard, paths, sub } = c;
+  const keyFile = vaultKeyPath();
+  const files = matchFilesRecursive(paths.dataDir, /./).filter(
+    (rel) => rel !== 'vault.key' && !rel.startsWith('tmp/'),
+  );
+  const counts = { v1: 0, v2: 0, plain: 0 };
+  for (const rel of files) {
+    counts[containerKind(path.join(paths.dataDir, rel.split('/').join(path.sep)))] += 1;
+  }
+  if (sub === undefined || sub === 'status') {
+    console.log(`data dir     : ${paths.dataDir}`);
+    console.log(`master key   : ${keyFile}${fs.existsSync(keyFile) ? '' : ' (not created yet; the next write makes it)'}`);
+    console.log(`containers   : ${counts.v2} KHBV2 (current), ${counts.v1} KHBV1 (legacy), ${counts.plain} plaintext`);
+    if (counts.v1 > 0) console.log('hint: run `vault upgrade` to rewrite the legacy files in place.');
+    return 0;
+  }
+  if (sub === 'upgrade') {
+    const r = upgradeVaultTree(guard, paths.dataDir);
+    console.log(`UPGRADED ${r.upgraded} of ${r.scanned} file(s) to KHBV2`);
+    for (const f of r.failed) console.log(`  ! ${f.file}: ${f.reason}`);
+    return r.failed.length === 0 ? 0 : 1;
+  }
+  console.error('usage: vault status | upgrade');
+  return 1;
+}
+
 /** Command table. Adding a verb = one function above plus one line here. */
 const VERBS: Record<string, Verb> = {
   status: verbStatus,
@@ -681,6 +721,7 @@ const VERBS: Record<string, Verb> = {
   browse: verbBrowse,
   notify: verbNotify,
   profile: verbProfile,
+  vault: verbVault,
   burn: verbBurn,
   migrate: verbMigrate,
   sessions: verbSessions,

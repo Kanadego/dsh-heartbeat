@@ -119,7 +119,7 @@ test('completeWander records throttle timestamps (browse.json encrypted)', () =>
   const st = fs.readFileSync(browseStatePath(paths)).toString('utf8');
   // encrypted at rest: the file must NOT contain the focus in plaintext
   assert.equal(st.includes('独立游戏'), false);
-  assert.equal(st.slice(0, 5), 'KHBV1');
+  assert.equal(st.slice(0, 5), 'KHBV2');
 });
 
 // ── M4: refill wander (2026-09-18 spec ⑥) ─────────────────────────────────
