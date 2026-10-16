@@ -3,10 +3,10 @@ import {
   loadPool,
   normalizeCategory,
   seedsFilePath
-} from "./chunk-JDH2LDFS.js";
+} from "./chunk-MTT27TSV.js";
 import {
   appendAuditLine
-} from "./chunk-CUOSICYJ.js";
+} from "./chunk-6RC24BMQ.js";
 import {
   loadEncryptedText,
   loadJson,
@@ -15,7 +15,7 @@ import {
   saveJson,
   workspace,
   writeText
-} from "./chunk-K5Y6JP2B.js";
+} from "./chunk-XCB7HYOM.js";
 import {
   atomicWriteJsonSync
 } from "./chunk-WRUTATW4.js";
@@ -303,7 +303,8 @@ function adviseWander(guard, paths, policy, now = /* @__PURE__ */ new Date()) {
     candidates.push(picked);
   }
   if (candidates.length === 0) return { focus: null, query: null, skipped: "no-focus", ...budget };
-  return { focus: candidates[0], query: `${candidates[0]} 2026 \u6700\u65B0`, skipped: null, candidates, ...budget };
+  const year = now.getFullYear();
+  return { focus: candidates[0], query: `${candidates[0]} ${year} \u6700\u65B0`, skipped: null, candidates, ...budget };
 }
 function completeWander(guard, paths, focus, now = Date.now(), opts = {}) {
   const state = loadState(guard, paths);
@@ -360,8 +361,23 @@ import path4 from "path";
 
 // src/core/ps.ts
 import { execFile } from "child_process";
-function runPowerShell(args, timeoutMs) {
+function runPowerShell(args, timeoutMs, signal) {
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: "", stderr: "aborted" });
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(r);
+    };
+    const onAbort = () => {
+      try {
+        child.kill();
+      } catch {
+      }
+      done({ status: 1, stdout: "", stderr: "aborted" });
+    };
     const child = execFile(
       "powershell.exe",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", ...args],
@@ -369,15 +385,16 @@ function runPowerShell(args, timeoutMs) {
       (err, stdout, stderr) => {
         const code = err?.code;
         const status = err ? typeof code === "number" ? code : 1 : 0;
-        resolve({ status, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+        done({ status, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
       }
     );
     child.on("error", () => {
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
-function runPowerShellFile(script, args, timeoutMs) {
-  return runPowerShell(["-File", script, ...args], timeoutMs);
+function runPowerShellFile(script, args, timeoutMs, signal) {
+  return runPowerShell(["-File", script, ...args], timeoutMs, signal);
 }
 
 // src/notify/notify.ts
@@ -580,4 +597,4 @@ export {
   buildWeeklyPrompt,
   renderTemplateReport
 };
-//# sourceMappingURL=chunk-WLZSABBH.js.map
+//# sourceMappingURL=chunk-KFQ3LDZY.js.map

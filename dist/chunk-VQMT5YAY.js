@@ -2,7 +2,7 @@ import {
   isEncrypted,
   loadEncryptedText,
   saveEncryptedText
-} from "./chunk-K5Y6JP2B.js";
+} from "./chunk-XCB7HYOM.js";
 
 // src/vault/migrate.ts
 import fs from "fs";
@@ -35,6 +35,16 @@ var MIGRATE_FILES = [
   "seed_report.jsonl",
   "preference.json"
 ];
+var MIGRATE_ARCHIVE_RE = /^profile_journal\.archive-\d+\.jsonl$/;
+var MIGRATE_WEEKLY_RE = /^weekly\/[^/\\]+\.json$/;
+function isMigratablePath(rel) {
+  if (MIGRATE_FILES.includes(rel)) return true;
+  if (MIGRATE_ARCHIVE_RE.test(rel)) return true;
+  if (MIGRATE_WEEKLY_RE.test(rel)) return true;
+  return false;
+}
+var MIGRATE_MAX_FILES = 5e3;
+var MIGRATE_MAX_BYTES = 64 * 1024 * 1024;
 function collectWeeklyFiles(guard, paths) {
   const dir = path.join(paths.dataDir, "weekly");
   try {
@@ -90,6 +100,22 @@ function assertKdfN(v) {
   }
   return n;
 }
+function assertMigrateBudget(files) {
+  if (files.length > MIGRATE_MAX_FILES) {
+    throw new Error(`migrate: container lists ${files.length} files, over the ${MIGRATE_MAX_FILES} limit`);
+  }
+  let bytes = 0;
+  for (const f of files) {
+    const entry = f;
+    if (!entry || typeof entry.path !== "string" || typeof entry.content !== "string") {
+      throw new Error("migrate: container file entry is malformed");
+    }
+    bytes += Buffer.byteLength(entry.content, "utf8");
+    if (bytes > MIGRATE_MAX_BYTES) {
+      throw new Error(`migrate: container payload exceeds ${MIGRATE_MAX_BYTES} bytes`);
+    }
+  }
+}
 function encryptContainer(entries, passphrase, now = /* @__PURE__ */ new Date()) {
   if (!passphrase) throw new Error("migrate: passphrase must not be empty");
   const salt = randomBytes(16);
@@ -119,7 +145,11 @@ function decryptContainer(text, passphrase) {
   const salt = Buffer.from(String(outer.kdf?.salt ?? ""), "hex");
   const iv = Buffer.from(String(outer.iv ?? ""), "hex");
   const tag = Buffer.from(String(outer.tag ?? ""), "hex");
-  const data = Buffer.from(String(outer.data ?? ""), "base64");
+  const dataB64 = String(outer.data ?? "");
+  if (dataB64.length > MIGRATE_MAX_BYTES * 2) {
+    throw new Error(`migrate: container payload is too large (${dataB64.length} base64 chars)`);
+  }
+  const data = Buffer.from(dataB64, "base64");
   const key = deriveKey(passphrase, salt, n);
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(tag);
@@ -132,6 +162,7 @@ function decryptContainer(text, passphrase) {
   const inner = JSON.parse(plain.toString("utf8"));
   if (inner.version !== MIGRATE_VERSION) throw new Error(`migrate: unsupported container version ${inner.version}`);
   if (!Array.isArray(inner.files)) throw new Error("migrate: container has no file list");
+  assertMigrateBudget(inner.files);
   return { createdAt: inner.createdAt, files: inner.files };
 }
 function applyMigrationEntries(guard, paths, files, now = Date.now()) {
@@ -142,7 +173,7 @@ function applyMigrationEntries(guard, paths, files, now = Date.now()) {
   const staged = [];
   for (const f of files) {
     const rel = String(f.path ?? "");
-    if (!rel || rel.includes("..") || path.isAbsolute(rel)) {
+    if (!rel || rel.includes("..") || path.isAbsolute(rel) || !isMigratablePath(rel)) {
       skipped.push(rel);
       continue;
     }
@@ -167,6 +198,20 @@ function applyMigrationEntries(guard, paths, files, now = Date.now()) {
       } catch {
       }
     }
+  }
+  if (skipped.length > 0) {
+    for (const s of staged) {
+      try {
+        fs.rmSync(s.incoming, { force: true });
+      } catch {
+      }
+    }
+    return {
+      restored: [],
+      backedUp: [],
+      skipped,
+      error: `staging failed for ${skipped.length} file(s): ${skipped.join(", ")}; nothing was imported`
+    };
   }
   const committed = [];
   try {
@@ -207,9 +252,12 @@ export {
   MIGRATE_MAGIC,
   MIGRATE_VERSION,
   MIGRATE_FILES,
+  isMigratablePath,
+  MIGRATE_MAX_FILES,
+  MIGRATE_MAX_BYTES,
   collectMigrationEntries,
   encryptContainer,
   decryptContainer,
   applyMigrationEntries
 };
-//# sourceMappingURL=chunk-XFNCTOW7.js.map
+//# sourceMappingURL=chunk-VQMT5YAY.js.map

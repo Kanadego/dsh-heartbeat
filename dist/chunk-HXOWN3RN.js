@@ -1,10 +1,8 @@
 import {
-  withFileLock
-} from "./chunk-IV2ZWQA3.js";
-import {
   loadEncryptedText,
-  saveEncryptedText
-} from "./chunk-K5Y6JP2B.js";
+  saveEncryptedText,
+  tryWithFileLock
+} from "./chunk-XCB7HYOM.js";
 
 // src/profile/inbox.ts
 import fs from "fs";
@@ -19,7 +17,7 @@ function truncateNote(note) {
   return oneLine.length > MAX_NOTE_CHARS ? oneLine.slice(0, MAX_NOTE_CHARS) + "\u2026" : oneLine;
 }
 function inboxAppend(guard, file, item) {
-  return withFileLock(file, () => inboxAppendLocked(guard, file, item));
+  return tryWithFileLock(file, () => inboxAppendLocked(guard, file, item));
 }
 function inboxAppendLocked(guard, file, item) {
   const full = {
@@ -64,6 +62,37 @@ function inboxDrain(guard, file) {
 function inboxClear(guard, file) {
   saveEncryptedText(guard, file, "");
 }
+function inboxRemoveIds(guard, file, ids, keys) {
+  const result = tryWithFileLock(file, () => {
+    const raw = loadEncryptedText(guard, file);
+    if (!raw) return { removed: 0, kept: 0 };
+    let removed = 0;
+    let kept = 0;
+    const out = [];
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let item;
+      try {
+        item = JSON.parse(trimmed);
+      } catch {
+        removed += 1;
+        continue;
+      }
+      const byId = typeof item.id === "string" && ids.has(item.id);
+      const byKey = keys !== void 0 && keys.has(`${item.kind}#${item.ref}`);
+      if (byId || byKey) {
+        removed += 1;
+        continue;
+      }
+      out.push(JSON.stringify(item));
+      kept += 1;
+    }
+    saveEncryptedText(guard, file, out.length > 0 ? out.join("\n") + "\n" : "");
+    return { removed, kept };
+  });
+  return result ?? { removed: 0, kept: 0, conflicted: true };
+}
 function dedupeItems(items) {
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -106,8 +135,9 @@ export {
   inboxCount,
   inboxDrain,
   inboxClear,
+  inboxRemoveIds,
   dedupeItems,
   inboxHealthCheck,
   inboxFileExists
 };
-//# sourceMappingURL=chunk-3MDBU6WY.js.map
+//# sourceMappingURL=chunk-HXOWN3RN.js.map

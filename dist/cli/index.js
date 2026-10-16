@@ -3,7 +3,7 @@ import {
   collectMigrationEntries,
   decryptContainer,
   encryptContainer
-} from "../chunk-XFNCTOW7.js";
+} from "../chunk-VQMT5YAY.js";
 import {
   BUNDLED_PRESET_ID,
   conventionalUserPresetRoot,
@@ -28,7 +28,7 @@ import {
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-WLZSABBH.js";
+} from "../chunk-KFQ3LDZY.js";
 import {
   activeSeeds,
   addSeed,
@@ -38,20 +38,25 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-JDH2LDFS.js";
-import "../chunk-IV2ZWQA3.js";
+} from "../chunk-MTT27TSV.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath,
   pruneAuditFile,
   rebuildProfile,
-  verifyProfile
-} from "../chunk-CUOSICYJ.js";
+  verifyProfile,
+  wipeProfile
+} from "../chunk-6RC24BMQ.js";
 import {
+  containerKind,
+  dshHomeDir,
   initWorkspace,
+  matchFilesRecursive,
+  upgradeVaultTree,
+  vaultKeyPath,
   writeText
-} from "../chunk-K5Y6JP2B.js";
+} from "../chunk-XCB7HYOM.js";
 import {
   atomicWriteFileSync,
   shredFileSync
@@ -60,7 +65,6 @@ import {
 // src/cli/index.ts
 import { spawn } from "child_process";
 import fs2 from "fs";
-import os from "os";
 import path2 from "path";
 
 // src/vault/burn-list.ts
@@ -73,6 +77,12 @@ var BURN_LIST = [
   // H-19: the rotation shards hold the whole profile history and are written
   // in PLAINTEXT — a burn that leaves them behind leaves the memory readable.
   { prefix: "profile_journal.archive-", note: "\u753B\u50CF\u6D41\u6C34\u5F52\u6863\u5206\u7247\uFF08\u660E\u6587\uFF1Bjournal \u8F6E\u8F6C\u4EA7\u7269\uFF09" },
+  // HB-07 (2026-10-17): applyMigrationEntries copies every file it overwrites
+  // to `${abs}.bak-migrate-${stamp}`. Those copies hold the OLD memory — a burn
+  // that left them behind left the thing the user asked to destroy. The
+  // `.incoming-` staging files are the same data, only younger.
+  { match: /\.bak-migrate-\d{14}$/, note: "\u8FC1\u79FB\u5907\u4EFD\uFF08\u8FC1\u79FB\u5BFC\u5165\u65F6\u7684\u539F\u6587\u4EF6\u526F\u672C\uFF09" },
+  { match: /\.incoming-\d{14}$/, note: "\u8FC1\u79FB\u6682\u5B58\u6B8B\u7559\uFF08\u5D29\u6E83\u9057\u7559\u7684\u5BFC\u5165\u526F\u672C\uFF09" },
   { file: "profile_rhythm.json", note: "\u4F5C\u606F\u805A\u5408\uFF08\u7EAF\u7EDF\u8BA1\uFF09" },
   { file: "screen.json", note: "\u5C4F\u5E55\u5FEB\u7167\uFF08\u52A0\u5BC6\uFF09" },
   { file: "screen.jpg", note: "\u622A\u56FE\uFF08\u52A0\u5BC6\uFF09" },
@@ -102,13 +112,22 @@ function prefixMatches(guard, paths, prefix) {
     return [];
   }
 }
+function matchTargets(guard, paths, re) {
+  try {
+    return matchFilesRecursive(guard.assert(paths.dataDir), re);
+  } catch {
+    return [];
+  }
+}
 function planBurn(guard, paths, all = false) {
   const plan = [];
   for (const t of BURN_LIST) {
-    const rel = t.file ?? t.dir ?? t.prefix ?? "";
+    const rel = t.file ?? t.dir ?? t.prefix ?? String(t.match ?? "");
     if (!all && rel === SETTINGS_DIR) continue;
     let exists = false;
-    if (t.prefix) {
+    if (t.match) {
+      exists = matchTargets(guard, paths, t.match).length > 0;
+    } else if (t.prefix) {
       exists = prefixMatches(guard, paths, t.prefix).length > 0;
     } else {
       try {
@@ -129,6 +148,21 @@ function executeBurn(guard, paths, opts = {}) {
   const missing = [];
   const passes = opts.shredPasses ?? 3;
   for (const t of BURN_LIST) {
+    if (t.match) {
+      const matches = matchTargets(guard, paths, t.match);
+      if (matches.length === 0) {
+        missing.push(String(t.match));
+        continue;
+      }
+      for (const f of matches) {
+        try {
+          shredFileSync(guard.assert(path.join(paths.dataDir, f)), passes);
+          burned.push(f);
+        } catch {
+        }
+      }
+      continue;
+    }
     if (t.prefix) {
       const matches = prefixMatches(guard, paths, t.prefix);
       if (matches.length === 0) {
@@ -144,7 +178,7 @@ function executeBurn(guard, paths, opts = {}) {
       }
       continue;
     }
-    const rel = t.file ?? t.dir;
+    const rel = t.file ?? t.dir ?? String(t.match ?? "");
     const abs = path.join(paths.dataDir, rel);
     let absCanon;
     try {
@@ -214,6 +248,8 @@ function usage() {
     "  profile wipe                      wipe profile data (asks --yes)",
     "  weekly list                       list generated weekly reports",
     "  weekly show [file]                print a report (default: newest)",
+    "  vault status                      encryption containers on disk + master key file",
+    "  vault upgrade                     rewrite legacy KHBV1 files as KHBV2 (in place)",
     "  migrate export [file]             pack memory files into a passphrase container (passphrase: 2 stdin lines)",
     "  migrate import <file>             restore a container into this workspace (passphrase: 1 stdin line)",
     "  burn [--yes] [--all]              shred runtime data (settings kept unless --all)",
@@ -521,18 +557,16 @@ async function verbProfile(c) {
     }
     case "wipe": {
       if (!rest.includes("--yes")) {
-        console.log("REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)");
+        console.log("REFUSED: add --yes to wipe profile data (live files, snapshot, journal archives, migration copies)");
         return 1;
       }
-      for (const f of ["profile.json", "profile_inbox.jsonl", "profile_journal.jsonl"]) {
-        const abs = guard.assert(path2.join(paths.dataDir, f));
-        if (fs2.existsSync(abs)) fs2.rmSync(abs, { force: true });
-      }
-      console.log("WIPED (settings preserved; use burn for full shredding)");
+      const removed = wipeProfile(guard, paths.dataDir);
+      console.log(`WIPED ${removed.length} file(s) (settings preserved; use burn for full shredding)`);
+      for (const f of removed) console.log(`  - ${f}`);
       return 0;
     }
     case "snapshot": {
-      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-K5VHETTK.js");
+      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-RR4XGT3S.js");
       const { needed, lines } = snapshotDue(guard, paths.dataDir);
       console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
       if (!needed && !rest.includes("--force")) {
@@ -634,10 +668,10 @@ async function verbMigrate(c) {
 }
 async function verbSessions(c) {
   const { guard, paths } = c;
-  const root = path2.join(os.homedir(), ".dsh", "sessions");
+  const root = path2.join(dshHomeDir(), "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-ZPRGVDCB.js");
+    const { homeSessionId } = await import("../orchestrator-FJHKMHLO.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -656,7 +690,7 @@ async function verbBind(c) {
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-ZPRGVDCB.js");
+      const { homeSessionId } = await import("../orchestrator-FJHKMHLO.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -684,7 +718,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-ZPRGVDCB.js");
+      const { resetHomeSession } = await import("../orchestrator-FJHKMHLO.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }
@@ -729,6 +763,32 @@ async function verbPreset(c) {
   console.error("usage: preset status | install [--force] [--id <presetId>]");
   return 1;
 }
+async function verbVault(c) {
+  const { guard, paths, sub } = c;
+  const keyFile = vaultKeyPath();
+  const files = matchFilesRecursive(paths.dataDir, /./).filter(
+    (rel) => rel !== "vault.key" && !rel.startsWith("tmp/")
+  );
+  const counts = { v1: 0, v2: 0, plain: 0 };
+  for (const rel of files) {
+    counts[containerKind(path2.join(paths.dataDir, rel.split("/").join(path2.sep)))] += 1;
+  }
+  if (sub === void 0 || sub === "status") {
+    console.log(`data dir     : ${paths.dataDir}`);
+    console.log(`master key   : ${keyFile}${fs2.existsSync(keyFile) ? "" : " (not created yet; the next write makes it)"}`);
+    console.log(`containers   : ${counts.v2} KHBV2 (current), ${counts.v1} KHBV1 (legacy), ${counts.plain} plaintext`);
+    if (counts.v1 > 0) console.log("hint: run `vault upgrade` to rewrite the legacy files in place.");
+    return 0;
+  }
+  if (sub === "upgrade") {
+    const r = upgradeVaultTree(guard, paths.dataDir);
+    console.log(`UPGRADED ${r.upgraded} of ${r.scanned} file(s) to KHBV2`);
+    for (const f of r.failed) console.log(`  ! ${f.file}: ${f.reason}`);
+    return r.failed.length === 0 ? 0 : 1;
+  }
+  console.error("usage: vault status | upgrade");
+  return 1;
+}
 var VERBS = {
   status: verbStatus,
   seeds: verbSeeds,
@@ -738,6 +798,7 @@ var VERBS = {
   browse: verbBrowse,
   notify: verbNotify,
   profile: verbProfile,
+  vault: verbVault,
   burn: verbBurn,
   migrate: verbMigrate,
   sessions: verbSessions,
