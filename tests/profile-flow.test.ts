@@ -179,6 +179,29 @@ test('consolidation: per-run ops cap enforced', async () => {
   assert.equal(run.applied, policy.profile.maxOpsPerRun);
 });
 
+test('HB-02: observations that arrive during the model call survive the commit', async () => {
+  inboxAppend(guard, inboxFile(), {
+    kind: 'chat', at: new Date(NOW).toISOString(), ref: 'logs/heartbeat.jsonl#k1', note: '第一条观察',
+  });
+  // The model call is minutes long and the beat keeps writing the same file
+  // meanwhile. The old commit rewrote the inbox to '', so this second
+  // observation — never shown to the model — was destroyed.
+  const llm = async () => {
+    inboxAppend(guard, inboxFile(), {
+      kind: 'screen', at: new Date(NOW + 1000).toISOString(), ref: 'logs/heartbeat.jsonl#k2', note: '模型思考期间到达',
+    });
+    return JSON.stringify([
+      { op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'current', content: '在玩《杀戮尖塔2》', temporal: 'volatile', confidence: 0.6, why: '观察', evidence: ['o1'] },
+    ]);
+  };
+  const run = await runConsolidation(guard, paths, policy, llm, NOW);
+  assert.equal(run.ran, true);
+  assert.equal(run.applied, 1);
+  const left = inboxDrain(guard, inboxFile());
+  assert.equal(left.length, 1);
+  assert.equal(left[0]!.ref, 'logs/heartbeat.jsonl#k2');
+});
+
 test('consolidation single-flight: second concurrent call is refused', async () => {
   inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: 'sf1', note: '观察' });
   let release: () => void = () => {};

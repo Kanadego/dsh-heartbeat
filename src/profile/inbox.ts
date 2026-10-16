@@ -95,6 +95,50 @@ export function inboxClear(guard: PathGuard, file: string): void {
   saveEncryptedText(guard, file, '');
 }
 
+/**
+ * Drop only the items this run actually drained (HB-02). Clearing the whole
+ * file after a successful run also wiped observations that arrived while the
+ * model was thinking — the beat keeps appending during those minutes, and the
+ * inbox is the only record of a pending observation. Matching is by id, with
+ * the kind+ref dedupe key as a fallback for rows written before ids existed.
+ * Unparseable rows go away exactly as inboxDrain drops them.
+ */
+export function inboxRemoveIds(
+  guard: PathGuard,
+  file: string,
+  ids: ReadonlySet<string>,
+  keys?: ReadonlySet<string>,
+): { removed: number; kept: number } {
+  return withFileLock(file, () => {
+    const raw = loadEncryptedText(guard, file);
+    if (!raw) return { removed: 0, kept: 0 };
+    let removed = 0;
+    let kept = 0;
+    const out: string[] = [];
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let item: InboxItem;
+      try {
+        item = JSON.parse(trimmed) as InboxItem;
+      } catch {
+        removed += 1;
+        continue;
+      }
+      const byId = typeof item.id === 'string' && ids.has(item.id);
+      const byKey = keys !== undefined && keys.has(`${item.kind}#${item.ref}`);
+      if (byId || byKey) {
+        removed += 1;
+        continue;
+      }
+      out.push(JSON.stringify(item));
+      kept += 1;
+    }
+    saveEncryptedText(guard, file, out.length > 0 ? out.join('\n') + '\n' : '');
+    return { removed, kept };
+  });
+}
+
 /** Dedupe key (§3.7): same source kind + same ref must not flood the queue. */
 export function dedupeItems(items: InboxItem[]): InboxItem[] {
   const seen = new Set<string>();

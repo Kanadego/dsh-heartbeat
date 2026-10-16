@@ -8,8 +8,9 @@
 // turn with TOOLS DISABLED (host model channel, no cloud credentials) - the
 // caller injects it as `llm`.
 //
-// Crash semantics: the inbox survives failed runs (§3.7) - drain commits only
-// after the run succeeded.
+// Crash semantics: the inbox survives failed runs (§3.7) - and a successful
+// run only removes the items it actually drained (HB-02), so observations that
+// arrive while the model is thinking stay queued.
 
 import { randomUUID } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
@@ -17,11 +18,11 @@ import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { appendAuditLine } from '../core/audit-log.js';
 import {
-  inboxClear,
   inboxCount,
   inboxDrain,
   dedupeItems,
   inboxFilePath,
+  inboxRemoveIds,
 } from './inbox.js';
 import { loadProfile, applyOpsToDoc, runDeterministicAging, persistWithJournal } from './store.js';
 import { loadProfileSchema, type ProfileSchema } from './schema.js';
@@ -253,9 +254,14 @@ export async function runConsolidation(
       });
     }
     const doc = loadProfile(guard, paths.dataDir + '/profile.json');
-    const all = dedupeItems(inboxDrain(guard, inboxFilePath(paths.dataDir)));
+    const drained = inboxDrain(guard, inboxFilePath(paths.dataDir));
+    const all = dedupeItems(drained);
     // ③A: this Map is the ONLY source of evidence for the whole run.
     const observationsById = new Map(all.map((item, i) => [observationId(i), item]));
+    // HB-02: remember exactly what this run saw. The write-back at the end
+    // removes these and keeps anything appended while the model was running.
+    const drainedIds = new Set(drained.map((item) => item.id).filter((id): id is string => typeof id === 'string'));
+    const drainedKeys = new Set(drained.map((item) => `${item.kind}#${item.ref}`));
 
     // H-56 (2026-10-07): the entry view now includes `psy` too. Leaving it out
     // let the model ADD into a partition it could never see: UPDATE needs an
@@ -345,13 +351,14 @@ export async function runConsolidation(
         chatSeedsAdded += 1;
       } catch { /* a bad seed must not fail the consolidation run */ }
     }
-    inboxClear(guard, inboxFilePath(paths.dataDir)); // drain commits only on success
+    // drain commits only on success, and only for what this run drained (HB-02)
+    const inboxResult = inboxRemoveIds(guard, inboxFilePath(paths.dataDir), drainedIds, drainedKeys);
     markConsolidation(guard, paths, now);
     appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
       event: 'consolidation', runId,
       applied: report.applied.length, rejected: rejected.length,
       volatileExpired: aged.volatileExpired, lowActivityMarked: aged.lowActivityMarked,
-      chatSeeds: chatSeedsAdded,
+      chatSeeds: chatSeedsAdded, inboxKept: inboxResult.kept,
     });
     return {
       ran: true, reason: 'ok',
