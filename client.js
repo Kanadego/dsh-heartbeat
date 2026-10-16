@@ -199,12 +199,12 @@ window.__ModuleLoader__.load({
 				);
 			}
 
-			// ── 素材池（v1.9.3）：话题素材与聊天素材分开展示 ───────────────
-			// 两组各自带计数 + 固定高度滚动区，长池子也不会把卡片顶爆。
+			// ── 素材池（v1.9.3 二版）：话题 / 聊天 用按钮切换 ──────────────
+			// 一次只看一类（和画像分区同一套交互），归档条目跟在自己那类下面。
 			function SeedsSection() {
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
-				const [showArchived, setShowArchived] = React.useState(false);
+				const [tab, setTab] = React.useState("topic");
 				const [confirmId, setConfirmId] = React.useState(null);
 				const reload = React.useCallback(() => {
 					rpc("seeds.list").then(setData, (e) => setError(String(e).slice(0, 100)));
@@ -224,27 +224,31 @@ window.__ModuleLoader__.load({
 						: React.createElement("button", { style: buttonGhost, onClick: () => setConfirmId(s.id) }, "删除"),
 				);
 				const isChat = (s) => (s.category || "topic") === "chat";
-				const block = (title, list, note, archived) => React.createElement("div", { key: title },
-					React.createElement("div", { style: groupHead }, title + "（" + list.length + "）"),
-					note ? React.createElement("div", { style: hintStyle }, note) : null,
-					list.length === 0
-						? React.createElement("div", { style: hintStyle }, "（这组是空的）")
-						: React.createElement("div", { style: scrollBox }, list.map((s) => row(s, archived))),
-				);
 				const topics = data.active.filter((s) => !isChat(s));
 				const chats = data.active.filter(isChat);
+				const active = tab === "chat" ? chats : topics;
+				const archived = (tab === "chat" ? data.archived.filter(isChat) : data.archived.filter((s) => !isChat(s)));
+				const tabButton = (key, label, count) => React.createElement("button", {
+					key,
+					style: tab === key ? buttonStyle : buttonGhost,
+					onClick: () => setTab(key),
+				}, label + "（" + count + "）");
 				return React.createElement(
 					"div",
 					null,
 					React.createElement("div", { style: hintStyle }, "活跃 ", data.active.length, " / ", data.cap, " 条"),
-					block("话题素材", topics, "浏览流、手写、画像喂进来的：随机挑，可重复用"),
-					block("聊天素材", chats, "对话里长出来的：说过一次就算用掉"),
-					data.active.length === 0 ? React.createElement("div", { style: hintStyle }, "（池子是空的——浏览流和画像会慢慢喂养它）") : null,
-					React.createElement("div", { style: rowStyle },
-						React.createElement("button", { style: buttonGhost, onClick: () => setShowArchived(!showArchived) }, showArchived ? "收起归档区" : "归档区（" + data.archived.length + "）")),
-					showArchived ? React.createElement("div", null,
-						block("话题素材 · 归档", data.archived.filter((s) => !isChat(s)), null, true),
-						block("聊天素材 · 归档", data.archived.filter(isChat), null, true)) : null,
+					React.createElement("div", { style: tabRow },
+						tabButton("topic", "话题素材", topics.length),
+						tabButton("chat", "聊天素材", chats.length)),
+					React.createElement("div", { style: hintStyle }, tab === "chat"
+						? "对话里长出来的：说过一次就算用掉"
+						: "浏览流、手写、画像喂进来的：随机挑，可重复用"),
+					active.length === 0
+						? React.createElement("div", { style: hintStyle }, "（这类还没有条目）")
+						: React.createElement("div", { style: scrollBox }, active.map((s) => row(s, false))),
+					archived.length === 0 ? null : React.createElement("div", null,
+						React.createElement("div", { style: groupHead }, "归档（" + archived.length + "）"),
+						React.createElement("div", { style: scrollSmall }, archived.map((s) => row(s, true)))),
 				);
 			}
 
@@ -330,6 +334,7 @@ window.__ModuleLoader__.load({
 			// v1.9.3：分区条目一多就顶到屏幕外，给个固定高度的滚动区。
 			const scrollBox = { maxHeight: 320, overflowY: "auto", padding: "4px 6px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6 };
 			const groupHead = { fontSize: 12.5, fontWeight: 600, margin: "10px 0 2px" };
+			const scrollSmall = { ...scrollBox, maxHeight: 200 };
 			const entryHead = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 2, wordBreak: "break-word" };
 			const entryBody = { fontSize: 12.5, lineHeight: 1.65, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)", margin: "2px 0" };
 			const tabRow = { display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0" };
@@ -370,15 +375,16 @@ window.__ModuleLoader__.load({
 							React.createElement("div", { style: hintStyle }, digest
 								? "共 " + digest.totalChars + " / " + digest.budgetChars + " 字符（" + (digest.withinBudget ? "在预算内" : "超预算") + "）；按预算省略：处境 " + om.tact + " 条、话题 " + om.topic + " 条、兴趣 " + om.wander + " 条"
 								: "加载中…"),
-							React.createElement("div", null,
-								React.createElement("b", null, "处境切面"),
-								React.createElement("div", { style: entryBody }, (digest && digest.tact) || "(空)")),
-							React.createElement("div", null,
-								React.createElement("b", null, "话题切面"),
-								React.createElement("div", { style: entryBody }, (digest && digest.topic) || "(空)")),
-							React.createElement("div", null,
-								React.createElement("b", null, "兴趣切面"),
-								React.createElement("div", { style: entryBody }, (digest && digest.wander) || "(空)")))
+							React.createElement("div", { style: scrollBox },
+								React.createElement("div", null,
+									React.createElement("b", null, "处境切面"),
+									React.createElement("div", { style: entryBody }, (digest && digest.tact) || "(空)")),
+								React.createElement("div", null,
+									React.createElement("b", null, "话题切面"),
+									React.createElement("div", { style: entryBody }, (digest && digest.topic) || "(空)")),
+								React.createElement("div", null,
+									React.createElement("b", null, "兴趣切面"),
+									React.createElement("div", { style: entryBody }, (digest && digest.wander) || "(空)"))))
 						: React.createElement("div", null,
 							React.createElement("div", { style: hintStyle }, "有效 " + group.valid + " 条 / 历史 " + (group.total - group.valid) + " 条（过期条目不进引擎室输入，也不在这里列出）"),
 							entries.length === 0
