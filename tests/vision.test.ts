@@ -9,8 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
-import { encryptFile } from '../src/vault/vault.js';
-import { screenJpgPath } from '../src/screen/screenpulse.js';
+import { encryptFile, resetVaultKeyCacheForTest, saveJson } from '../src/vault/vault.js';
+import { screenJpgPath, screenJsonPath, screenStampPath } from '../src/screen/screenpulse.js';
 import { describeScreenShot, extractSummary, resolveModlensMain } from '../src/screen/vision.js';
 
 let sandbox = '';
@@ -21,6 +21,7 @@ beforeEach(() => {
   process.env.HEARTBEAT_DATA_DIR = path.join(sandbox, 'data');
   resetWorkspaceForTest();
   initWorkspace();
+  resetVaultKeyCacheForTest();
   guard = createPathGuard(workspace().dataDir);
 });
 
@@ -28,7 +29,34 @@ after(() => {
   resetWorkspaceForTest();
   fs.rmSync(sandbox, { recursive: true, force: true });
   delete process.env.HEARTBEAT_DATA_DIR;
+  resetVaultKeyCacheForTest();
 });
+
+const STAMP_AT = '2026-10-17T05:41:00.000Z';
+
+/**
+ * HB-15: vision only accepts a shot that carries this beat's stamp, so a test
+ * must lay down the same triple the collector commits - encrypted jpg +
+ * screen.json + screen.capture naming one captured_at - not just a jpg.
+ */
+function writeCurrentShot(plain = 'fakejpeg'): void {
+  const paths = workspace();
+  const tmpShot = path.join(paths.tmpDir, 'plain.jpg');
+  fs.writeFileSync(tmpShot, plain);
+  encryptFile(guard, tmpShot, screenJpgPath(paths));
+  fs.rmSync(tmpShot, { force: true });
+  saveJson(guard, screenJsonPath(paths), {
+    title: '',
+    process: '',
+    pid: 0,
+    rect: null,
+    screen: null,
+    focus: { title: '', process: '', pid: 0 },
+    windows: [],
+    captured_at: STAMP_AT,
+  });
+  fs.writeFileSync(screenStampPath(paths), STAMP_AT, 'utf8');
+}
 
 test('extractSummary: handles the known envelopes and rejects empty output', () => {
   assert.equal(extractSummary(JSON.stringify({ result: { summary: '正在爬塔(杀戮尖塔2)' } })), '正在爬塔(杀戮尖塔2)');
@@ -52,10 +80,7 @@ test('resolveModlensMain: null when the package is absent, real file when presen
 });
 
 test('describeScreenShot: happy path — CLI called on the decrypted shot, temp files burned', async () => {
-  const tmpShot = path.join(workspace().tmpDir, 'plain.jpg');
-  fs.writeFileSync(tmpShot, 'fakejpeg');
-  encryptFile(guard, tmpShot, screenJpgPath(workspace()));
-  fs.rmSync(tmpShot, { force: true });
+  writeCurrentShot();
   const seen: { img?: string; out?: string } = {};
   const spawnCli = async (_cmd: string, args: string[]) => {
     seen.img = args[2];
@@ -80,10 +105,7 @@ test('describeScreenShot: happy path — CLI called on the decrypted shot, temp 
 
 test('describeScreenShot: CLI failure and no-shot both yield ok:false (no summary)', async () => {
   // the exit-3 branch needs a shot to exist, else no-shot fires first
-  const tmpShot = path.join(workspace().tmpDir, 'plain.jpg');
-  fs.writeFileSync(tmpShot, 'fakejpeg');
-  encryptFile(guard, tmpShot, screenJpgPath(workspace()));
-  fs.rmSync(tmpShot, { force: true });
+  writeCurrentShot();
   const fail = await describeScreenShot(guard, workspace(), {
     moduleUrl: import.meta.url,
     mainPath: path.join(workspace().tmpDir, 'stub.js'),
@@ -104,10 +126,7 @@ test('describeScreenShot: CLI failure and no-shot both yield ok:false (no summar
 });
 
 test('describeScreenShot: spawn rejection (timeout) is caught, not thrown', async () => {
-  const tmpShot = path.join(workspace().tmpDir, 'plain.jpg');
-  fs.writeFileSync(tmpShot, 'fakejpeg');
-  encryptFile(guard, tmpShot, screenJpgPath(workspace()));
-  fs.rmSync(tmpShot, { force: true });
+  writeCurrentShot();
   const v = await describeScreenShot(guard, workspace(), {
     moduleUrl: import.meta.url,
     mainPath: path.join(workspace().tmpDir, 'stub.js'),
@@ -118,10 +137,7 @@ test('describeScreenShot: spawn rejection (timeout) is caught, not thrown', asyn
 });
 
 test('provider pin: data/settings/vision.json overrides the default provider', async () => {
-  const tmpShot = path.join(workspace().tmpDir, 'plain.jpg');
-  fs.writeFileSync(tmpShot, 'fakejpeg');
-  encryptFile(guard, tmpShot, screenJpgPath(workspace()));
-  fs.rmSync(tmpShot, { force: true });
+  writeCurrentShot();
   fs.writeFileSync(path.join(workspace().settingsDir, 'vision.json'), JSON.stringify({ provider: 'gemini-api' }));
   let pinned = '';
   const spawnCli = async (_cmd: string, args: string[]) => {

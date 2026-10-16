@@ -46,6 +46,52 @@ export function screenJpgPath(paths: WorkspacePaths): string {
   return path.join(paths.dataDir, SCREEN_JPG);
 }
 
+const SCREEN_STAMP = 'screen.capture';
+
+/**
+ * HB-15: the beat stamp. It is written in the same commit as the screenshot and
+ * the screen.json snapshot, and dropped with them; it names the captured_at
+ * that both carry. A picture on disk is only "this beat's" when the stamp says
+ * so - existence alone cannot tell a fresh shot from last beat's leftover.
+ * Plaintext on purpose: one ISO timestamp, no private content.
+ */
+export function screenStampPath(paths: WorkspacePaths): string {
+  return path.join(paths.dataDir, SCREEN_STAMP);
+}
+
+/** Read the beat stamp; '' when absent or unreadable. */
+export function readScreenStamp(paths: WorkspacePaths): string {
+  try {
+    return fs.readFileSync(screenStampPath(paths), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * HB-15: is the picture on disk this beat's own? True only when the file is
+ * there, the stamp is there, and both name the same captured_at as the
+ * screen.json snapshot. Existence is not ownership - a leftover from an earlier
+ * beat fails this test and must not be described as "now".
+ */
+export function shotIsCurrent(guard: PathGuard, paths: WorkspacePaths): boolean {
+  const f = screenJpgPath(paths);
+  if (!fs.existsSync(guard.assert(f))) return false;
+  const stamp = readScreenStamp(paths);
+  const capturedAt = readScreenJson(guard, paths)?.captured_at ?? '';
+  return Boolean(stamp) && stamp === capturedAt;
+}
+
+/**
+ * HB-15 (B): drop a screenshot that does not belong to this beat - burn the
+ * image and remove its stamp, so nothing downstream can present it as "what you
+ * are doing now".
+ */
+export function dropStaleShot(guard: PathGuard, paths: WorkspacePaths): void {
+  burnFileSync(guard.assert(screenJpgPath(paths)));
+  fs.rmSync(screenStampPath(paths), { force: true });
+}
+
 /**
  * Run the collector and encrypt results into data/screen.json + screen.jpg.
  * Failure degrades gracefully: heartbeat continues with text-only signals.
@@ -64,6 +110,8 @@ export async function collectScreen(
   const rawJson = path.join(paths.tmpDir, 'screen.raw.json');
   const rawJpg = path.join(paths.tmpDir, 'screen.raw.jpg');
   let encJson = '';
+  /** HB-15: only a screenshot encrypted during THIS beat counts as one. */
+  let shotThisBeat = false;
   try {
     const r = await runPowerShellFile(
       path.join(paths.assetsDir, 'screenpulse.ps1'),
@@ -77,17 +125,31 @@ export async function collectScreen(
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: 'aborted' };
     }
     if (r.status !== 0) {
+      // HB-15 (B): the collector failed, so this beat has no picture of its
+      // own. Whatever screen.jpg is still on disk belongs to an earlier beat
+      // and would be read as the current screen - drop it instead of leaving
+      // it to be mistaken for now.
+      dropStaleShot(guard, paths);
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }
     const raw = fs.readFileSync(rawJson, 'utf8');
     const meta = JSON.parse(raw) as ScreenJson & { shot_path?: string };
     if (meta.shot_path && fs.existsSync(meta.shot_path)) {
       try {
+        // Image first, then its stamp: only when both land is the shot this
+        // beat's own. A half-finished pair is dropped right below.
         encryptFile(guard, meta.shot_path, screenJpgPath(paths));
+        fs.writeFileSync(
+          screenStampPath(paths),
+          String(meta.captured_at ?? new Date(now).toISOString()),
+          'utf8',
+        );
+        shotThisBeat = true;
       } catch {
-        // shot encryption failure: text signals only
+        // shot encryption (or stamping) failure: text signals only
       }
     }
+    if (!shotThisBeat) dropStaleShot(guard, paths);
     const { shot_path: _drop, ...clean } = meta;
     void _drop;
     encJson = path.join(paths.tmpDir, `screen.enc.${now}.json`);
@@ -96,10 +158,12 @@ export async function collectScreen(
     return {
       ok: true,
       capturedAt: meta.captured_at ?? null,
-      hasShot: fs.existsSync(screenJpgPath(paths)),
+      hasShot: shotThisBeat,
       visibleCount: Array.isArray(meta.windows) ? meta.windows.length : 0,
     };
   } catch (e) {
+    // HB-15 (B): a beat that never produced a complete pulse keeps no picture.
+    dropStaleShot(guard, paths);
     return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: String(e) };
   } finally {
     for (const leftover of [rawJson, rawJpg, encJson]) {
@@ -129,7 +193,9 @@ export function readScreenJson(guard: PathGuard, paths: WorkspacePaths): ScreenJ
  */
 export function unlockShot(guard: PathGuard, paths: WorkspacePaths): string | null {
   const f = screenJpgPath(paths);
-  if (!fs.existsSync(guard.assert(f))) return null;
+  // HB-15: refuse anything that is not this beat's shot; returning null keeps
+  // vision off rather than describing an old screen as now.
+  if (!shotIsCurrent(guard, paths)) return null;
   const tmp = path.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
   try {
     decryptFile(guard, f, guard.assert(tmp));
