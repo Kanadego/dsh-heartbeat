@@ -67,16 +67,31 @@ export type ProfileOp =
   | { op: 'INVALIDATE'; id: string; why: string; evidence?: Evidence[] }
   | { op: 'NOOP'; why: string };
 
+/**
+ * Journal line schema version. Absent = v1: replay applies the applied ops
+ * permissively. v2 adds entries — the canonical, code-written post-run entry
+ * states (aging included) — and replay upserts those verbatim. That is what
+ * makes the live write path and replay ONE state machine (review ③A / HB-09).
+ */
+export const JOURNAL_VERSION = 2;
+
 export interface JournalRecord {
+  v?: number;
   ts: string;
   runId: string;
+  /** The model's original intent: audit mirror + the v1 replay path. */
   applied: ProfileOp[];
-  rejected: { op: ProfileOp; reason: string }[];
+  rejected: { op: unknown; reason: string }[];
+  /** v2 replay path: one full entry snapshot per entry this run touched.
+   *  Written by code; the model can never reach this field. */
+  entries?: ProfileEntry[];
 }
 
 export interface ApplyReport {
   applied: ProfileOp[];
-  rejected: { op: ProfileOp; reason: string }[];
+  rejected: { op: unknown; reason: string }[];
+  /** v2 journal events: the full post-state of every entry this run touched. */
+  entries?: ProfileEntry[];
 }
 
 export const PARTITIONS: readonly Partition[] = ['interest', 'projects', 'comm', 'psy'];

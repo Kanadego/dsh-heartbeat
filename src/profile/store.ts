@@ -12,6 +12,7 @@ import type { Policy } from '../config/schema.js';
 import {
   CONFIDENCE_CAP,
   emptyProfile,
+  JOURNAL_VERSION,
   PARTITIONS,
   type ApplyReport,
   type Evidence,
@@ -24,6 +25,7 @@ import {
   type ProfileOp,
 } from './types.js';
 import { checkAddAgainstSchema, type ProfileSchema } from './schema.js';
+import { tryParseJournalRecord } from './shapes.js';
 
 const DAY_MS = 86_400_000;
 
@@ -74,28 +76,83 @@ function listArchiveFiles(guard: PathGuard, dataDir: string): string[] {
 }
 
 /** Replay one JSONL text into `doc`, skipping records at/before the baseline. */
-function replayText(doc: ProfileDoc, text: string, baselineTs: string, stats: { records: number; truncatedTail: number; isLive: boolean }): void {
+function replayText(
+  doc: ProfileDoc,
+  text: string,
+  baselineTs: string,
+  stats: { records: number; truncatedTail: number; badRecords: number; isLive: boolean },
+): void {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i]!.trim();
     if (!trimmed) continue;
-    try {
-      const rec = JSON.parse(trimmed) as JournalRecord;
-      // Baseline skip: only records CARRYING a ts can be proven folded. A
-      // ts-less record is always applied (applyOpPermissive tolerates it).
-      if (baselineTs && rec.ts && String(rec.ts) <= baselineTs) continue;
-      for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
-      stats.records += 1;
-    } catch {
-      // Torn tail only counts on the LIVE journal — archives are closed files.
+    // A torn tail only counts on the LIVE journal — archives are closed files.
+    const tornTail = (): boolean => {
       const isLast = lines.slice(i + 1).every((l) => !l.trim());
       if (stats.isLive && isLast) {
         stats.truncatedTail = lines.length - i;
-        break;
+        return true;
       }
-      // mid-file corrupt record: skip (journal stays append-only/immutable)
+      return false;
+    };
+    let rec: JournalRecord | null = null;
+    try {
+      rec = tryParseJournalRecord(JSON.parse(trimmed));
+    } catch {
+      rec = null;
+    }
+    if (!rec) {
+      if (tornTail()) break;
+      // mid-file unreadable record: count it and keep going (the journal is
+      // append-only/immutable, so a bad line is never rewritten).
+      stats.badRecords += 1;
+      continue;
+    }
+    // Baseline skip: only records CARRYING a ts can be proven folded. A
+    // ts-less record is always applied (applyOpPermissive tolerates it).
+    if (baselineTs && rec.ts && String(rec.ts) <= baselineTs) continue;
+    try {
+      if (rec.v === JOURNAL_VERSION && rec.entries) {
+        // v2 (③A): the record carries each touched entry's FULL final state,
+        // so replay is an upsert; live and replay share one state machine (HB-09).
+        for (const entry of rec.entries) upsertEntry(doc, entry);
+      } else {
+        for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
+      }
+      stats.records += 1;
+    } catch {
+      stats.badRecords += 1;
     }
   }
+}
+
+function bucketFor(doc: ProfileDoc, partition: Partition): { entries: ProfileEntry[] } {
+  let bucket = doc.partitions[partition];
+  if (!bucket) {
+    bucket = { entries: [] };
+    doc.partitions[partition] = bucket;
+  }
+  return bucket;
+}
+
+/** Journal v2 replay: `entry` is the entry's final state, so replay is an
+ *  upsert by id (position preserved for updates, appended for new entries). */
+function upsertEntry(doc: ProfileDoc, entry: ProfileEntry): void {
+  const next = structuredClone(entry);
+  for (const p of PARTITIONS) {
+    const list = doc.partitions[p]?.entries;
+    if (!list) continue;
+    const at = list.findIndex((e) => e.id === next.id);
+    if (at < 0) continue;
+    if (p === next.partition) {
+      list[at] = next;
+    } else {
+      list.splice(at, 1);
+      bucketFor(doc, next.partition).entries.push(next);
+    }
+    return;
+  }
+  bucketFor(doc, next.partition).entries.push(next);
 }
 
 /** Full replay: snapshot basepoint + archive shards + live journal. */
@@ -103,17 +160,17 @@ export function replayJournal(guard: PathGuard, dataDir: string): ReplayResult {
   const snap = loadSnapshot(guard, dataDir);
   const doc = snap ? snap.doc : emptyProfile();
   const baselineTs = snap?.baselineTs ?? '';
-  const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, isLive: false };
+  const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, badRecords: 0, isLive: false };
   for (const file of listArchiveFiles(guard, dataDir)) {
     try {
       // shard record counts are not reported (the snapshot already folded
       // them); only the live journal's torn tail is meaningful.
-      replayText(doc, fs.readFileSync(path.join(dataDir, file), 'utf8'), baselineTs, { records: 0, truncatedTail: 0, isLive: false });
+      replayText(doc, fs.readFileSync(path.join(dataDir, file), 'utf8'), baselineTs, { records: 0, truncatedTail: 0, badRecords: 0, isLive: false });
     } catch { /* unreadable shard: skip */ }
   }
   stats.isLive = true;
   replayText(doc, readText(guard, journalFilePath(dataDir), ''), baselineTs, stats);
-  return { doc, truncatedTail: stats.truncatedTail, records: stats.records };
+  return { doc, truncatedTail: stats.truncatedTail, records: stats.records, badRecords: stats.badRecords };
 }
 
 /** Every plaintext journal text in chronological order: archive shards first,
@@ -189,6 +246,8 @@ export function applyOpsToDoc(
 ): ApplyReport {
   const applied: ProfileOp[] = [];
   const rejected: { op: ProfileOp; reason: string }[] = [];
+  // Journal v2 events: one FULL snapshot per touched entry (HB-09).
+  const entries: ProfileEntry[] = [];
   const nowIso = new Date(now).toISOString();
 
   for (const op of ops) {
@@ -250,6 +309,7 @@ export function applyOpsToDoc(
       };
       op.assignedId = entry.id; // journal replay must reproduce this id
       doc.partitions[op.partition]!.entries.push(entry);
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
@@ -277,6 +337,7 @@ export function applyOpsToDoc(
       if (nextConfidence !== null) entry.confidence = nextConfidence;
       entry.updatedAt = nowIso;
       entry.updateCount += 1;
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
@@ -302,11 +363,12 @@ export function applyOpsToDoc(
       entry.updatedAt = nowIso;
       entry.updateCount += 1;
       if (op.evidence) entry.evidence.push(...op.evidence);
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
   }
-  return { applied, rejected };
+  return { applied, rejected, entries };
 }
 
 let dbSeq = 0;
@@ -316,8 +378,9 @@ export function runDeterministicAging(
   doc: ProfileDoc,
   policy: Policy,
   now: number,
-): { volatileExpired: number; lowActivityMarked: number } {
+): { volatileExpired: number; lowActivityMarked: number; entries: ProfileEntry[] } {
   const nowIso = new Date(now).toISOString();
+  const entries: ProfileEntry[] = [];
   let volatileExpired = 0;
   let lowActivityMarked = 0;
   for (const p of PARTITIONS) {
@@ -330,17 +393,22 @@ export function runDeterministicAging(
           e.updatedAt = nowIso;
           e.updateCount += 1;
           volatileExpired += 1;
+          entries.push(structuredClone(e));
         }
       } else if (!e.lowActivity && now - lastEvidence > policy.profile.stableLowActivityDays * DAY_MS) {
         e.lowActivity = true;
         lowActivityMarked += 1;
+        entries.push(structuredClone(e));
       }
     }
   }
-  return { volatileExpired, lowActivityMarked };
+  return { volatileExpired, lowActivityMarked, entries };
 }
 
-/** Persist the materialized view atomically + append the journal record. */
+/** Persist the materialized view atomically + append the journal record.
+ *  A record carrying `entries` (every touched entry's final state) is written
+ *  as v2 so replay is an upsert; a record without them stays v1 and replays
+ *  permissively, so old journals keep working unchanged. */
 export function persistWithJournal(
   guard: PathGuard,
   dataDir: string,
@@ -348,7 +416,8 @@ export function persistWithJournal(
   record: Omit<JournalRecord, 'ts'>,
 ): void {
   saveJson(guard, profileFilePath(dataDir), doc);
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...record });
+  const v = record.entries === undefined ? undefined : JOURNAL_VERSION;
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...record, v });
   const journal = journalFilePath(dataDir);
   try {
     fs.appendFileSync(guard.assert(journal), line + '\n', 'utf8');
@@ -407,6 +476,8 @@ export interface ReplayResult {
   doc: ProfileDoc;
   truncatedTail: number;
   records: number;
+  /** Journal lines that neither parsed nor replayed (counted, never fatal). */
+  badRecords?: number;
 }
 
 export interface VerifyReport {
