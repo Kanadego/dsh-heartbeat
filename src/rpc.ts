@@ -9,7 +9,9 @@
 // Bindings authority = data/settings/bindings.json (decision 2); the card is
 // just another client of the same host logic the CLI uses.
 // Every endpoint runs inside the workspace guard; results are {ok,value} or
-// {ok:false,error:{code,message,details}}.
+// {ok:false,error:{code,message,details}}. Verbs are dispatched through a Map
+// and, when the host's /api gate is missing, only GATE_SAFE_ENDPOINTS serve
+// (⑦A / HB-19, 2026-10-17).
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -47,18 +49,21 @@ import type { Policy } from './config/schema.js';
 export const RPC_ROUTE_PATH = '/api/heartbeat';
 
 /**
- * H-41 (2026-10-07): the endpoints that change or expose state on disk. They
- * are only reachable through the host's `/api` gate — this plugin holds no
- * credential of its own — so when that gate cannot be found they are refused
- * rather than served unauthenticated (see installHeartbeatRpc).
+ * ⑦A (2026-10-17 review, tightening H-41): the host's `/api` prefix gate is the
+ * only authentication this route has — the plugin holds no credential of its own.
+ * When that gate cannot be found the route fails closed: every verb is refused
+ * except this short list of read-only, low-sensitivity ones (liveness plus what
+ * the settings card needs to render). H-41+HB-19 refused six "destructive" verbs
+ * and served everything else, which left every memory-bearing read —
+ * `profile.digest`, `profile.partitions`, `seeds.list`, `interests.list`,
+ * `weekly.get`, `migrate.export` — open to anything that could POST to loopback.
  */
-const DESTRUCTIVE_ENDPOINTS = new Set([
-  'seeds.delete',
-  'migrate.import',
-  'bindings.remove',
-  'config.set',
-  'profile.export',
-  'interests.remove',
+const GATE_SAFE_ENDPOINTS = new Set([
+  'status',
+  'config.get',
+  'sessions.list',
+  'bindings.get',
+  'weekly.list',
 ]);
 
 interface RpcDeps {
@@ -540,7 +545,11 @@ export function installHeartbeatRpc(
       }
     };
 
-    const endpoints = buildEndpoints(deps, isLive);
+    // HB-19 (2026-10-17): a Map, not an object literal. `endpoints[verb]` on a
+    // plain object also resolves inherited keys ("constructor", "toString",
+    // "__proto__"), so a crafted verb could reach something that was never
+    // registered as an endpoint. Map.get has no prototype chain.
+    const endpoints = new Map<string, Endpoint>(Object.entries(buildEndpoints(deps, isLive)));
 
     // ── H-41 (2026-10-07): explicit dependency on the host's /api gate ────
     // This route is mounted under the host's `/api` prefix, and that prefix's
@@ -558,18 +567,18 @@ export function installHeartbeatRpc(
       try {
         appendAuditLine(deps.guard.assert(deps.paths.logsDir + '/heartbeat.jsonl'), {
           event: 'rpc_host_gate_missing',
-          detail: 'connection.admit/requestRejection absent; destructive endpoints disabled',
-          destructive: [...DESTRUCTIVE_ENDPOINTS],
+          detail: 'connection.admit/requestRejection absent; all but the low-sensitivity read-only verbs are refused (⑦A)',
+          allowed: [...GATE_SAFE_ENDPOINTS],
         });
       } catch { /* 审计失败不影响注册 */ }
     }
 
     const handler = async (endpoint: unknown, payload: unknown): Promise<RpcResult> => {
       const p = (payload ?? {}) as Record<string, unknown>;
-      const fn = typeof endpoint === 'string' ? endpoints[endpoint] : undefined;
+      const fn = typeof endpoint === 'string' ? endpoints.get(endpoint) : undefined;
       if (!fn) return err('bad-request', `unknown endpoint ${JSON.stringify(endpoint)}`);
-      if (!hostGuarded && DESTRUCTIVE_ENDPOINTS.has(endpoint as string)) {
-        return err('forbidden', `host gate unavailable; ${endpoint} is refused (H-41)`);
+      if (!hostGuarded && !GATE_SAFE_ENDPOINTS.has(endpoint as string)) {
+        return err('forbidden', `host gate unavailable; ${endpoint} is refused (H-41, ⑦A)`);
       }
       try {
         return await fn(p);

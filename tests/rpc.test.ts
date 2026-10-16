@@ -271,7 +271,7 @@ test('seeds.archive with an unknown id is a not-found result', async () => {
 
 // ── H-41: the host gate is a declared dependency, not an assumption ──────
 
-test('H-41: without the host gate the destructive endpoints are refused, read-only ones still serve', async () => {
+test('H-41/⑦A: without the host gate only the low-sensitivity read-only verbs serve', async () => {
   let captured: Route | undefined;
   const scoped = {
     connection: {
@@ -303,8 +303,27 @@ test('H-41: without the host gate the destructive endpoints are refused, read-on
   assert.equal(refused.error!.code, 'forbidden');
   assert.match(refused.error!.message, /H-41/);
 
-  const allowed = await post({ endpoint: 'seeds.list' });
+  // ⑦A (2026-10-17): a verb that only READS memory is refused too — H-41 left
+  // every non-destructive verb open, which included the whole profile.
+  for (const endpoint of ['seeds.list', 'interests.list', 'profile.digest', 'profile.partitions', 'migrate.export']) {
+    const r = await post({ endpoint });
+    assert.equal(r.ok, false, `${endpoint} must be refused without the host gate`);
+    assert.equal(r.error!.code, 'forbidden');
+  }
+
+  // …while the liveness/settings verbs the card needs still serve.
+  const allowed = await post({ endpoint: 'status' });
   assert.equal(allowed.ok, true);
+  const cfg = await post({ endpoint: 'config.get' });
+  assert.equal(cfg.ok, true);
+
+  // HB-19: a prototype key is not an endpoint. On a plain-object table these
+  // resolved to Object.prototype members instead of reporting bad-request.
+  for (const endpoint of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    const r = await post({ endpoint });
+    assert.equal(r.ok, false);
+    assert.equal(r.error!.code, 'bad-request', `${endpoint} must not resolve to an endpoint`);
+  }
 
   const audit = fs.readFileSync(path.join(workspace().logsDir, 'heartbeat.jsonl'), 'utf8');
   assert.match(audit, /rpc_host_gate_missing/);
