@@ -103,11 +103,11 @@ export function evaluateGate(input: GateInputs): GateDecision {
 
 // ── probing (IO layer) ──────────────────────────────────────────────────
 
-async function probeFrontWindowLive(guard: PathGuard, paths: WorkspacePaths): Promise<WindowInfo | null> {
+async function probeFrontWindowLive(guard: PathGuard, paths: WorkspacePaths, signal?: AbortSignal): Promise<WindowInfo | null> {
   const tmp = path.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
   try {
     const out = guard.assert(tmp);
-    const r = await runPowerShellFile(path.join(paths.assetsDir, 'frontwin.ps1'), ['-out', out], 10_000);
+    const r = await runPowerShellFile(path.join(paths.assetsDir, 'frontwin.ps1'), ['-out', out], 10_000, signal);
     if (r.status !== 0 || !fs.existsSync(out)) return null;
     return JSON.parse(fs.readFileSync(out, 'utf8')) as WindowInfo;
   } catch {
@@ -141,8 +141,12 @@ async function frontWindowClass(
   guard: PathGuard,
   paths: WorkspacePaths,
   rules: BusyRules,
+  signal?: AbortSignal,
 ): Promise<{ cls: 'busy' | 'idle' | 'unknown'; why: string; source: string }> {
-  const live = await probeFrontWindowLive(guard, paths);
+  const live = await probeFrontWindowLive(guard, paths, signal);
+  // ⑤A: an aborted beat never labels a window — fall through to the snapshot
+  // fallback so the caller sees "unknown" instead of a stale answer.
+  if (signal?.aborted) return { cls: 'unknown', why: 'aborted', source: 'none' };
   if (live) {
     const c = classifyWindow(live, rules);
     return { ...c, source: 'live' };
@@ -161,10 +165,11 @@ export async function runGate(
   policy: Policy,
   paths: WorkspacePaths,
   now = Date.now(),
+  signal?: AbortSignal,
 ): Promise<GateDecision> {
   const rules = loadBusyRules(paths.configDir);
   const sent = readSentState(guard, paths, now);
-  const front = await frontWindowClass(guard, paths, rules);
+  const front = await frontWindowClass(guard, paths, rules, signal);
   const pulse = readPulse(guard, paths);
   return evaluateGate({
     now,

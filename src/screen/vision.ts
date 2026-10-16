@@ -54,14 +54,19 @@ type SpawnCli = (
   cmd: string,
   args: string[],
   timeoutMs: number,
+  /** ⑤A: aborts the child itself — a JS-side timeout alone leaves the CLI
+   *  running and the beat cannot actually stop. */
+  signal?: AbortSignal,
 ) => Promise<{ code: number | null; stderr?: string }>;
 
-const defaultSpawn: SpawnCli = (cmd, args, timeoutMs) =>
+const defaultSpawn: SpawnCli = (cmd, args, timeoutMs, signal) =>
   new Promise((resolve, reject) => {
     // stderr is captured (capped) instead of swallowed: ModLens errors name
     // their cause, and without it a failed read is undebuggable (learned
     // 2026-09-18: the silent default channel failed for 97s with exit 1).
-    const child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    // `signal` (Node ≥15) kills the child and surfaces the abort as an
+    // 'error' event, which the handlers below turn into a rejection.
+    const child = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'], ...(signal ? { signal } : {}) });
     let stderr = '';
     child.stderr?.on('data', (d: Buffer) => {
       if (stderr.length < 4000) stderr += d.toString();
@@ -148,6 +153,7 @@ export async function describeScreenShot(
     prompt?: string;
     provider?: string;
     settings?: VisionSettings;
+    signal?: AbortSignal;
   },
 ): Promise<ScreenVision> {
   const mainJs = opts.mainPath ?? resolveModlensMain(opts.moduleUrl);
@@ -175,7 +181,7 @@ export async function describeScreenShot(
     ];
     const prompt = opts.prompt ?? settings.prompt;
     if (prompt) args.push('--prompt', prompt);
-    const { code, stderr } = await spawnCli(process.execPath, args, timeoutMs);
+    const { code, stderr } = await spawnCli(process.execPath, args, timeoutMs, opts.signal);
     if (code !== 0) {
       return { ok: false, summary: null, error: `modlens exit ${code}${stderr ? `: ${stderr.slice(0, 140)}` : ''}` };
     }
