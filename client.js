@@ -199,7 +199,8 @@ window.__ModuleLoader__.load({
 				);
 			}
 
-			// ── 素材池 ────────────────────────────────────────────────────
+			// ── 素材池（v1.9.3）：话题素材与聊天素材分开展示 ───────────────
+			// 两组各自带计数 + 固定高度滚动区，长池子也不会把卡片顶爆。
 			function SeedsSection() {
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
@@ -213,8 +214,8 @@ window.__ModuleLoader__.load({
 				if (!data) return React.createElement("div", { style: hintStyle }, "加载中…");
 				const act = (endpoint, id) => rpc(endpoint, { id }).then(reload, (e) => setError(String(e).slice(0, 100)));
 				const row = (s, archived) => React.createElement("div", { key: s.id, style: rowList },
-					React.createElement("span", { style: { flex: 1, fontSize: 12 } },
-						"[", s.tag, "/", s.source, "] ", s.text.slice(0, 42), "  used:", s.used),
+					React.createElement("span", { style: { flex: 1, fontSize: 12, wordBreak: "break-word" } },
+						"[", s.tag, "/", s.source, "] ", s.text.slice(0, 60), "  used:", s.used),
 					archived
 						? React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.restore", s.id) }, "恢复")
 						: React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.archive", s.id) }, "归档"),
@@ -222,15 +223,28 @@ window.__ModuleLoader__.load({
 						? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: () => { setConfirmId(null); act("seeds.delete", s.id); } }, "确认删除")
 						: React.createElement("button", { style: buttonGhost, onClick: () => setConfirmId(s.id) }, "删除"),
 				);
+				const isChat = (s) => (s.category || "topic") === "chat";
+				const block = (title, list, note, archived) => React.createElement("div", { key: title },
+					React.createElement("div", { style: groupHead }, title + "（" + list.length + "）"),
+					note ? React.createElement("div", { style: hintStyle }, note) : null,
+					list.length === 0
+						? React.createElement("div", { style: hintStyle }, "（这组是空的）")
+						: React.createElement("div", { style: scrollBox }, list.map((s) => row(s, archived))),
+				);
+				const topics = data.active.filter((s) => !isChat(s));
+				const chats = data.active.filter(isChat);
 				return React.createElement(
 					"div",
 					null,
 					React.createElement("div", { style: hintStyle }, "活跃 ", data.active.length, " / ", data.cap, " 条"),
-					data.active.map((s) => row(s, false)),
+					block("话题素材", topics, "浏览流、手写、画像喂进来的：随机挑，可重复用"),
+					block("聊天素材", chats, "对话里长出来的：说过一次就算用掉"),
 					data.active.length === 0 ? React.createElement("div", { style: hintStyle }, "（池子是空的——浏览流和画像会慢慢喂养它）") : null,
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonGhost, onClick: () => setShowArchived(!showArchived) }, showArchived ? "收起归档区" : "归档区（" + data.archived.length + "）")),
-					showArchived ? data.archived.map((s) => row(s, true)) : null,
+					showArchived ? React.createElement("div", null,
+						block("话题素材 · 归档", data.archived.filter((s) => !isChat(s)), null, true),
+						block("聊天素材 · 归档", data.archived.filter(isChat), null, true)) : null,
 				);
 			}
 
@@ -313,6 +327,9 @@ window.__ModuleLoader__.load({
 				{ key: "psy", label: "心理" },
 			];
 			const entryBox = { borderLeft: "2px solid var(--dsw-alias-border-l2)", paddingLeft: 8, margin: "6px 0" };
+			// v1.9.3：分区条目一多就顶到屏幕外，给个固定高度的滚动区。
+			const scrollBox = { maxHeight: 320, overflowY: "auto", padding: "4px 6px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6 };
+			const groupHead = { fontSize: 12.5, fontWeight: 600, margin: "10px 0 2px" };
 			const entryHead = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 2, wordBreak: "break-word" };
 			const entryBody = { fontSize: 12.5, lineHeight: 1.65, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)", margin: "2px 0" };
 			const tabRow = { display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0" };
@@ -366,14 +383,14 @@ window.__ModuleLoader__.load({
 							React.createElement("div", { style: hintStyle }, "有效 " + group.valid + " 条 / 历史 " + (group.total - group.valid) + " 条（过期条目不进引擎室输入，也不在这里列出）"),
 							entries.length === 0
 								? React.createElement("div", { style: hintStyle }, "（这个分区还没有条目）")
-								: entries.map((e) => React.createElement("div", { key: e.id || (String(e.topic) + String(e.content).slice(0, 12)), style: entryBox },
+								: React.createElement("div", { style: scrollBox }, entries.map((e) => React.createElement("div", { key: e.id || (String(e.topic) + String(e.content).slice(0, 12)), style: entryBox },
 									React.createElement("div", { style: entryHead },
 										(e.topic || "") + "/" + (e.subTopic || "")
 										+ "　conf " + Number(e.confidence || 0).toFixed(2)
 										+ (e.temporal ? "　" + e.temporal : "")
 										+ (e.lowActivity ? "　久未验证" : "")
 										+ (e.updatedAt ? "　更新 " + String(e.updatedAt).slice(0, 10) : "")),
-									React.createElement("div", { style: entryBody }, e.content || "")))),
+									React.createElement("div", { style: entryBody }, e.content || ""))))),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonGhost, onClick: () => { load(); } }, "刷新"),
 						React.createElement("button", { style: buttonGhost, onClick: () => { void doExport(); } }, "导出 Markdown")),
