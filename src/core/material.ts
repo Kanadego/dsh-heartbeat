@@ -69,7 +69,12 @@ export function assembleCandidates<T extends CandidateSeed>(seeds: T[], opts: As
 
 /** ① opening declaration (section ① of the package). */
 export const PACKAGE_DECLARE =
-  '这是心跳插件素材投递,请你根据当前处境判断要不要选一条说';
+  '这是心跳插件素材投递,请你根据当前处境判断要不要开口:该说就选一条说,不该说就留白';
+
+/** ④c (2026-10-16): silence is a legal answer — say so plainly, so a decided
+ * silence really leaves a blank reply instead of a courtesy line. */
+export const SILENCE_DECLARE =
+  '(决定不说的时候:回复里不要写任何正文,也不要写"嗯""在的"这种客套,只调一次 seed_report 报 spoken=silent 并写上 reason;空着就是真的沉默)';
 
 /** ② each material as ONE sentence prefixed by its id — the persona reports
  * usage by id (seed_report), so the id must be visible in the package. */
@@ -105,6 +110,7 @@ export function buildMaterialPrompt(
     lines.push('(或者也可以说一句真心话,不带素材)');
   }
   // ④b (v1.9.0): the delivery id ties the report back to THIS package.
+  lines.push(SILENCE_DECLARE);
   if (opts.deliveryId) {
     lines.push(`(本次投递编号:${opts.deliveryId},报账时原样填进 delivery_id)`);
   }
@@ -115,7 +121,7 @@ export function buildMaterialPrompt(
 /** ④ standing report instruction (2026-10-06): one seed_report per delivery,
  * even for "used nothing". Reasons are the persona's own one-line why. */
 export const REPORT_DECLARE =
-  '最后,无论刚才说不说话、用没用素材,都要调用一次 seed_report 工具报账:' +
+  '最后,无论刚才说不说话、用没用素材,都要调用一次 seed_report 工具报账(不说话时正文就留空):' +
   'spoken=material(说了素材)/heartfelt(说了不带素材的话)/silent(没说话);' +
   '用了素材就把素材编号填进 seed_ids(可多条,只填编号本身);用了画像条目当话题就填 profile_ids;' +
   '没用素材时用 reason 简单记一笔原因(不想说话/素材不搭/在忙或刚聊过,无需素材);' +

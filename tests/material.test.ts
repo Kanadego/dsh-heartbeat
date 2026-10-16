@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   PACKAGE_DECLARE,
+  SILENCE_DECLARE,
   REPORT_DECLARE,
   buildMaterialPrompt,
   buildRuminationPrompt,
@@ -26,7 +27,16 @@ const M3: MaterialInput = { id: 's4', text: '他们一起看完了那部电影',
 
 test('PACKAGE_DECLARE: section ① is the heartbeat material delivery declaration', () => {
   assert.ok(PACKAGE_DECLARE.includes('这是心跳插件素材投递'));
-  assert.ok(PACKAGE_DECLARE.includes('判断要不要选一条说'));
+  assert.ok(PACKAGE_DECLARE.includes('要不要开口'));
+  assert.ok(PACKAGE_DECLARE.includes('该说就选一条说,不该说就留白'));
+});
+
+test('SILENCE_DECLARE: a decided silence leaves the reply blank (2026-10-16)', () => {
+  assert.ok(SILENCE_DECLARE.includes('不要写任何正文'));
+  assert.ok(SILENCE_DECLARE.includes('spoken=silent'));
+  const p = buildMaterialPrompt([M0]);
+  assert.ok(p.includes(SILENCE_DECLARE), 'the silence line is unconditional');
+  assert.ok(p.indexOf(SILENCE_DECLARE) < p.indexOf(REPORT_DECLARE), 'silence line comes before the report instruction');
 });
 
 test('materialLines: each line carries the material id so the persona can report by id', () => {
