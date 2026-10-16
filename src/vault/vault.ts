@@ -407,3 +407,24 @@ export function upgradeVaultTree(guard: PathGuard, dataDir: string): VaultUpgrad
   }
   return result;
 }
+
+/**
+ * Rewrite ONE legacy container, for callers that have to stay inside a bounded
+ * window: the beat's maintenance phase calls this once per beat, so a back
+ * catalogue drains gradually instead of spending a whole maintenance window (or
+ * a startup) on DPAPI round trips. A file that cannot be migrated is left
+ * exactly as it is and retried next beat; `vault upgrade` remains the "do them
+ * all now" path.
+ */
+export function upgradeOneLegacyVaultFile(guard: PathGuard, dataDir: string): string | null {
+  for (const rel of matchFilesRecursive(dataDir, /./)) {
+    if (rel === KEY_FILE_NAME || rel.startsWith('tmp/') || rel.startsWith('tmp\\')) continue;
+    const abs = path.join(dataDir, rel.split('/').join(path.sep));
+    try {
+      if (upgradeVaultFile(guard, abs)) return rel;
+    } catch {
+      /* unreadable container: keep the original and try again next beat */
+    }
+  }
+  return null;
+}

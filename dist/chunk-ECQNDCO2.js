@@ -2,7 +2,7 @@ import {
   isEncrypted,
   loadEncryptedText,
   saveEncryptedText
-} from "./chunk-6S3GQPIW.js";
+} from "./chunk-AKIJ4LS2.js";
 
 // src/vault/migrate.ts
 import fs from "fs";
@@ -260,4 +260,4 @@ export {
   decryptContainer,
   applyMigrationEntries
 };
-//# sourceMappingURL=chunk-K5BNYDJ5.js.map
+//# sourceMappingURL=chunk-ECQNDCO2.js.map

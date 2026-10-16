@@ -427,7 +427,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 ### 4.4 vault/ —— 加密与焚毁
 
-- **`vault.ts`**：写路径一律产出 **`KHBV2`** 容器（`KHBV2` magic + version + nonce(12) + tag(16) + AES-256-GCM 密文，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 容器存在 `data/vault.key`，进程启动解一次。读路径三代都认：`KHBV2`（内存解密，**不需要任何明文临时文件**）、`KHBV1`（旧版 DPAPI 容器，走 `assets/vault.ps1` + `data/tmp` 明文窗）、明文（兼容读取）。`loadJson` / `saveJson`、`encryptFile` / `decryptFile`、`loadEncryptedText` / `saveEncryptedText`、`readText` / `writeText` 的对外名与语义不变。**密钥文件存在但解不开直接抛错，绝不另生成一把**；加密文件解密 / 解析失败也抛错，不返回空值（否则调用方会把空库盖回去）。`vault status` 报告各代容器数量，`vault upgrade` 把旧容器一次性改写成新容器——旧的 1.x 数据不会变死数据，反向不行（1.x 读不了 `KHBV2`）。
+- **`vault.ts`**：写路径一律产出 **`KHBV2`** 容器（`KHBV2` magic + version + nonce(12) + tag(16) + AES-256-GCM 密文，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 容器存在 `data/vault.key`，进程启动解一次。读路径三代都认：`KHBV2`（内存解密，**不需要任何明文临时文件**）、`KHBV1`（旧版 DPAPI 容器，走 `assets/vault.ps1` + `data/tmp` 明文窗）、明文（兼容读取）。`loadJson` / `saveJson`、`encryptFile` / `decryptFile`、`loadEncryptedText` / `saveEncryptedText`、`readText` / `writeText` 的对外名与语义不变。**密钥文件存在但解不开直接抛错，绝不另生成一把**；加密文件解密 / 解析失败也抛错，不返回空值（否则调用方会把空库盖回去）。`vault status` 报告各代容器数量；旧容器**平时就会自己换代**——任何一次写入都落成 `KHBV2`，另外每一跳的维护相顺带把长期没动过的一个旧容器就地改写（`upgradeOneLegacyVaultFile`，成功记 `vault_upgraded`，失败的留原样下跳再试）；`vault upgrade` 是一次全换。旧的 1.x 数据不会变死数据，反向不行（1.x 读不了 `KHBV2`）。
 - **`assets/vault.ps1`**：只服务旧 `KHBV1` 容器的加解密（含 `vault.key` 的封装 / 解开），保持 **ASCII-only**（避开 PowerShell 5.1 的代码页坑）。
 - **`burn-list.ts`**：**焚毁清单的单一事实源**（曾经两份硬编码漂移、漏掉文件）。burn = 预演 / `--yes` 执行（覆写 ×3 + 删除）/ `--all` 连设置一起清；卸载时的 `--purge` 复用同一套清除核心。除固定文件与前缀外还支持 `match: RegExp` 的「族」——迁移备份 `*.bak-migrate-<时间戳>` 与导入暂存 `*.incoming-<时间戳>`，任意子目录层级都认。焚毁后会重建 journal 并写一条 `BURN_EVENT`。`vault.key` 有意**不在**清单里——烧数据不该顺带烧掉密钥。
 - **`migrate.ts`**：换机迁移的导出 / 导入。导入是**两阶段且两端全或无**的——白名单（`isMigratablePath`：固定文件 + journal 归档 + `weekly/*.json`）之外的名字、越界路径、超预算（**5000 文件 / 64MB**）一律判整包失败；先全部落成 `.incoming-<时间戳>`，任一文件被拒就把已暂存的全部删掉、本地数据原样不动；全部通过才统一改名，被替换的原文件留 `.bak-migrate-<时间戳>`。
@@ -745,6 +745,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 | `beat_error` | **拍级异常**——整拍挂了，看 `error` |
 | `beat_watchdog` | 超时看门狗强制解锁（上一次拍卡死了 45 分钟以上） |
 | `beat_aborted` | 这一拍被取消（看门狗 / 超时 / 插件卸载），带 `stage` 与 `why` |
+| `vault_upgraded` | 维护相把一个长期没动的旧 `KHBV1` 容器就地改写成 `KHBV2`，带 `file` 相对路径 |
 | `beat_agentless` | 拿不到 agent，本拍只跑维护与采集 |
 | `silent` | 本拍不开口，`reason` 写原因（冷静期 / 上限 / 静默时段 / 没有候选…） |
 
@@ -886,7 +887,7 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 
 ### 8.3 加密通道的实现
 
-- `vault.ts` 的写路径产出 `KHBV2`（AES-256-GCM，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次——于是加解密不再需要**每文件起一次 PowerShell**（1.x 是这样做的，97 秒的全量测试里全是它的开销）。旧 `KHBV1` 容器仍能读，那条路走 `assets/vault.ps1` + `data/tmp` 明文窗；脚本保持 ASCII-only（PowerShell 5.1 的代码页坑）。
+- `vault.ts` 的写路径产出 `KHBV2`（AES-256-GCM，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次——于是加解密不再需要**每文件起一次 PowerShell**（1.x 是这样做的，97 秒的全量测试里全是它的开销）。旧 `KHBV1` 容器仍能读，那条路走 `assets/vault.ps1` + `data/tmp` 明文窗；脚本保持 ASCII-only（PowerShell 5.1 的代码页坑）。旧容器不用手动清：写入即换代，维护相每跳再顺带换一个（§4.4）。
 - 加解密是**整文件**的，不是流式——所以没有"追加写"这回事。素材池与收件箱的每次写入都是"解密 → 改 → 重加密 → 原子替换"，这也是它们需要文件锁的原因（§4.1）。
 - **明文临时窗只允许出现在 `data/tmp/`**，用完即焚（`burnFileSync`）。别的地方出现明文一律当 bug 处理。崩溃遗留的残渣（>10 分钟）在进程首次用到密钥时清理，新鲜的留着（可能属于并发进程）。
 
@@ -1058,7 +1059,7 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 **当前版本 v2.0.0**（仓库已改、**尚未发版**）——第二次全量代码审查的修复与结构整改（22 项主发现 + 一节低优先级观察，逐条证据见 [`CODE-REVIEW-2026-10-17.md`](CODE-REVIEW-2026-10-17.md)）：
 
-1. **加密换代**（`src/vault/vault.ts`）：写路径产出 `KHBV2`（AES-256-GCM，头做 AAD），数据密钥 32 字节随机、由 DPAPI 包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次；读路径三代都认（`KHBV2` / `KHBV1` / 明文）。每文件一次 PowerShell 的开销随之消失（全量测试 97 s → 12 s）。CLI 新增 `vault status` / `vault upgrade`。**升级后不要退回 1.x**。
+1. **加密换代**（`src/vault/vault.ts`）：写路径产出 `KHBV2`（AES-256-GCM，头做 AAD），数据密钥 32 字节随机、由 DPAPI 包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次；读路径三代都认（`KHBV2` / `KHBV1` / 明文）。每文件一次 PowerShell 的开销随之消失（全量测试 97 s → 12 s）。旧容器在写入时自动换代，维护相每跳另换一个作兜底；CLI 提供 `vault status` / `vault upgrade`（一次全换）。**升级后不要退回 1.x**。
 2. **遗忘边界补全**（`src/profile/store.ts` / `src/vault/burn-list.ts`）：`wipe` 改为真遗忘（live 三文件 + 快照 + 归档分片 + 迁移备份 / 暂存残留），`burn` 清单新增 `match: RegExp` 支持那两族；`vault.key` 有意不烧。
 3. **迁移两端全或无**（`src/vault/migrate.ts` / `src/rpc.ts`）：白名单 `isMigratablePath` + 预算 5000 文件 / 64MB；暂存阶段任一文件被拒即整包不导入；RPC 侧带 `error` 的结果不再当成功返回。
 4. **流水事件化 + 证据由代码生成**（`src/profile/store.ts` / `src/profile/shapes.ts` / `src/profile/consolidate.ts`）：journal v2 记终态、重放按 id upsert，与实时同一状态机、老化也入流水；旧 v1 行照读；模型只回观察编号，kind / at / ref 由代码填。新增 `shapes.ts` 统一形状校验（模型输出 / 流水 / 迁移包 / RPC）。

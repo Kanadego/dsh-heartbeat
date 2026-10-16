@@ -16,6 +16,7 @@ import {
   resetVaultKeyCacheForTest,
   saveEncryptedText,
   saveJson,
+  upgradeOneLegacyVaultFile,
   upgradeVaultFile,
   upgradeVaultTree,
   vaultKeyPath,
@@ -129,6 +130,33 @@ test('upgradeVaultTree rewrites legacy files, skips scratch and the key', () => 
   assert.equal(loadEncryptedText(guard, path.join(workspace().dataDir, 'seeds.jsonl')), 'line\n');
   assert.equal(containerKind(path.join(workspace().tmpDir, 'scratch.json')), 'v1');
   assert.equal(containerKind(vaultKeyPath()), 'v1');
+});
+
+test('the maintenance sweep converts one legacy container per call', () => {
+  const guard = createPathGuard(workspace().dataDir);
+  saveJson(guard, path.join(workspace().dataDir, 'gate.json'), { a: 1 }); // creates the key
+  writeLegacyContainer(path.join(workspace().dataDir, 'a-first.json'), '{"n":1}');
+  writeLegacyContainer(path.join(workspace().dataDir, 'b-second.json'), '{"n":2}');
+
+  const first = upgradeOneLegacyVaultFile(guard, workspace().dataDir);
+  assert.ok(first && first.endsWith('.json'));
+  const second = upgradeOneLegacyVaultFile(guard, workspace().dataDir);
+  assert.ok(second && second !== first);
+  assert.equal(upgradeOneLegacyVaultFile(guard, workspace().dataDir), null); // drained
+  assert.equal(containerKind(path.join(workspace().dataDir, 'a-first.json')), 'v2');
+  assert.equal(containerKind(path.join(workspace().dataDir, 'b-second.json')), 'v2');
+  assert.deepEqual(loadJson(guard, path.join(workspace().dataDir, 'a-first.json')), { n: 1 });
+});
+
+test('the sweep skips a container it cannot migrate instead of blocking on it', () => {
+  const guard = createPathGuard(workspace().dataDir);
+  saveJson(guard, path.join(workspace().dataDir, 'gate.json'), { a: 1 });
+  const broken = path.join(workspace().dataDir, 'a-broken.json');
+  fs.writeFileSync(broken, Buffer.concat([Buffer.from('KHBV1', 'ascii'), Buffer.from('garbage')]));
+  writeLegacyContainer(path.join(workspace().dataDir, 'b-good.json'), '{"ok":true}');
+
+  assert.equal(upgradeOneLegacyVaultFile(guard, workspace().dataDir), 'b-good.json');
+  assert.equal(containerKind(broken), 'v1'); // left exactly as it was
 });
 
 test('an unreadable master key is a hard error, never a freshly generated one', () => {

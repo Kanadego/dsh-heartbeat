@@ -644,6 +644,17 @@ function upgradeVaultTree(guard, dataDir) {
   }
   return result;
 }
+function upgradeOneLegacyVaultFile(guard, dataDir) {
+  for (const rel of matchFilesRecursive(dataDir, /./)) {
+    if (rel === KEY_FILE_NAME || rel.startsWith("tmp/") || rel.startsWith("tmp\\")) continue;
+    const abs = path4.join(dataDir, rel.split("/").join(path4.sep));
+    try {
+      if (upgradeVaultFile(guard, abs)) return rel;
+    } catch {
+    }
+  }
+  return null;
+}
 
 export {
   dshHomeDir,
@@ -663,6 +674,7 @@ export {
   saveEncryptedText,
   encryptFile,
   decryptFile,
-  upgradeVaultTree
+  upgradeVaultTree,
+  upgradeOneLegacyVaultFile
 };
-//# sourceMappingURL=chunk-6S3GQPIW.js.map
+//# sourceMappingURL=chunk-AKIJ4LS2.js.map
