@@ -183,3 +183,20 @@ test('vault rejects targets outside the workspace', () => {
   assert.throws(() => saveJson(guard, path.join(sandbox, 'outside.json'), {}), /outside workspace/);
   assert.throws(() => loadJson(guard, path.join(sandbox, 'outside.json')), /outside workspace/);
 });
+
+test('crash debris in data/tmp is burned on first use, live scratch is left alone (低优先级 review)', () => {
+  const guard = createPathGuard(workspace().dataDir);
+  const tmp = workspace().tmpDir;
+  fs.mkdirSync(tmp, { recursive: true });
+  const stale = path.join(tmp, '.crashed.plain');
+  const live = path.join(tmp, '.running.enc');
+  fs.writeFileSync(stale, 'plaintext window left behind by a kill');
+  fs.writeFileSync(live, 'a window another process is using right now');
+  const past = new Date(Date.now() - 11 * 60_000);
+  fs.utimesSync(stale, past, past);
+
+  // The sweep rides on the first master-key use of the process.
+  saveJson(guard, path.join(workspace().dataDir, 'seeds.json'), { v: 1 });
+  assert.equal(fs.existsSync(stale), false, 'crash debris must be burned, not just unlinked');
+  assert.equal(fs.existsSync(live), true, 'a fresh scratch file belongs to someone else');
+});
