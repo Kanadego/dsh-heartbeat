@@ -21,7 +21,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-KFQ3LDZY.js";
+} from "./chunk-R7PZL7TZ.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -32,17 +32,17 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-MTT27TSV.js";
+} from "./chunk-OSXVNPEW.js";
 import {
   dedupeItems,
   inboxCount,
   inboxDrain,
   inboxFilePath,
   inboxRemoveIds
-} from "./chunk-HXOWN3RN.js";
+} from "./chunk-JJ2X2IVS.js";
 import {
   snapshotIfDue
-} from "./chunk-TSPNMKIP.js";
+} from "./chunk-SATZHOOH.js";
 import {
   appendAuditLine,
   applyOpsToDoc,
@@ -56,7 +56,7 @@ import {
   readAuditLines,
   readJournalTexts,
   runDeterministicAging
-} from "./chunk-6RC24BMQ.js";
+} from "./chunk-RMIRCKDZ.js";
 import {
   decryptFile,
   encryptFile,
@@ -66,11 +66,11 @@ import {
   saveEncryptedText,
   saveJson,
   writeText
-} from "./chunk-XCB7HYOM.js";
+} from "./chunk-6S3GQPIW.js";
 import {
   atomicWriteJsonSync,
   burnFileSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
@@ -1096,7 +1096,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
       rejected,
       entries: [...report.entries ?? [], ...aged.entries]
     });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-USQ7XWIY.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-IBQKS2G2.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -1987,8 +1987,8 @@ async function observeBoundSessions(bc) {
   throwIfAborted(bc.signal, "observe");
   const { deps, now } = bc;
   const { guard, paths } = deps;
-  const { loadBindings, observeTargets } = await import("./bindings-225SI7KC.js");
-  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-FYOU4C2D.js");
+  const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
+  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-HQXQBFL4.js");
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
@@ -2226,7 +2226,7 @@ async function deliverPackage(bc, materials, opts) {
   const { deps, now } = bc;
   const { guard, paths, policy } = deps;
   const homeId = bc.agent?.session?.id ?? null;
-  const { loadBindings, deliverTargets } = await import("./bindings-225SI7KC.js");
+  const { loadBindings, deliverTargets } = await import("./bindings-U2M3CO2D.js");
   const data = loadBindings(guard, paths.settingsDir);
   const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
   let liveTarget = null;
@@ -2561,7 +2561,7 @@ async function tokenSaverActive(deps, signal) {
 }
 async function userActiveInBoundSessions(deps) {
   try {
-    const { loadBindings, observeTargets } = await import("./bindings-225SI7KC.js");
+    const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
     const targets = observeTargets(loadBindings(deps.guard, deps.paths.settingsDir));
     if (targets.length === 0) return false;
     const cursors = loadCursors(path9.join(deps.paths.dataDir, "cursors.json")).sessions;
@@ -2804,4 +2804,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-3HXWVPEO.js.map
+//# sourceMappingURL=chunk-NUQCRTMZ.js.map

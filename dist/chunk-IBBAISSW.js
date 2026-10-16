@@ -10,10 +10,21 @@ function tmpSibling(target, tag = "w") {
 }
 function atomicWriteFileSync(target, data) {
   const tmp = tmpSibling(target);
+  let fd = null;
   try {
-    fs.writeFileSync(tmp, data);
+    fd = fs.openSync(tmp, "w");
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
     fs.renameSync(tmp, target);
   } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+      }
+    }
     fs.rmSync(tmp, { force: true });
   }
 }
@@ -44,4 +55,4 @@ export {
   shredFileSync,
   burnFileSync
 };
-//# sourceMappingURL=chunk-WRUTATW4.js.map
+//# sourceMappingURL=chunk-IBBAISSW.js.map

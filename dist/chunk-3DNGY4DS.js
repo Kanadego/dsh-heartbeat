@@ -1,6 +1,6 @@
 import {
   atomicWriteFileSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/core/bindings.ts
 import fs from "fs";
@@ -65,4 +65,4 @@ export {
   deliverTargets,
   observeTargets
 };
-//# sourceMappingURL=chunk-TY6UP74X.js.map
+//# sourceMappingURL=chunk-3DNGY4DS.js.map

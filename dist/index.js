@@ -6,12 +6,12 @@ import {
   loadPolicy,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-XYYEJK3W.js";
+} from "./chunk-QKSDX5Q7.js";
 import {
   addBinding,
   loadBindings,
   removeBinding
-} from "./chunk-TY6UP74X.js";
+} from "./chunk-3DNGY4DS.js";
 import {
   StatusReader,
   applyHeartbeatInterval,
@@ -27,7 +27,7 @@ import {
   sessionEventCount,
   sessionEvents,
   startOrchestrator
-} from "./chunk-3HXWVPEO.js";
+} from "./chunk-NUQCRTMZ.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -36,7 +36,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-KFQ3LDZY.js";
+} from "./chunk-R7PZL7TZ.js";
 import {
   getRuntime,
   setRuntime
@@ -49,23 +49,23 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-MTT27TSV.js";
-import "./chunk-HXOWN3RN.js";
-import "./chunk-TSPNMKIP.js";
+} from "./chunk-OSXVNPEW.js";
+import "./chunk-JJ2X2IVS.js";
+import "./chunk-SATZHOOH.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath
-} from "./chunk-6RC24BMQ.js";
+} from "./chunk-RMIRCKDZ.js";
 import {
   dshHomeDir,
   initWorkspace,
   writeText
-} from "./chunk-XCB7HYOM.js";
+} from "./chunk-6S3GQPIW.js";
 import {
   atomicWriteFileSync,
   atomicWriteJsonSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/index.ts
 import z from "@deepseek-ai/schemastery";
@@ -645,7 +645,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-VSIFLYCI.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-G33UI2K7.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
@@ -657,7 +657,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-VSIFLYCI.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-G33UI2K7.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");
