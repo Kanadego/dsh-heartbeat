@@ -382,7 +382,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 | `time-window.ts` | HH:MM 窗口判定 | `parseHhMm` / `minutesOfDay` / `inHhMmWindow`（半开区间，支持跨夜）。静默窗与闲逛窗口共用同一份实现 |
 | `runtime.ts` | 运行时单例 | paths / guard / policy / UI 开关的统一读取口；测试用 `resetRuntimeForTest` |
 | `bindings.ts` | 会话绑定 | 读写 `data/settings/bindings.json`；`deliverTargets` / `observeTargets` 两个过滤器 |
-| `material.ts` | 素材组装与归账 | 纯函数、好测：`assembleCandidates`（组候选）、`buildMaterialPrompt`（素材包三段式）、`buildRuminationPrompt`（反刍备料）、`reconcileDelivery`（归账） |
+| `material.ts` | 素材组装与归账 | 纯函数、好测：`assembleCandidates`（组候选）、`buildMaterialPrompt`（素材包三段式；v1.9.3 起先判"要不要开口"，决定沉默时正文留空）、`buildRuminationPrompt`（反刍备料）、`reconcileDelivery`（归账） |
 | `preset-install.ts` | 随包预设的安装与校验 | ≤0.1.5 的文件系统路径，见 C18 |
 | `preset-definition.ts` | 心跳预设的运行时注册 | `heartbeatPresetDefinition()` + `registerHeartbeatPreset()`（容错语义见 C13a）；0.1.7+ 走这条 |
 | `data-relocate.ts` | 老数据搬出包外 | `hasPayload()` / `verifyTrees()`（清单 + size + sha256 是硬闸门，`unparseable` 只算 warning）/ `relocateDataDir()`（备份 → 复制 → 校验 → 原子落地 → 清源；**永不抛、失败不删源**），见 C13b |
@@ -418,10 +418,10 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 1. **出厂层** `config/policy.json`（包内只读）
 2. **用户文件层** `data/settings/policy.json`（`deepMerge` 覆盖，非法即 fail-closed）
-3. **UI 层** `data/settings/ui.json`（设置卡片写的七个字段：`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` / `psyEnabled`）
+3. **UI 层** `data/settings/ui.json`（设置卡片写的六个字段：`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`）
 4. **组合条目覆盖** profile 的 `cordis.patch.yml` 里 `id: heartbeat` 的 config（`intervalMin` / `maxDailySend` / `dataDir` 等，0 = 不覆盖）
 
-> **只有 UI 层这六个字段支持热改**——设置卡片一保存就生效，不用重启。**其余参数只有出厂层与用户文件层两条路**，改完要重启。这是刻意的：经常要拧的旋钮做成热的，结构性参数做成冷的。
+> **只有 UI 层这六个字段支持热改**（外加卡片上的 psy 开关——它写的是 policy 用户层的 `profile.psyEnabled`，保存同样立刻生效）——设置卡片一保存就生效，不用重启。**其余参数只有出厂层与用户文件层两条路**，改完要重启。这是刻意的：经常要拧的旋钮做成热的，结构性参数做成冷的。
 
 `assertPolicy` 是唯一的校验入口——非法配置直接 fail-closed，不给半残策略。`ui-config.ts` 单独管 UI 层那六个字段的读写与消毒。
 
@@ -493,7 +493,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 ### 4.11 weekly/ —— 周报
 
-`collect.ts` 汇总一周的事实（开口次数、素材使用、账本待跟进、画像变化、报账统计），`report.ts` 交给模型写成人话，落 `data/weekly/report-<日期>.json`。触发锚点在 `data/weekly/state.json`——**文件缺失与文件损坏要分开处理**（损坏会记 `weekly_anchor_corrupt` 并用文件 mtime 兜底，否则一个坏文件会让周报永远不再生成）。
+`collect.ts` 汇总一周的事实（开口次数、素材使用、账本待跟进、画像变化、报账统计），`report.ts` 交给模型写成人话，落 `data/weekly/report-<日期>.json`。触发锚点在 `data/weekly/state.json`——**文件缺失与文件损坏要分开处理**（损坏会记 `weekly_anchor_corrupt` 并用文件 mtime 兜底，否则一个坏文件会让周报永远不再生成）。v1.9.3 起由 `policy.weekly.keepReports`（默认 3）决定保留几期：存新一期时把更老的删掉并留痕 `weekly_pruned`，`weekly.list` 与设置卡都只给最近 N 期。
 
 ### 4.12 ledger/ 与 notify/
 
@@ -509,14 +509,14 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | 状态 | `status`（带插件版本、当前场景、cap / 冷却摘要） |
 | 会话 | `sessions.list`、`bindings.get` / `add` / `remove` |
 | 素材 | `seeds.list` / `archive` / `restore` / `delete` |
-| 画像 | `profile.digest` / `profile.export` |
+| 画像 | `profile.digest` / `profile.partitions` / `profile.export` |
 | 账本 | `ledger.open`（让宿主拉起编辑器） |
 | 配置 | `config.get` / `config.set` |
 | 兴趣 | `interests.list` / `add` / `remove` / `setWindows` |
 | 周报 | `weekly.list` / `weekly.get` |
 | 维护 | `migrate.export` / `migrate.import` |
 
-`client.js` 是七个分区的卡片：状态（30 秒轮询，默认展开）/ 会话绑定 / 素材池 / 兴趣范围 / 画像（只读）/ 账本 / 节律配置。**每个分区独立报错**，一个分区挂了不影响别的。
+`client.js` 是九个分区的卡片：心跳状态（30 秒轮询，默认展开）/ 会话绑定 / 素材池 / 兴趣范围 / 用户画像（只读）/ 账本 / 周报 / 换机迁移 / 节律配置（分区名与顺序见 `client.js:592`–`606`）。**每个分区独立报错**，一个分区挂了不影响别的。v1.9.3 起画像区改成四个分区按钮切换、每条一块、正文自动换行（另加一个只读的「引擎室输入」视图，看引擎室这一拍到底收到了什么），素材池改成话题 / 聊天 × 活跃 / 归档四个按钮，两处列表都补了滚动区。
 
 ### 4.14 cli/
 
@@ -579,7 +579,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 |---|---|---|
 | `config/policy.json` | **出厂层**（包内只读） | 全部默认参数 |
 | `data/settings/policy.json` | 用户文件层 | 深合并覆盖出厂层；写错了 fail-closed |
-| `data/settings/ui.json` | UI 层 | 设置卡片写的七项（`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` / `psyEnabled`） |
+| `data/settings/ui.json` | UI 层 | 设置卡片写的六项（`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`）；卡片上的 psy 开关是例外，落在 policy 用户层的 `profile.psyEnabled` |
 | `data/settings/interests.json` | 兴趣层 | 首次编辑时从出厂层复制过来，此后**整体取代**出厂层 |
 | `data/settings/profile-schema.json` | 白名单层 | 同上，整体取代出厂层 |
 | `data/settings/bindings.json` | 会话绑定 | 陪伴 / 观察目标的名单 |
@@ -607,7 +607,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 ## 6. 参数位置速查
 
-**先看 §4.3 的三层结构**：能热改的只有设置卡片那七个字段，其余都是"改文件 + 重启"。下面按"改哪儿"分组。
+**先看 §4.3 的三层结构**：能热改的只有设置卡片上那几个开关（外加 psy——它落在 policy 用户层，保存同样立刻生效），其余都是"改文件 + 重启"。下面按"改哪儿"分组。
 
 ### 6.1 热参数 —— 设置卡片（落 `data/settings/ui.json`）
 
@@ -616,9 +616,9 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | `intervalMin` | 心跳间隔（分钟） | 1–1440 |
 | `maxDailySend` | 每日开口上限（条） | 1–50 |
 | `timeInjectMin` | 时间注入节流（分钟；0 = 关闭） | 0–1440 |
-| `statusbar` | 是否接管状态栏 | 布尔 |
+| `statusbar` | 是否接管状态栏（v1.9.3 起出厂默认**关**） | 布尔 |
 | `idleMode` | 闲人模式（更少打扰） | 布尔 |
-| `tokenSaver` | 用户离开或锁屏时暂停心跳 | 布尔 |
+| `tokenSaver` | 用户离开或锁屏时暂停心跳（v1.9.3 起暂停期间每 3 分钟探一次闸门，不取 agent、不调模型；绑定会话里出现用户没消化的新消息就算他在场，立刻恢复） | 布尔 |
 
 保存即生效，不重启。**越界的值会被丢弃而不是夹逼**（写成 `0` 就等于没写），范围表在 `src/config/ui-config.ts:25-29`。
 
@@ -650,10 +650,11 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | `profile.confidenceCap.*` | 各来源置信度封顶：chat / screen / browse | 0.6 / 0.4 / 0.4 |
 | `profile.volatileDays` | volatile 条目的有效期（天） | 14 |
 | `profile.stableLowActivityDays` | stable 条目多久没验证标"低活跃" | 180 |
-| `profile.psyEnabled` | 是否启用 psy 分区 | false |
+| `profile.psyEnabled` | 是否启用 psy 分区（设置卡里那个 psy 开关写的就是这个字段） | false |
 | `observe.maxChars` | 一条观察摘录多少字 | 80 |
 | `observe.perBeat` | 每拍每会话最多观察几条 | 10 |
 | `weekly.enabled` | 是否生成周报 | true |
+| `weekly.keepReports` | 周报保留几期（存新一期时把更老的删掉并留痕 `weekly_pruned`，v1.9.3 起） | 3 |
 | `retention.envPulseHours` | 环境探针日志保留（小时） | 48 |
 | `retention.decisionLogDays` | 主审计保留（天） | 30 |
 
@@ -808,6 +809,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 |---|---|
 | `weekly_generated` / `weekly_skipped` / `weekly_llm_failed` / `weekly_failed` | 周报四种结局 |
 | `weekly_anchored` / `weekly_anchor_corrupt` | 触发锚点正常 / 损坏（会退回 mtime 兜底） |
+| `weekly_pruned` | 存新一期时把更老的周报删掉了（`policy.weekly.keepReports`，v1.9.3 起；属正常自愈痕迹） |
 | `retention` | 日志裁剪跑了一次 |
 | `migrate_export` / `migrate_import` | 换机迁移 |
 | `BURN_EVENT` | 焚毁执行完毕 |
@@ -1051,7 +1053,16 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 ## 14. 变更日志
 
-**当前版本 v1.9.2**（仓库已改、**尚未发版**）——修 issue #2 的两条 bug：
+**当前版本 v1.9.3**（仓库已改、**尚未发版**）——素材包可留白 + 摘要预算分区 + 画像与素材池 UI 重做：
+
+1. **素材包可以留白了**（`src/core/material.ts`）：以前素材包默认"必须挑一条说"，agent 想沉默也得硬凑一条。现在改成先判断**要不要开口**——该说才选一条，不该说就把正文留空，只回一次"这轮没开口"和原因（新增一条常驻的 `SILENCE_DECLARE` 声明，`PACKAGE_DECLARE` 改判"要不要开口"）。沉默不再需要客套话。**留白依赖模型自己的指令遵循能力**——觉得效果不稳，可以在系统提示词或长期记忆里补一条规则。
+2. **摘要预算分区**（`src/profile/digest.ts`）：送进引擎室的画像摘要总预算 3200 → 6000 字符，并且 tact / topic / wander 三段各有上限（2500 / ≥2400 / 850）——超预算按**整条**跳过并回报丢弃条数（`omitted`），不再从句子中间切断。
+3. **出厂默认更省**（`config/policy.json` / `src/index.ts` / `client.js` 兜底）：心跳间隔 20 → 60 分钟、每日开口上限 3 → 10、状态栏默认关闭。都能在设置卡里改回来。
+4. **省 token 模式真能唤醒**（`src/core/orchestrator.ts`）：暂停期间每 3 分钟探一次闸门（不取 agent、不调模型）；绑定会话里出现用户还没被消化的新消息，就视为在场并立刻恢复（`token_saver_resumed` 的 `via` = wake）。暂停时状态栏场景说"你不在，心跳挂起"。
+5. **周报保留期数**（`src/weekly/report.ts`）：新增 `policy.weekly.keepReports`（默认 3）——保存新一期时删掉更老的并留痕 `weekly_pruned`；`weekly.list` 与设置卡只给最近 N 期。
+6. **设置卡重做两块**（`client.js` / `src/rpc.ts`）：画像区改成四个分区按钮切换、每条一块、正文自动换行，并新增只读的「引擎室输入」视图（新路由 `profile.partitions`）；素材池改成四个按钮——话题素材 / 聊天素材 / 话题·归档 / 聊天·归档，归档不再单列一块，点进去行内按钮变「恢复」。两处列表都补了滚动区，引擎室输入视图同样。
+
+**v1.9.2**（已发布 npm）——修 issue #2 的两条 bug：
 
 1. **预设改为运行时注册**（C13 / C13a）：`cordis.patch.yml` 不再声明 `@deepseek-ai/dsh-agent-preset`，定义搬进 `src/core/preset-definition.ts`，加载时经 `agentPresets.register()` 注册；服务缺失时只记一条 `preset_register` 审计、宿主照常启动。修掉「profile 解析不到宿主包 → 整个 DSH 起不来」与「手工补 peer 闭包 → 所有会话无法恢复」两种炸法。
 2. **resume 失败分类**（§7.1 的 `agent_deferred` 行）：新增 `looksPermanentResumeFailure()`，会话格式迁移被拒不再被当成暂时性错误无限退避，改走创建路径；创建也失败则自愈到新会话。
@@ -1060,7 +1071,7 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 **v1.9.1**（已发布 npm，`package.json` 同版）——在 v1.9.0 之上做的一次代码审查修复（86 项发现，分五批落地：静默失败类 → 数据完整性 → 边界与体验 → 工程基建 → 结构性重构）。
 
-历史版本的详细记录在 **`docs/releases/`**：v1.6.2 起每版一份，更早的合并进同目录的 `legacy-changelog.md`；README 的"版本更新"章节保留 v1.5 起的关键改动。
+历史版本的详细记录在 **`docs/releases/`**：v1.6.2 起每版一份，更早的（v1.4.x → v1.0.0、v0.x）合并进同目录的 `legacy-changelog.md`；README 的"版本更新"章节**只留最新一个大版本**（v1.9.x，插件市场详情页抓的就是那一节）；从 README 移出的 v1.5 – v1.8 记录收在仓库根 **`CHANGELOG.md`**。
 
 **v1.9.1 之前的整份设计文档**（旧结构，模块划分与参数位置都有变化）归档在 `docs/DESIGN-v1.9.0-and-earlier.md`。
 
