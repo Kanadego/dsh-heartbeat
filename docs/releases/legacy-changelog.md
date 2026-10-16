@@ -1,6 +1,6 @@
 # 旧版更新记录（v1.4 及以前）
 
-> 2026-10-07 从仓库根 [`README.md`](../../README.md) 的「版本更新」章节移出——插件市场详情页会整段抓取 README，旧版本记录留在那里只会把页面拖长。v1.5 及以后仍在 README 的「版本更新」章节；逐版 release notes 见[本目录索引](README.md)。
+> 2026-10-07 从仓库根 [`README.md`](../../README.md) 的「版本更新」章节移出——插件市场详情页会整段抓取 README，旧版本记录留在那里只会把页面拖长。v1.5 及以后的记录收在根 [`CHANGELOG.md`](../../CHANGELOG.md)（README 现在只留最新一个大版本）；逐版 release notes 见[本目录索引](README.md)。
 
 
 <details>
