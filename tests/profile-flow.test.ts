@@ -106,8 +106,8 @@ test('inbox: append/count/drain/clear with note truncation and dedupe key', () =
 test('H-16: inboxAppend is idempotent on kind+ref', () => {
   const a = inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'x', ref: 'same', note: 'first' });
   const b = inboxAppend(guard, inboxFile(), { kind: 'chat', at: 'y', ref: 'same', note: 'second' });
-  assert.equal(b.note, 'first'); // the entry already on disk wins
-  assert.equal(a.note, 'first');
+  assert.equal(b?.note, 'first'); // the entry already on disk wins
+  assert.equal(a?.note, 'first');
   assert.equal(inboxCount(guard, inboxFile()), 1);
 });
 

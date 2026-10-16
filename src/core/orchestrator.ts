@@ -1063,12 +1063,21 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
         if (d?.source && (d.source.kind === 'heartbeat' || d.source.kind === 'plugin' || d.source.plugin === 'heartbeat')) continue;
         const text = (d?.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('').trim();
         if (!text) continue;
-        inboxAppend(guard, inboxFile, {
+        const appended = inboxAppend(guard, inboxFile, {
           kind: 'chat',
           at: new Date(now).toISOString(),
           ref: `cursors.json#${b.sessionId}:${at}`,
           note: text.split(/[。！？\n]/)[0]!.slice(0, maxChars),
         });
+        // HB-03: the lock belonged to another process (the CLI), so this
+        // observation is dropped rather than written over their drain. Say so —
+        // a silently missing observation is how the profile quietly loses facts.
+        if (!appended) {
+          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+            event: 'inbox_locked', reason: 'another process holds the inbox lock; observation dropped',
+            ref: `cursors.json#${b.sessionId}:${at}`,
+          });
+        }
         added += 1;
       }
       // H-05: persist progress even when the slice held no user text at all —
