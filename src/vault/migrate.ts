@@ -55,6 +55,25 @@ export const MIGRATE_FILES = [
   'preference.json',
 ];
 
+/** HB-18: an import writes with the user's privileges inside data/, so the set
+ *  of names a container may touch is closed, not merely sanitised. Anything an
+ *  export can produce is here; everything else (gate.json, settings/, vault.key,
+ *  other modules' files) is refused. */
+const MIGRATE_ARCHIVE_RE = /^profile_journal\.archive-\d+\.jsonl$/;
+const MIGRATE_WEEKLY_RE = /^weekly\/[^/\\]+\.json$/;
+
+export function isMigratablePath(rel: string): boolean {
+  if (MIGRATE_FILES.includes(rel)) return true;
+  if (MIGRATE_ARCHIVE_RE.test(rel)) return true;
+  if (MIGRATE_WEEKLY_RE.test(rel)) return true;
+  return false;
+}
+
+/** HB-18: budget for a container-supplied payload. Generous next to a real
+ *  memory (a few MB), small next to what a hostile container would like. */
+export const MIGRATE_MAX_FILES = 5_000;
+export const MIGRATE_MAX_BYTES = 64 * 1024 * 1024;
+
 export interface MigrateEntry {
   path: string; // dataDir-relative
   encrypted: boolean; // was DPAPI-encrypted on the source machine
@@ -138,6 +157,24 @@ function assertKdfN(v: unknown): number {
   return n;
 }
 
+/** HB-18: a container does not get to decide how much work the import does. */
+function assertMigrateBudget(files: unknown[]): asserts files is MigrateEntry[] {
+  if (files.length > MIGRATE_MAX_FILES) {
+    throw new Error(`migrate: container lists ${files.length} files, over the ${MIGRATE_MAX_FILES} limit`);
+  }
+  let bytes = 0;
+  for (const f of files) {
+    const entry = f as { path?: unknown; content?: unknown } | null;
+    if (!entry || typeof entry.path !== 'string' || typeof entry.content !== 'string') {
+      throw new Error('migrate: container file entry is malformed');
+    }
+    bytes += Buffer.byteLength(entry.content, 'utf8');
+    if (bytes > MIGRATE_MAX_BYTES) {
+      throw new Error(`migrate: container payload exceeds ${MIGRATE_MAX_BYTES} bytes`);
+    }
+  }
+}
+
 /** Build the container file content. Everything sensitive lives inside the
  * ciphertext; the outer JSON carries only crypto parameters. */
 export function encryptContainer(entries: MigrateEntry[], passphrase: string, now = new Date()): string {
@@ -172,7 +209,13 @@ export function decryptContainer(text: string, passphrase: string): { createdAt:
   const salt = Buffer.from(String(outer.kdf?.salt ?? ''), 'hex');
   const iv = Buffer.from(String(outer.iv ?? ''), 'hex');
   const tag = Buffer.from(String(outer.tag ?? ''), 'hex');
-  const data = Buffer.from(String(outer.data ?? ''), 'base64');
+  // HB-18: refuse an oversized payload before decoding it. base64 runs ~4/3 of
+  // the ciphertext, so this cheap length check bounds the allocation below.
+  const dataB64 = String(outer.data ?? '');
+  if (dataB64.length > MIGRATE_MAX_BYTES * 2) {
+    throw new Error(`migrate: container payload is too large (${dataB64.length} base64 chars)`);
+  }
+  const data = Buffer.from(dataB64, 'base64');
   const key = deriveKey(passphrase, salt, n);
   const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
@@ -185,6 +228,7 @@ export function decryptContainer(text: string, passphrase: string): { createdAt:
   const inner = JSON.parse(plain.toString('utf8')) as { version: number; createdAt: string; files: MigrateEntry[] };
   if (inner.version !== MIGRATE_VERSION) throw new Error(`migrate: unsupported container version ${inner.version}`);
   if (!Array.isArray(inner.files)) throw new Error('migrate: container has no file list');
+  assertMigrateBudget(inner.files);
   return { createdAt: inner.createdAt, files: inner.files };
 }
 
@@ -206,10 +250,14 @@ export interface MigrateImportResult {
  * pre-flight and no rollback — a failure halfway through left a mixed memory
  * (a new `profile.json` next to a stale `profile_journal.jsonl`). Now it runs
  * in two phases: stage every entry next to its target (nothing visible changes
- * yet, and a staging failure only skips that entry), then commit each one by
- * rename. A commit failure rolls the already-committed files back from their
- * backups, so the import is all-or-nothing apart from entries that never
- * staged.
+ * yet), then commit each one by rename. A commit failure rolls the
+ * already-committed files back from their backups.
+ *
+ * HB-06 (2026-10-17): the phases are all-or-nothing at BOTH ends. Earlier a
+ * staging failure only skipped that entry and the rest were still committed,
+ * so one bad path was enough to leave a half-migrated memory. Now any skipped
+ * entry aborts the whole import with nothing written; the reason is returned
+ * in `error` alongside the offending names.
  */
 export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, files: MigrateEntry[], now = Date.now()): MigrateImportResult {
   const restored: string[] = [];
@@ -221,8 +269,9 @@ export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, f
     const rel = String(f.path ?? '');
     // String-level rejection BEFORE the path is resolved: the guard's realpath
     // check already refuses escapes, but an import must not depend on another
-    // module staying correct.
-    if (!rel || rel.includes('..') || path.isAbsolute(rel)) {
+    // module staying correct. HB-18: and the name must be one an export can
+    // produce - a container may not reach settings/, gate.json or vault.key.
+    if (!rel || rel.includes('..') || path.isAbsolute(rel) || !isMigratablePath(rel)) {
       skipped.push(rel);
       continue;
     }
@@ -248,6 +297,25 @@ export function applyMigrationEntries(guard: PathGuard, paths: WorkspacePaths, f
         /* nothing staged */
       }
     }
+  }
+  // HB-06: staging is the point of no return. A single entry that could not be
+  // staged used to be skipped while the rest were committed, which left a
+  // half-migrated memory (a new profile.json next to a stale journal). Any skip
+  // now aborts the import with nothing written; the reason travels in `error`.
+  if (skipped.length > 0) {
+    for (const s of staged) {
+      try {
+        fs.rmSync(s.incoming, { force: true });
+      } catch {
+        /* nothing staged */
+      }
+    }
+    return {
+      restored: [],
+      backedUp: [],
+      skipped,
+      error: `staging failed for ${skipped.length} file(s): ${skipped.join(', ')}; nothing was imported`,
+    };
   }
   const committed: Array<{ rel: string; abs: string; backup: string | null }> = [];
   try {

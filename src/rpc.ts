@@ -503,6 +503,9 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
         event: 'migrate_import', restored: result.restored.length, backedUp: result.backedUp.length, skipped: result.skipped.length,
         rolledBack: result.rolledBack?.length ?? 0, error: result.error ?? null,
       });
+      // HB-06: an import that wrote nothing is a failure, not a cheerful ok with
+      // the reason buried in the payload.
+      if (result.error) return err('migrate-failed', result.error);
       return ok(result);
     },
   };
