@@ -29,6 +29,7 @@ import {
   shouldArchiveRotatedHome,
   shouldRotateHome,
   spokeTextSince,
+  userActiveInBoundSessions,
   type HostSession,
 } from '../src/core/orchestrator.js';
 
@@ -290,4 +291,44 @@ test('spokeTextSince: reads the `message.content` shape too (older host)', () =>
     events: [{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '兼容旧形状' }] } } }],
   };
   assert.equal(spokeTextSince(session, 0), '兼容旧形状');
+});
+
+// ── token-saver presence (2026-10-16) ───────────────────────────────────
+// The gate pauses a beat while the workstation is idle; a fresh message in a
+// bound session must veto that pause — he can be talking to us from another
+// device (QQ) while the keyboard is quiet.
+
+test('userActiveInBoundSessions: an undrained bound-session message counts as presence', async () => {
+  const paths = workspace();
+  fs.mkdirSync(paths.settingsDir, { recursive: true });
+  const sessionId = 'session-bound';
+  fs.writeFileSync(path.join(paths.settingsDir, 'bindings.json'), JSON.stringify({
+    bindings: [{ sessionId, deliver: false, observe: true, addedAt: new Date().toISOString() }],
+  }), 'utf8');
+  const events = [
+    { type: 'assistant/message', data: {} },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '在吗' }] } },
+  ];
+  const deps = {
+    guard, paths,
+    ctx: { agents: { get: (id: string) => (id === sessionId
+      ? { id, session: { id: sessionId, seq: events.length, snapshotEvents: (from = 0) => events.slice(from) } }
+      : undefined) } },
+  } as unknown as Parameters<typeof userActiveInBoundSessions>[0];
+
+  assert.equal(await userActiveInBoundSessions(deps), true);
+
+  // Drained cursor (== log length) → nothing new to drain.
+  fs.writeFileSync(path.join(paths.dataDir, 'cursors.json'),
+    JSON.stringify({ version: 2, sessions: { [sessionId]: events.length } }), 'utf8');
+  assert.equal(await userActiveInBoundSessions(deps), false);
+
+  // Our own injections never count as the user being here.
+  const injected = [{ type: 'user/message', data: { source: { kind: 'heartbeat' }, content: [{ type: 'text', text: '素材包' }] } }];
+  const injectedDeps = {
+    ...deps,
+    ctx: { agents: { get: () => ({ id: sessionId, session: { id: sessionId, seq: 1, snapshotEvents: (from = 0) => injected.slice(from) } }) } },
+  } as unknown as Parameters<typeof userActiveInBoundSessions>[0];
+  fs.writeFileSync(path.join(paths.dataDir, 'cursors.json'), JSON.stringify({ version: 2, sessions: {} }), 'utf8');
+  assert.equal(await userActiveInBoundSessions(injectedDeps), false);
 });

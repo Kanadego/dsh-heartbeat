@@ -1,6 +1,15 @@
 // Digest supply layer (design doc §3.4): per-consumer slices, built fresh per
-// gated model call, never persisted into any context (D7). Total budget <=800
-// tokens (approximated by ~3200 chars).
+// gated model call, never persisted into any context (D7).
+//
+// v2.0 (item 6, 方向 A): the budget is 6000 chars (~1500 tokens CJK-heavy) and
+// every section has its own ceiling. The old shape had one lever — hard-slice
+// the topic block to 800 chars whenever the total passed 3200 — and the profile
+// grew past it (58 valid entries): tact+wander alone were 3304 chars, so the
+// topic slice was ALWAYS cut to 800 (the 4th entry sliced mid sentence) and
+// `withinBudget` was permanently false (CODE-REVIEW-2026-10-07.md:551). Now the
+// caps are named, truncation happens on ENTRY boundaries (an entry that does not
+// fit is skipped whole, never sliced), the ledger follow-ups are reserved space,
+// and the digest reports how many entries each cap dropped.
 //
 // B6: tact includes the gate's window CLASS (busy-rules result), never the
 // window title. stable entries flagged low-activity are deprioritized with an
@@ -15,7 +24,16 @@ import { summarizeRhythm } from '../rhythm/rhythm.js';
 import { pendingOlderThan } from '../ledger/ledger.js';
 import { ledgerFilePath } from '../ledger/ledger.js';
 
-const BUDGET_CHARS = 3200; // ~800 tokens CJK-heavy
+/** Total digest budget in characters (~1500 tokens CJK-heavy). */
+export const BUDGET_CHARS = 6000;
+/** tact ceiling: the 时间感 line is always kept, then comm entries until full. */
+const TACT_MAX_CHARS = 2500;
+/** wander ceiling (5 high-confidence interests is ~800 chars in practice). */
+const WANDER_MAX_CHARS = 850;
+/** Floor for the topic slice, whatever tact/wander leave behind. */
+const TOPIC_MIN_CHARS = 2400;
+/** Default slice size for the topic section (v2.0: was 8, the budget grew). */
+const TOPN_DEFAULT = 12;
 
 export interface DigestInput {
   windowClass?: string | null;
@@ -28,6 +46,10 @@ export interface SituationDigest {
   wander: string;
   totalChars: number;
   withinBudget: boolean;
+  /** v2.0 (item 6): entries dropped by each section's cap, for the card view. */
+  omitted: { tact: number; topic: number; wander: number };
+  /** v2.0 (item 6): the budget the three sections were measured against. */
+  budgetChars: number;
 }
 
 function fmtEntry(prefix: string, content: string, opts: { low?: boolean; confidence: number }): string {
@@ -47,9 +69,34 @@ export function profileTopicEntries(doc: ProfileDoc, topN: number): ProfileEntry
     .slice(0, topN);
 }
 
+/**
+ * v2.0 (item 6, 方向 A): fill a section up to `cap` chars one WHOLE entry at a
+ * time. An entry that does not fit is skipped — half a sentence is worse than a
+ * missing one, and one huge entry must not blank the section — and the scan
+ * continues so the entries behind it still get their turn. No marker line is
+ * appended: the model would otherwise talk about entries it cannot see; the
+ * dropped count travels back to the card in `SituationDigest.omitted`.
+ */
+function capSection(entries: string[], cap: number): { text: string; omitted: number } {
+  const kept: string[] = [];
+  let len = 0;
+  let omitted = 0;
+  for (const line of entries) {
+    const add = kept.length === 0 ? line.length : line.length + 1;
+    if (len + add > cap) {
+      omitted += 1;
+      continue;
+    }
+    kept.push(line);
+    len += add;
+  }
+  if (kept.length === 0 && omitted > 0) return { text: `（本节 ${omitted} 条超出预算，已省略）`, omitted };
+  return { text: kept.join('\n'), omitted };
+}
+
 export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Policy, input: DigestInput = {}): SituationDigest {
   const doc = loadProfile(guard, profileFilePath(paths.dataDir));
-  const topN = input.topN ?? 8;
+  const topN = input.topN ?? TOPN_DEFAULT;
 
   // -- tact: rhythm summary + comm high-confidence + window class (B6)
   // 第 86 条: `daysSampled`/`peakHours` are `summarizeRhythm()`'s OUTPUT and are
@@ -81,29 +128,30 @@ export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Pol
     .slice(0, 5)
     .map((e) => `- ${e.content} [conf ${e.confidence.toFixed(2)}]`);
 
-  // -- ledger stale items (跟进时机)
-  const stale = pendingOlderThan(guard, ledgerFilePath(paths.dataDir), 3)
+  // -- ledger stale items (跟进时机) — reserved space, never budgeted away
+  const ledgerBlock = pendingOlderThan(guard, ledgerFilePath(paths.dataDir), 3)
     .slice(0, 3)
     .map((e) => `- ${e.text}（${e.date}）`);
+  const ledgerText = ledgerBlock.length ? ['[账本待跟进] ', ...ledgerBlock].join('\n') : '';
 
-  const tact = tactParts.join('\n');
-  const topic = [
-    ...topicEntries,
-    ...(stale.length ? ['[账本待跟进] ', ...stale] : []),
-  ].join('\n');
-  const wander = wanderEntries.join('\n') || '(无高置信兴趣)';
-  const totalChars = tact.length + topic.length + wander.length;
+  const tact = capSection(tactParts, TACT_MAX_CHARS);
+  const wander = capSection(wanderEntries.length ? wanderEntries : ['(无高置信兴趣)'], WANDER_MAX_CHARS);
+  // The topic slice takes whatever tact/wander/the ledger block leave behind.
+  const topicBudget = Math.max(
+    TOPIC_MIN_CHARS,
+    BUDGET_CHARS - tact.text.length - wander.text.length - ledgerText.length - 40,
+  );
+  const topicCapped = capSection(topicEntries, topicBudget);
+  const topic = [topicCapped.text, ledgerText].filter((s) => s.length > 0).join('\n');
 
-  // budget guard: trim the topic section first (largest, most enumerable)
-  let outTopic = topic;
-  if (tact.length + outTopic.length + wander.length > BUDGET_CHARS && outTopic.length > 800) {
-    outTopic = outTopic.slice(0, 800) + '\n(已截断以控制预算)';
-  }
+  const totalChars = tact.text.length + topic.length + wander.text.length;
   return {
-    tact,
-    topic: outTopic,
-    wander,
-    totalChars: tact.length + outTopic.length + wander.length,
-    withinBudget: tact.length + outTopic.length + wander.length <= BUDGET_CHARS,
+    tact: tact.text,
+    topic,
+    wander: wander.text,
+    totalChars,
+    withinBudget: totalChars <= BUDGET_CHARS,
+    omitted: { tact: tact.omitted, topic: topicCapped.omitted, wander: wander.omitted },
+    budgetChars: BUDGET_CHARS,
   };
 }

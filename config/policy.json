@@ -1,11 +1,11 @@
 {
   "heartbeat": {
-    "intervalMin": 20,
+    "intervalMin": 60,
     "idleMode": false,
     "archiveRotatedHome": true
   },
   "gate": {
-    "maxDailySend": 3,
+    "maxDailySend": 10,
     "cooldownMinutes": 30,
     "quietHours": {
       "start": "01:00",
@@ -64,7 +64,8 @@
     "perBeat": 10
   },
   "weekly": {
-    "enabled": true
+    "enabled": true,
+    "keepReports": 3
   },
   "retention": {
     "envPulseHours": 48,

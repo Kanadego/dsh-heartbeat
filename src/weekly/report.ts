@@ -114,8 +114,9 @@ export interface WeeklyReportMeta {
   source: string;
 }
 
-/** Newest-first listing for the card; unparsable entries are skipped. */
-export function listWeeklyReports(guard: PathGuard, dataDir: string): WeeklyReportMeta[] {
+/** Newest-first listing for the card; unparsable entries are skipped.
+ *  v2.0 (item 5): an optional `limit` shows only the newest N reports. */
+export function listWeeklyReports(guard: PathGuard, dataDir: string, limit?: number): WeeklyReportMeta[] {
   const out: WeeklyReportMeta[] = [];
   try {
     for (const file of fs.readdirSync(weeklyDirPath(dataDir))) {
@@ -125,7 +126,27 @@ export function listWeeklyReports(guard: PathGuard, dataDir: string): WeeklyRepo
       out.push({ file, start: rep.start, end: rep.end, generatedAt: rep.generatedAt, source: rep.source });
     }
   } catch { /* no weekly dir yet */ }
-  return out.sort((a, b) => (a.end < b.end ? 1 : -1));
+  const sorted = out.sort((a, b) => (a.end < b.end ? 1 : -1));
+  return limit !== undefined && limit > 0 ? sorted.slice(0, limit) : sorted;
+}
+
+/**
+ * v2.0 (item 5): delete every report beyond the newest `keep`, so the card's
+ * report buttons cannot crowd the panel and the store cannot grow unbounded.
+ * `keep <= 0` disables pruning (and the policy schema forbids it anyway).
+ * Returns the deleted file names so the caller can audit them; a report that
+ * cannot be deleted is left in place (best effort — never break the beat).
+ */
+export function pruneWeeklyReports(guard: PathGuard, dataDir: string, keep: number): string[] {
+  if (!Number.isFinite(keep) || keep <= 0) return [];
+  const removed: string[] = [];
+  for (const meta of listWeeklyReports(guard, dataDir).slice(keep)) {
+    try {
+      fs.rmSync(guard.assert(path.join(weeklyDirPath(dataDir), meta.file)));
+      removed.push(meta.file);
+    } catch { /* best effort */ }
+  }
+  return removed;
 }
 
 export function readWeeklyReport(guard: PathGuard, dataDir: string, file: string): WeeklyReport | null {

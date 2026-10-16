@@ -215,6 +215,34 @@ test('digest: low-activity stable entries are flagged 久未验证; budget respe
   void inboxFile;
 });
 
+test('digest (v2.0 item 6): per-section caps stay inside the budget and drop whole entries, not slices', async () => {
+  const { applyOpsToDoc, persistWithJournal } = await import('../src/profile/store.js');
+  type ProfileOp = import('../src/profile/types.js').ProfileOp;
+  const { emptyProfile } = await import('../src/profile/types.js');
+  const { loadProfileSchema } = await import('../src/profile/schema.js');
+  const schema = loadProfileSchema(workspace()).schema!;
+  const doc = emptyProfile();
+  const ops: ProfileOp[] = [
+    { op: 'ADD', partition: 'comm', topic: 'expression', subTopic: 'style', content: '说话要短', confidence: 0.6, why: 'x', evidence: [{ kind: 'chat', at: '2026-01-01T00:00:00.000Z', ref: 'logs/heartbeat.jsonl#test' }] },
+    { op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'preference', content: '巨'.repeat(8000), confidence: 0.9, why: 'x', evidence: [{ kind: 'chat', at: '2026-01-01T00:00:00.000Z', ref: 'logs/heartbeat.jsonl#test' }] },
+    ...Array.from({ length: 15 }, (_, i): ProfileOp => ({
+      op: 'ADD', partition: 'interest', topic: 'games', subTopic: 'current',
+      content: `条目${i}：` + 'x'.repeat(580), confidence: 0.5, why: 'x',
+      evidence: [{ kind: 'chat', at: '2026-01-01T00:00:00.000Z', ref: 'logs/heartbeat.jsonl#test' }],
+    })),
+  ];
+  applyOpsToDoc(guard, paths.dataDir, doc, ops, schema, policy, Date.parse('2026-01-01T00:00:00.000Z'));
+  persistWithJournal(guard, paths.dataDir, doc, { runId: 'dg2', applied: [], rejected: [] });
+  const digest = buildDigest(guard, paths, policy, {});
+  assert.equal(digest.budgetChars, 6000);
+  assert.ok(digest.totalChars <= digest.budgetChars, `total ${digest.totalChars} over budget`);
+  assert.equal(digest.withinBudget, true);
+  assert.ok(digest.omitted.topic > 0, 'the topic entries cannot all fit');
+  // the 3000-char entry is skipped whole — never sliced mid-content
+  assert.ok(!digest.topic.includes('巨'.repeat(500)), 'oversized entry must be skipped, not truncated');
+  assert.match(digest.topic, /条目0/);
+});
+
 test('rhythm: presence samples aggregate into a decaying histogram', () => {
   const env = (presence: string): EnvSnapshot => ({
     takenAt: new Date(NOW).toISOString(), idleSeconds: 0, presence: presence as never,

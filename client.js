@@ -303,29 +303,81 @@ window.__ModuleLoader__.load({
 				);
 			}
 
-			// ── 画像入口 ──────────────────────────────────────────────────
+			// ── 画像入口（v2.0）：四个分区 + 引擎室输入 ─────────────────────
+			// 一次只看一个分区，条目一条一块、正文自动换行；另给一个只读的
+			// 「引擎室输入」视图，直接回答「截断后引擎室到底看到了什么」。
+			const PARTITIONS = [
+				{ key: "interest", label: "兴趣" },
+				{ key: "projects", label: "进行中" },
+				{ key: "comm", label: "沟通偏好" },
+				{ key: "psy", label: "心理" },
+			];
+			const entryBox = { borderLeft: "2px solid var(--dsw-alias-border-l2)", paddingLeft: 8, margin: "6px 0" };
+			const entryHead = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 2, wordBreak: "break-word" };
+			const entryBody = { fontSize: 12.5, lineHeight: 1.65, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)", margin: "2px 0" };
+			const tabRow = { display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0" };
 			function ProfileSection() {
 				const [data, setData] = React.useState(null);
+				const [digest, setDigest] = React.useState(null);
+				const [tab, setTab] = React.useState("interest");
 				const [error, setError] = React.useState(null);
+				const [status, setStatus] = React.useState("");
 				const load = React.useCallback(() => {
-					rpc("profile.digest").then(setData, (e) => setError(String(e).slice(0, 100)));
+					rpc("profile.partitions").then(setData, (e) => setError(String(e).slice(0, 120)));
+					rpc("profile.digest").then(setDigest, () => { /* 引擎室输入是附加视图，失败不挡分区 */ });
 				}, []);
 				React.useEffect(() => { load(); }, [load]);
 				const doExport = () => rpc("profile.export").then(
-					(v) => setData((d) => ({ ...d, exported: v.path })),
-					(e) => setError(String(e).slice(0, 100)),
+					(v) => setStatus("已导出：" + v.path),
+					(e) => setError(String(e).slice(0, 120)),
 				);
 				if (error) return React.createElement("div", { style: hintStyle }, "加载失败：" + error);
 				if (!data) return React.createElement("div", { style: hintStyle }, "加载中…");
+				const groups = data.partitions || {};
+				const group = groups[tab] || { total: 0, valid: 0, entries: [] };
+				const entries = group.entries || [];
+				const tabButton = (key, label, count) => React.createElement("button", {
+					key,
+					style: tab === key ? buttonStyle : buttonGhost,
+					onClick: () => setTab(key),
+				}, count === undefined ? label : label + "（" + count + "）");
+				const om = (digest && digest.omitted) || { tact: 0, topic: 0, wander: 0 };
 				return React.createElement(
 					"div",
 					{ style: listStyle },
-					React.createElement("div", null, React.createElement("b", null, "处境切面"), React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "2px 0", fontSize: 12 } }, data.tact || "(空)")),
-					React.createElement("div", null, React.createElement("b", null, "话题切面"), React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "2px 0", fontSize: 12 } }, data.topic || "(空)")),
+					React.createElement("div", { style: tabRow },
+						PARTITIONS.map((p) => tabButton(p.key, p.label, (groups[p.key] || {}).valid || 0)),
+						tabButton("__engine", "引擎室输入")),
+					tab === "__engine"
+						? React.createElement("div", null,
+							React.createElement("div", { style: hintStyle }, digest
+								? "共 " + digest.totalChars + " / " + digest.budgetChars + " 字符（" + (digest.withinBudget ? "在预算内" : "超预算") + "）；按预算省略：处境 " + om.tact + " 条、话题 " + om.topic + " 条、兴趣 " + om.wander + " 条"
+								: "加载中…"),
+							React.createElement("div", null,
+								React.createElement("b", null, "处境切面"),
+								React.createElement("div", { style: entryBody }, (digest && digest.tact) || "(空)")),
+							React.createElement("div", null,
+								React.createElement("b", null, "话题切面"),
+								React.createElement("div", { style: entryBody }, (digest && digest.topic) || "(空)")),
+							React.createElement("div", null,
+								React.createElement("b", null, "兴趣切面"),
+								React.createElement("div", { style: entryBody }, (digest && digest.wander) || "(空)")))
+						: React.createElement("div", null,
+							React.createElement("div", { style: hintStyle }, "有效 " + group.valid + " 条 / 历史 " + (group.total - group.valid) + " 条（过期条目不进引擎室输入，也不在这里列出）"),
+							entries.length === 0
+								? React.createElement("div", { style: hintStyle }, "（这个分区还没有条目）")
+								: entries.map((e) => React.createElement("div", { key: e.id || (String(e.topic) + String(e.content).slice(0, 12)), style: entryBox },
+									React.createElement("div", { style: entryHead },
+										(e.topic || "") + "/" + (e.subTopic || "")
+										+ "　conf " + Number(e.confidence || 0).toFixed(2)
+										+ (e.temporal ? "　" + e.temporal : "")
+										+ (e.lowActivity ? "　久未验证" : "")
+										+ (e.updatedAt ? "　更新 " + String(e.updatedAt).slice(0, 10) : "")),
+									React.createElement("div", { style: entryBody }, e.content || "")))),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonGhost, onClick: () => { load(); } }, "刷新"),
 						React.createElement("button", { style: buttonGhost, onClick: () => { void doExport(); } }, "导出 Markdown")),
-					data.exported ? React.createElement("div", { style: hintStyle }, "已导出：" + data.exported) : null,
+					status ? React.createElement("div", { style: hintStyle }, status) : null,
 				);
 			}
 
@@ -339,10 +391,10 @@ window.__ModuleLoader__.load({
 				React.useEffect(() => {
 					rpc("config.get").then(setValue, (e) => setLoadErr(String(e).slice(0, 100)));
 				}, []);
-				const interval = value && Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 20;
-				const cap = value && Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 3;
+				const interval = value && Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 60;
+				const cap = value && Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 10;
 				const timeInject = value && value.timeInjectMin === 0 ? 0 : (value && Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
-				const statusbar = !value || value.statusbar !== false;
+				const statusbar = !!value && value.statusbar === true;
 				const idleMode = !!value && value.idleMode === true;
 				const tokenSaver = !!value && value.tokenSaver === true;
 				const psyEnabled = !!value && value.psyEnabled === true;

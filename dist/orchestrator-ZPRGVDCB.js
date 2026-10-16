@@ -2,6 +2,7 @@ import {
   ENGINE_ROOM_EXTRA_TOOLS,
   HOME_ROTATE_EVENT_COUNT,
   TOKEN_SAVER_IDLE_SECONDS,
+  TOKEN_SAVER_WAKE_MS,
   agentLooksAlive,
   applyHeartbeatInterval,
   beat,
@@ -22,9 +23,10 @@ import {
   shouldArchiveRotatedHome,
   shouldRotateHome,
   spokeTextSince,
-  startOrchestrator
-} from "./chunk-QHUOFQYT.js";
-import "./chunk-Y37A2HGP.js";
+  startOrchestrator,
+  userActiveInBoundSessions
+} from "./chunk-TRO4E6WG.js";
+import "./chunk-WLZSABBH.js";
 import "./chunk-3QJJRXIR.js";
 import "./chunk-JDH2LDFS.js";
 import "./chunk-3MDBU6WY.js";
@@ -37,6 +39,7 @@ export {
   ENGINE_ROOM_EXTRA_TOOLS,
   HOME_ROTATE_EVENT_COUNT,
   TOKEN_SAVER_IDLE_SECONDS,
+  TOKEN_SAVER_WAKE_MS,
   agentLooksAlive,
   applyHeartbeatInterval,
   beat,
@@ -57,6 +60,7 @@ export {
   shouldArchiveRotatedHome,
   shouldRotateHome,
   spokeTextSince,
-  startOrchestrator
+  startOrchestrator,
+  userActiveInBoundSessions
 };
-//# sourceMappingURL=orchestrator-GLKINVTZ.js.map
+//# sourceMappingURL=orchestrator-ZPRGVDCB.js.map

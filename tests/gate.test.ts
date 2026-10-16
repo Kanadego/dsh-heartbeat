@@ -91,7 +91,7 @@ test('active presence (typing) silences', () => {
 });
 
 test('daily cap silences', () => {
-  const d = speak({ sent: sentWith(3, NOON - 3600_000) });
+  const d = speak({ sent: sentWith(policy.gate.maxDailySend, NOON - 3600_000) });
   assert.equal(d.verdict, 'SILENT');
   assert.match(d.reason, /daily cap/);
 });
@@ -106,7 +106,7 @@ test('all clear -> SPEAK with window info', () => {
   const d = speak({});
   assert.equal(d.verdict, 'SPEAK');
   assert.equal(d.sentToday, 0);
-  assert.equal(d.cap, 3);
+  assert.equal(d.cap, policy.gate.maxDailySend);
   assert.equal(d.window.cls, 'idle');
 });
 
@@ -125,7 +125,7 @@ test('confirmSend persists and gateStatus reflects it (encrypted at rest)', () =
   assert.equal(r.ok, true);
   const st = gateStatus(guard, policy, workspace(), NOON + 31 * 60_000);
   assert.equal(st.sent, 1);
-  assert.equal(st.cap, 3);
+  assert.equal(st.cap, policy.gate.maxDailySend);
   assert.equal(st.quiet, false);
   // sent.json must be DPAPI-encrypted
   const raw = fs.readFileSync(path.join(workspace().dataDir, 'sent.json'));
@@ -133,7 +133,7 @@ test('confirmSend persists and gateStatus reflects it (encrypted at rest)', () =
 });
 
 test('confirmSend refuses when cap is reached (fail-closed)', () => {
-  const st = { today: '2026-09-06', items: sentWith(3, NOON - 3600_000).items };
+  const st = { today: '2026-09-06', items: sentWith(policy.gate.maxDailySend, NOON - 3600_000).items };
   fs.writeFileSync(path.join(workspace().dataDir, 'sent.json'), JSON.stringify(st), 'utf8');
   const r = confirmSend(guard, policy, workspace(), 'topic', '超限', NOON);
   assert.equal(r.ok, false);

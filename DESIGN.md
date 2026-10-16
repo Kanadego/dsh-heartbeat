@@ -26,7 +26,7 @@
 | 测试 | node:test + tsx，**300 个**（约 78 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
 | 运行数据 | `dataDir` 默认 `<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`），**在包外**，重装 / 升级 / 卸载都不会碰它；换位置用插件配置 `dataDir` 或环境变量 `HEARTBEAT_DATA_DIR`（v1.9.2 / issue #2） |
 | 老数据 | v1.9.1 及更早默认装在包内 `data/`（在 `node_modules` 下面），升级后首次启动自动搬出去：先备份、逐文件校验通过才删原件，失败原地不动并留痕（见 C13b） |
-| 心跳节律 | 出厂 20 分钟一拍（设置页 / CLI 可调）；沉默拍**零模型调用** |
+| 心跳节律 | 出厂 60 分钟一拍（设置页 / CLI 可调）；沉默拍**零模型调用** |
 | 主循环 | `src/core/orchestrator.ts` 的 `beat()` |
 | 代码规模 | 50 个 `.ts` 文件；核心是 `orchestrator.ts`（约 1730 行）与 `rpc.ts` |
 
@@ -43,7 +43,7 @@
   ↓
 家轮换检查 —— 上下文溢出被标记，或引擎室事件数 ≥ 3000 → 换个新会话当引擎室
   ↓
-省 token 闸 —— 人离开 ≥ 30 分钟或锁屏 → 整拍挂起（连维护相都不跑）
+省 token 闸 —— 人离开 ≥ 30 分钟、锁屏，且绑定会话里没有未消化的新消息 → 整拍挂起（连维护相都不跑）；挂起期间每 3 分钟只重探一次环境（不取 agent、不调模型），回来即恢复
   ↓
 ① 维护 maintenancePhase          超时 10 min
      素材池 gc · 日志按龄裁剪 · 判断画像该不该合并 · 收件箱健康检查
@@ -418,7 +418,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 
 1. **出厂层** `config/policy.json`（包内只读）
 2. **用户文件层** `data/settings/policy.json`（`deepMerge` 覆盖，非法即 fail-closed）
-3. **UI 层** `data/settings/ui.json`（设置卡片写的六个字段：`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`）
+3. **UI 层** `data/settings/ui.json`（设置卡片写的七个字段：`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` / `psyEnabled`）
 4. **组合条目覆盖** profile 的 `cordis.patch.yml` 里 `id: heartbeat` 的 config（`intervalMin` / `maxDailySend` / `dataDir` 等，0 = 不覆盖）
 
 > **只有 UI 层这六个字段支持热改**——设置卡片一保存就生效，不用重启。**其余参数只有出厂层与用户文件层两条路**，改完要重启。这是刻意的：经常要拧的旋钮做成热的，结构性参数做成冷的。
@@ -464,7 +464,7 @@ node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
 | `store.ts` | 守卫逐条裁决（白名单 / evidence 强制且 ref 必须存在 / 置信度按来源封顶 / psy 门控 / 分区容量 / UPDATE 升级要二次确认 / INVALIDATE 的归属）+ 确定性老化（volatile 14 天失效、stable 180 天标"低活跃"但不删）+ **journal 唯一权威**（ADD 回写 id 保证重放一致；`verify` 只报不修；`rebuild` 原子替换，撕裂尾会显式报告） |
 | `inbox.ts` | 观察收件箱：去重键 `kind + ref`（同一条观察重复投递只算一次）、note 截断到 120 字、**合并失败时收件箱保留** |
 | `consolidate.ts` | 合并：触发（积压 ≥ 30 条，或距上次 ≥ 12 小时且积压不为 0）→ 排水分组 → 拼裁决提示词 → 调模型 → 守卫 → 应用 + 落 journal + 排水（**成功才清**）。单飞锁防重入，模型调用由编排器注入 |
-| `digest.ts` | 处境摘要：三个切面（作息 + 沟通 + 窗口类别 / 高置信话题 top N / 高置信兴趣），控制在 800 token 预算内；stable 但久未验证的条目会标"久未验证" |
+| `digest.ts` | 处境摘要：三个切面（作息 + 沟通 + 窗口类别 / 高置信话题 top N / 高置信兴趣），v2.0 起总预算 6000 字符、三段各有上限、超预算按**整条**跳过并回报丢弃条数（`omitted`）；stable 但久未验证的条目会标"久未验证" |
 | `snapshot.ts` | journal 快照：累积到阈值就把当前状态定格，缩短重放路径 |
 
 **隐私边界**：送进模型的只有条目字段（四个分区、含 psy）与 ≤1 句观察引语——**不送对话原文、不送证据全量**。
@@ -579,7 +579,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 |---|---|---|
 | `config/policy.json` | **出厂层**（包内只读） | 全部默认参数 |
 | `data/settings/policy.json` | 用户文件层 | 深合并覆盖出厂层；写错了 fail-closed |
-| `data/settings/ui.json` | UI 层 | 设置卡片写的六项（`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`） |
+| `data/settings/ui.json` | UI 层 | 设置卡片写的七项（`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` / `psyEnabled`） |
 | `data/settings/interests.json` | 兴趣层 | 首次编辑时从出厂层复制过来，此后**整体取代**出厂层 |
 | `data/settings/profile-schema.json` | 白名单层 | 同上，整体取代出厂层 |
 | `data/settings/bindings.json` | 会话绑定 | 陪伴 / 观察目标的名单 |
@@ -607,7 +607,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 ## 6. 参数位置速查
 
-**先看 §4.3 的三层结构**：能热改的只有设置卡片那六个字段，其余都是"改文件 + 重启"。下面按"改哪儿"分组。
+**先看 §4.3 的三层结构**：能热改的只有设置卡片那七个字段，其余都是"改文件 + 重启"。下面按"改哪儿"分组。
 
 ### 6.1 热参数 —— 设置卡片（落 `data/settings/ui.json`）
 
@@ -628,10 +628,10 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 
 | 路径 | 含义 | 出厂值 |
 |---|---|---|
-| `heartbeat.intervalMin` | 心跳间隔（分钟） | 20 |
+| `heartbeat.intervalMin` | 心跳间隔（分钟） | 60 |
 | `heartbeat.idleMode` | 闲人模式 | false |
 | `heartbeat.archiveRotatedHome` | 家轮换时归档旧会话 | true |
-| `gate.maxDailySend` | 每日开口上限 | 3 |
+| `gate.maxDailySend` | 每日开口上限 | 10 |
 | `gate.cooldownMinutes` | 两次开口之间的最小间隔 | 30 |
 | `gate.quietHours.start` / `.end` | 静默时段 | 01:00 / 08:00 |
 | `browse.windows` | 闲逛窗口 | 11:00–15:00、17:00–21:00 |
@@ -699,7 +699,7 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | `TOKEN_SAVER_IDLE_SECONDS` | 1800 | `src/core/orchestrator.ts:1559` |
 | 文件锁：判死 / 等待 | 15 秒 / 3 秒 | `src/core/file-lock.ts` |
 | 作息：`TAU_DAYS` / `CELL_EPSILON` / 双门阈值 | 10 天 / 1e-3 / 0.25 与 5% | `src/rhythm/rhythm.ts` |
-| 摘要预算 `BUDGET_CHARS` | 3200 字符 | `src/profile/digest.ts` |
+| 摘要预算 `BUDGET_CHARS` | 6000 字符（v2.0；分区上限 `TACT_MAX_CHARS` 2500 / `WANDER_MAX_CHARS` 850 / 话题取剩余且 ≥`TOPIC_MIN_CHARS` 2400） | `src/profile/digest.ts` |
 | `MAX_CHAT_SEEDS_PER_RUN` | 3 | `src/profile/consolidate.ts` |
 | `REPORT_KEEP` | 400 条 | `src/seeds/report.ts` |
 | `DESTRUCTIVE_ENDPOINTS` | 六个端点 | `src/rpc.ts` |
@@ -799,6 +799,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 | `report_missing` / `report_read_failed` | 投递包没报账 / 报账读不出来 |
 | `expression_dropped` / `_streak` | 输出被判不合格丢弃 / 连续丢弃计数 |
 | `status_written` / `status_write_failed` | 状态栏场景写盘 |
+| `token_saver_resumed` | 省 token 闸放开（`via` = wake / interval，`heldMin` = 挂了多久，`checks` = 唤醒检查次数） |
 | `pulse` / `time_injected` / `statusbar_track` | 探针脉冲 / 时间注入 / 状态栏走了哪条轨 |
 
 **周报与维护**
