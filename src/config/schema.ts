@@ -44,7 +44,11 @@ export interface Policy {
   };
   /** Observation depth (v1.8.0): how much of each user message enters the inbox. */
   observe: { maxChars: number; perBeat: number };
-  weekly: { enabled: boolean };
+  weekly: {
+    enabled: boolean;
+    /** v2.0 (item 5): how many past reports the store keeps and the card lists. */
+    keepReports: number;
+  };
   retention: { envPulseHours: number; decisionLogDays: number };
 }
 
@@ -120,6 +124,9 @@ export function assertPolicy(input: unknown): asserts input is Policy {
   if (typeof ob.perBeat !== 'number' || ob.perBeat < 1 || ob.perBeat > 100) fail('observe.perBeat must be in [1, 100]');
   if (!isPlainObject(p.weekly)) fail('weekly missing');
   if (typeof p.weekly.enabled !== 'boolean') fail('weekly.enabled must be boolean');
+  if (typeof p.weekly.keepReports !== 'number' || p.weekly.keepReports < 1 || p.weekly.keepReports > 52) {
+    fail('weekly.keepReports must be a number in [1, 52]');
+  }
   const r = p.retention;
   if (!isPlainObject(r)) fail('retention missing');
   if (typeof r.envPulseHours !== 'number' || typeof r.decisionLogDays !== 'number') fail('retention fields missing');

@@ -10,6 +10,7 @@ import {
   minutesOfDay,
   pendingOlderThan,
   preferenceFilePath,
+  pruneWeeklyReports,
   readLedger,
   recordDelivery,
   renderTemplateReport,
@@ -20,7 +21,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-Y37A2HGP.js";
+} from "./chunk-WLZSABBH.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -1102,7 +1103,11 @@ function summarizeRhythm(paths) {
 }
 
 // src/profile/digest.ts
-var BUDGET_CHARS = 3200;
+var BUDGET_CHARS = 6e3;
+var TACT_MAX_CHARS = 2500;
+var WANDER_MAX_CHARS = 850;
+var TOPIC_MIN_CHARS = 2400;
+var TOPN_DEFAULT = 12;
 function fmtEntry(prefix, content, opts) {
   const flag = opts.low ? "\uFF08\u4E45\u672A\u9A8C\u8BC1\uFF09" : "";
   return `${prefix}${content}${flag} [conf ${opts.confidence.toFixed(2)}]`;
@@ -1111,9 +1116,25 @@ function profileTopicEntries(doc, topN) {
   const score = (e) => e.confidence * 0.7 + 1 / (1 + Math.max(0, Date.now() - Date.parse(e.updatedAt)) / 864e5) * 0.3;
   return [...doc.partitions.interest.entries, ...doc.partitions.projects.entries].filter((e) => e.validTo === null).sort((a, b) => score(b) - score(a)).slice(0, topN);
 }
+function capSection(entries, cap) {
+  const kept = [];
+  let len = 0;
+  let omitted = 0;
+  for (const line of entries) {
+    const add = kept.length === 0 ? line.length : line.length + 1;
+    if (len + add > cap) {
+      omitted += 1;
+      continue;
+    }
+    kept.push(line);
+    len += add;
+  }
+  if (kept.length === 0 && omitted > 0) return { text: `\uFF08\u672C\u8282 ${omitted} \u6761\u8D85\u51FA\u9884\u7B97\uFF0C\u5DF2\u7701\u7565\uFF09`, omitted };
+  return { text: kept.join("\n"), omitted };
+}
 function buildDigest(guard, paths, policy, input = {}) {
   const doc = loadProfile(guard, profileFilePath(paths.dataDir));
-  const topN = input.topN ?? 8;
+  const topN = input.topN ?? TOPN_DEFAULT;
   const summary = summarizeRhythm(paths);
   let rhythmLine = "\u4F5C\u606F\u672A\u77E5\uFF08\u6837\u672C\u4E0D\u8DB3\uFF09";
   if (summary.daysSampled > 0 && summary.peakHours.length > 0) {
@@ -1129,24 +1150,25 @@ function buildDigest(guard, paths, policy, input = {}) {
     return fmtEntry(prefix, `${e.topic}/${e.subTopic}: ${e.content}`, { low: e.lowActivity, confidence: e.confidence });
   });
   const wanderEntries = doc.partitions.interest.entries.filter((e) => e.validTo === null && e.confidence >= 0.6 && e.subTopic === "preference").slice(0, 5).map((e) => `- ${e.content} [conf ${e.confidence.toFixed(2)}]`);
-  const stale = pendingOlderThan(guard, ledgerFilePath(paths.dataDir), 3).slice(0, 3).map((e) => `- ${e.text}\uFF08${e.date}\uFF09`);
-  const tact = tactParts.join("\n");
-  const topic = [
-    ...topicEntries,
-    ...stale.length ? ["[\u8D26\u672C\u5F85\u8DDF\u8FDB] ", ...stale] : []
-  ].join("\n");
-  const wander = wanderEntries.join("\n") || "(\u65E0\u9AD8\u7F6E\u4FE1\u5174\u8DA3)";
-  const totalChars = tact.length + topic.length + wander.length;
-  let outTopic = topic;
-  if (tact.length + outTopic.length + wander.length > BUDGET_CHARS && outTopic.length > 800) {
-    outTopic = outTopic.slice(0, 800) + "\n(\u5DF2\u622A\u65AD\u4EE5\u63A7\u5236\u9884\u7B97)";
-  }
+  const ledgerBlock = pendingOlderThan(guard, ledgerFilePath(paths.dataDir), 3).slice(0, 3).map((e) => `- ${e.text}\uFF08${e.date}\uFF09`);
+  const ledgerText = ledgerBlock.length ? ["[\u8D26\u672C\u5F85\u8DDF\u8FDB] ", ...ledgerBlock].join("\n") : "";
+  const tact = capSection(tactParts, TACT_MAX_CHARS);
+  const wander = capSection(wanderEntries.length ? wanderEntries : ["(\u65E0\u9AD8\u7F6E\u4FE1\u5174\u8DA3)"], WANDER_MAX_CHARS);
+  const topicBudget = Math.max(
+    TOPIC_MIN_CHARS,
+    BUDGET_CHARS - tact.text.length - wander.text.length - ledgerText.length - 40
+  );
+  const topicCapped = capSection(topicEntries, topicBudget);
+  const topic = [topicCapped.text, ledgerText].filter((s) => s.length > 0).join("\n");
+  const totalChars = tact.text.length + topic.length + wander.text.length;
   return {
-    tact,
-    topic: outTopic,
-    wander,
-    totalChars: tact.length + outTopic.length + wander.length,
-    withinBudget: tact.length + outTopic.length + wander.length <= BUDGET_CHARS
+    tact: tact.text,
+    topic,
+    wander: wander.text,
+    totalChars,
+    withinBudget: totalChars <= BUDGET_CHARS,
+    omitted: { tact: tact.omitted, topic: topicCapped.omitted, wander: wander.omitted },
+    budgetChars: BUDGET_CHARS
   };
 }
 
@@ -1871,6 +1893,10 @@ async function weeklyPhase(bc) {
       text
     });
     audit({ event: "weekly_generated", source, chars: text.length });
+    const pruned = pruneWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports);
+    if (pruned.length > 0) {
+      audit({ event: "weekly_pruned", keep: policy.weekly.keepReports, removed: pruned });
+    }
     if (!inQuietHours(policy, now)) {
       try {
         await sendWeeklyReadyHint(paths);
@@ -2264,13 +2290,13 @@ function writeBeatStatus(deps, info) {
     const pulse = readPulse(guard, paths);
     const last = getLastBeat();
     const spokeThisBeat = last?.verdict === "spoke" && !!last.at && last.at >= info.beatStart;
-    const scene = deriveScene({
+    const scene = info.away ? "away" : deriveScene({
       quietHours: inQuietHours(policy, Date.now()),
       spokeThisBeat,
       wanderedThisBeat: info.wandered,
       presence: pulse?.presence ?? "unknown"
     });
-    const note = last?.verdict === "spoke" ? clampNote(last.text) : void 0;
+    const note = info.away ? "\u4F60\u4E0D\u5728\uFF0C\u5FC3\u8DF3\u6302\u8D77" : last?.verdict === "spoke" ? clampNote(last.text) : void 0;
     writeStatus(guard, paths, {
       at: (/* @__PURE__ */ new Date()).toISOString(),
       scene,
@@ -2293,11 +2319,71 @@ function scheduleDeferredRetry(deps) {
   }, delayMs);
 }
 var TOKEN_SAVER_IDLE_SECONDS = 1800;
+var TOKEN_SAVER_WAKE_MS = 3 * 6e4;
+var TOKEN_SAVER_ACTIVITY_SCAN = 200;
+var wakeTimer;
+var pausedSince = 0;
+var heldChecks = 0;
+function clearTokenSaverWake() {
+  if (wakeTimer) {
+    clearTimeout(wakeTimer);
+    wakeTimer = void 0;
+  }
+}
+function scheduleTokenSaverWake(deps) {
+  if (!pausedSince) pausedSince = Date.now();
+  if (wakeTimer) return;
+  wakeTimer = setTimeout(() => {
+    wakeTimer = void 0;
+    void (async () => {
+      try {
+        if (await tokenSaverActive(deps)) {
+          heldChecks += 1;
+          scheduleTokenSaverWake(deps);
+          return;
+        }
+        const heldMin = Math.round((Date.now() - pausedSince) / 6e4);
+        const checks = heldChecks;
+        clearTokenSaverWake();
+        pausedSince = 0;
+        heldChecks = 0;
+        appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "token_saver_resumed", via: "wake", heldMin, checks });
+        void beat(deps);
+      } catch {
+      }
+    })();
+  }, TOKEN_SAVER_WAKE_MS);
+  wakeTimer.unref?.();
+}
 async function tokenSaverActive(deps) {
   if (!getRuntime().flags.tokenSaver()) return false;
+  if (await userActiveInBoundSessions(deps)) return false;
   if (await probeWorkstationLocked()) return true;
   const idle = await probeIdleSeconds(deps.guard, deps.paths);
   return idle >= TOKEN_SAVER_IDLE_SECONDS;
+}
+async function userActiveInBoundSessions(deps) {
+  try {
+    const { loadBindings, observeTargets } = await import("./bindings-225SI7KC.js");
+    const targets = observeTargets(loadBindings(deps.guard, deps.paths.settingsDir));
+    if (targets.length === 0) return false;
+    const cursors = loadCursors(path9.join(deps.paths.dataDir, "cursors.json")).sessions;
+    for (const b of targets) {
+      const agent = ctx_getAgent(deps, b.sessionId);
+      if (!agent) continue;
+      const count = sessionEventCount(agent.session);
+      const from = Math.max(cursors[b.sessionId] ?? 0, count - TOKEN_SAVER_ACTIVITY_SCAN);
+      for (const e of sessionEvents(agent.session, from)) {
+        if (e.type !== "user/message") continue;
+        const d = e.data;
+        if (d?.source && (d.source.kind === "heartbeat" || d.source.kind === "plugin" || d.source.plugin === "heartbeat")) continue;
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 async function beat(deps) {
   if (beating) return;
@@ -2342,13 +2428,26 @@ async function beat(deps) {
       return;
     }
     let wandered = false;
+    let pausedAway = false;
     if (agent) {
       deferredRetries = 0;
       const bc = { deps, agent, now };
       if (await tokenSaverActive(deps)) {
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "silent", reason: "token-saver" });
         noteBeat("silent", { reason: "token-saver\uFF08\u4F60\u4E0D\u5728\uFF0C\u5FC3\u8DF3\u6302\u8D77\uFF09" });
+        pausedAway = true;
+        scheduleTokenSaverWake(deps);
       } else {
+        if (pausedSince) {
+          appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+            event: "token_saver_resumed",
+            via: "interval",
+            heldMin: Math.round((Date.now() - pausedSince) / 6e4)
+          });
+        }
+        clearTokenSaverWake();
+        pausedSince = 0;
+        heldChecks = 0;
         await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, "maintenance");
         appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "phase_done", phase: "maintenance" });
         await weeklyPhase(bc);
@@ -2370,7 +2469,7 @@ async function beat(deps) {
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "beat_agentless" });
       scheduleDeferredRetry(deps);
     }
-    writeBeatStatus(deps, { beatStart, wandered });
+    writeBeatStatus(deps, { beatStart, wandered, away: pausedAway });
   } catch (e) {
     deps.ctx.logger.error("heartbeat: beat failed: %s", String(e).slice(0, 200));
     markHomeRotateIfOverflow(e);
@@ -2433,6 +2532,9 @@ function startOrchestrator(deps) {
       lastBeat = null;
       droppedStreak = 0;
       deferredRetries = 0;
+      clearTokenSaverWake();
+      pausedSince = 0;
+      heldChecks = 0;
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = void 0;
@@ -2473,7 +2575,9 @@ export {
   pickSpokenLine,
   spokeTextSince,
   TOKEN_SAVER_IDLE_SECONDS,
+  TOKEN_SAVER_WAKE_MS,
+  userActiveInBoundSessions,
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-QHUOFQYT.js.map
+//# sourceMappingURL=chunk-TRO4E6WG.js.map

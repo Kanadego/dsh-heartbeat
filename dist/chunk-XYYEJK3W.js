@@ -132,6 +132,9 @@ function assertPolicy(input) {
   if (typeof ob.perBeat !== "number" || ob.perBeat < 1 || ob.perBeat > 100) fail("observe.perBeat must be in [1, 100]");
   if (!isPlainObject(p.weekly)) fail("weekly missing");
   if (typeof p.weekly.enabled !== "boolean") fail("weekly.enabled must be boolean");
+  if (typeof p.weekly.keepReports !== "number" || p.weekly.keepReports < 1 || p.weekly.keepReports > 52) {
+    fail("weekly.keepReports must be a number in [1, 52]");
+  }
   const r = p.retention;
   if (!isPlainObject(r)) fail("retention missing");
   if (typeof r.envPulseHours !== "number" || typeof r.decisionLogDays !== "number") fail("retention fields missing");
@@ -330,4 +333,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-ZLV4NMFX.js.map
+//# sourceMappingURL=chunk-XYYEJK3W.js.map

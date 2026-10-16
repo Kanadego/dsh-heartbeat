@@ -48,6 +48,7 @@ import {
   buildWeeklyPrompt,
   renderTemplateReport,
   saveWeeklyReport,
+  pruneWeeklyReports,
 } from '../weekly/report.js';
 
 export interface OrchestratorDeps {
@@ -1038,6 +1039,11 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
       text,
     });
     audit({ event: 'weekly_generated', source, chars: text.length });
+    // v2.0 (item 5): keep only the newest N reports (policy.weekly.keepReports).
+    const pruned = pruneWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports);
+    if (pruned.length > 0) {
+      audit({ event: 'weekly_pruned', keep: policy.weekly.keepReports, removed: pruned });
+    }
     // Toast skips quiet hours — a 3 a.m. "your report is ready" is noise.
     if (!inQuietHours(policy, now)) {
       try {
@@ -1564,19 +1570,26 @@ function noteDroppedStreak(auditFile: string, why: string): void {
 
 /** §17.3: derive the scene from this beat's signals and persist it for the
  * statusbar tracks. Failure must never break the beat (notify-style contract). */
-function writeBeatStatus(deps: OrchestratorDeps, info: { beatStart: string; wandered: boolean }): void {
+function writeBeatStatus(deps: OrchestratorDeps, info: { beatStart: string; wandered: boolean; away?: boolean }): void {
   const { guard, paths, policy } = deps;
   try {
     const pulse = readPulse(guard, paths);
     const last = getLastBeat();
     const spokeThisBeat = last?.verdict === 'spoke' && !!last.at && last.at >= info.beatStart;
-    const scene = deriveScene({
-      quietHours: inQuietHours(policy, Date.now()),
-      spokeThisBeat,
-      wanderedThisBeat: info.wandered,
-      presence: pulse?.presence ?? 'unknown',
-    });
-    const note = last?.verdict === 'spoke' ? clampNote(last.text) : undefined;
+    // 2026-10-16: a token-saver pause must say "away" instead of letting the
+    // scene fall out of a stale pulse — the old code told the session
+    // 在场待着 while the heartbeat was in fact paused.
+    const scene = info.away
+      ? 'away' as const
+      : deriveScene({
+        quietHours: inQuietHours(policy, Date.now()),
+        spokeThisBeat,
+        wanderedThisBeat: info.wandered,
+        presence: pulse?.presence ?? 'unknown',
+      });
+    const note = info.away
+      ? '你不在，心跳挂起'
+      : (last?.verdict === 'spoke' ? clampNote(last.text) : undefined);
     writeStatus(guard, paths, {
       at: new Date().toISOString(),
       scene,
@@ -1609,16 +1622,102 @@ function scheduleDeferredRetry(deps: OrchestratorDeps): void {
  * covers the sleep, so the same threshold holds. */
 export const TOKEN_SAVER_IDLE_SECONDS = 1800;
 
+/** Wake-check cadence while the token saver holds the beat (2026-10-16).
+ *
+ * The gate used to be consulted only on the interval tick, so coming back after
+ * an absence left the heartbeat silent for up to a whole interval — with a
+ * 60-min interval that reads as "it never resumed". While paused we re-probe on
+ * this short timer instead: probe-only (no agent, no model, no audit line per
+ * check) and a full beat the moment the user is back. */
+export const TOKEN_SAVER_WAKE_MS = 3 * 60_000;
+
+/** Bound on the log tail scanned for user activity on each gate call. */
+const TOKEN_SAVER_ACTIVITY_SCAN = 200;
+
+/** Wake-check state: armed while paused, cleared by the first beat that runs. */
+let wakeTimer: NodeJS.Timeout | undefined;
+let pausedSince = 0;
+let heldChecks = 0;
+
+function clearTokenSaverWake(): void {
+  if (wakeTimer) {
+    clearTimeout(wakeTimer);
+    wakeTimer = undefined;
+  }
+}
+
+/** Re-probe the gate while paused; start a full beat as soon as he is back. */
+function scheduleTokenSaverWake(deps: OrchestratorDeps): void {
+  if (!pausedSince) pausedSince = Date.now();
+  if (wakeTimer) return;
+  wakeTimer = setTimeout(() => {
+    wakeTimer = undefined;
+    void (async () => {
+      try {
+        if (await tokenSaverActive(deps)) {
+          heldChecks += 1;
+          scheduleTokenSaverWake(deps);
+          return;
+        }
+        const heldMin = Math.round((Date.now() - pausedSince) / 60_000);
+        const checks = heldChecks;
+        clearTokenSaverWake();
+        pausedSince = 0;
+        heldChecks = 0;
+        appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'token_saver_resumed', via: 'wake', heldMin, checks });
+        void beat(deps);
+      } catch { /* a timer must never throw */ }
+    })();
+  }, TOKEN_SAVER_WAKE_MS);
+  wakeTimer.unref?.();
+}
+
 /**
  * Token-saver gate: when enabled (UI card), pause the ENTIRE beat before any
  * model contact while the user is away (idle ≥ 30 min) or the workstation is
  * locked. Probe failure fails open (never pauses on a broken probe).
+ *
+ * 2026-10-16: a fresh message in a bound session also counts as presence. A
+ * quiet keyboard only proves the workstation is idle — he can be talking to us
+ * from another device (the QQ bot), and replaying that an hour later is worse
+ * than spending the beat.
  */
 async function tokenSaverActive(deps: OrchestratorDeps): Promise<boolean> {
   if (!getRuntime().flags.tokenSaver()) return false;
+  if (await userActiveInBoundSessions(deps)) return false;
   if (await probeWorkstationLocked()) return true;
   const idle = await probeIdleSeconds(deps.guard, deps.paths);
   return idle >= TOKEN_SAVER_IDLE_SECONDS; // idle < 0 (probe failed) fails open
+}
+
+/**
+ * True when a bound session holds a user message the collector has not drained
+ * yet (cursors.json): the same filter observeBoundSessions applies, over a
+ * bounded tail of the log. Any failure reads as "no activity", so a broken
+ * probe can never keep the beat awake by itself.
+ */
+export async function userActiveInBoundSessions(deps: OrchestratorDeps): Promise<boolean> {
+  try {
+    const { loadBindings, observeTargets } = await import('./bindings.js');
+    const targets = observeTargets(loadBindings(deps.guard, deps.paths.settingsDir));
+    if (targets.length === 0) return false;
+    const cursors = loadCursors(path.join(deps.paths.dataDir, 'cursors.json')).sessions;
+    for (const b of targets) {
+      const agent = ctx_getAgent(deps, b.sessionId);
+      if (!agent) continue;
+      const count = sessionEventCount(agent.session);
+      const from = Math.max(cursors[b.sessionId] ?? 0, count - TOKEN_SAVER_ACTIVITY_SCAN);
+      for (const e of sessionEvents(agent.session, from)) {
+        if (e.type !== 'user/message') continue;
+        const d = e.data as { source?: { kind?: string; plugin?: string } } | undefined;
+        if (d?.source && (d.source.kind === 'heartbeat' || d.source.kind === 'plugin' || d.source.plugin === 'heartbeat')) continue;
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 export async function beat(deps: OrchestratorDeps): Promise<void> {
@@ -1670,6 +1769,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
       return;
     }
     let wandered = false;
+    let pausedAway = false;
     if (agent) {
       deferredRetries = 0; // successful acquisition resets the backoff ladder
       const bc: BeatContext = { deps, agent, now };
@@ -1678,7 +1778,17 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
         // consolidation would defeat its purpose. Status stays "silent".
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'silent', reason: 'token-saver' });
         noteBeat('silent', { reason: 'token-saver（你不在，心跳挂起）' });
+        pausedAway = true;            // the status must say "away", not a normal scene
+        scheduleTokenSaverWake(deps); // resume within minutes of his return
       } else {
+        if (pausedSince) {
+          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+            event: 'token_saver_resumed', via: 'interval', heldMin: Math.round((Date.now() - pausedSince) / 60_000),
+          });
+        }
+        clearTokenSaverWake();
+        pausedSince = 0;
+        heldChecks = 0;
         await withTimeout(maintenancePhase(bc), MAINTENANCE_TIMEOUT_MS, 'maintenance');
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'phase_done', phase: 'maintenance' });
         await weeklyPhase(bc);
@@ -1704,7 +1814,7 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_agentless' });
       scheduleDeferredRetry(deps);
     }
-    writeBeatStatus(deps, { beatStart, wandered });
+    writeBeatStatus(deps, { beatStart, wandered, away: pausedAway });
   } catch (e) {
     deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
     markHomeRotateIfOverflow(e);
@@ -1770,6 +1880,9 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       lastBeat = null;
       droppedStreak = 0;
       deferredRetries = 0;
+      clearTokenSaverWake();
+      pausedSince = 0;
+      heldChecks = 0;
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = undefined;

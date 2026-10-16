@@ -62,7 +62,7 @@ export const Config = z.object({
   /** IANA timezone for the injected clock; empty = process zone. */
   timeZone: z.string().default(''),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-  statusbar: z.boolean().default(true),
+  statusbar: z.boolean().default(false),
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
   idleMode: z.boolean().default(false),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */

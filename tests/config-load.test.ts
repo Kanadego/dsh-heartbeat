@@ -9,13 +9,13 @@ import { assertPolicy, deepMerge } from '../src/config/schema.js';
 let sandbox = '';
 
 const FACTORY = {
-  heartbeat: { intervalMin: 20, idleMode: false, archiveRotatedHome: true },
-  gate: { maxDailySend: 3, cooldownMinutes: 30, quietHours: { start: '01:00', end: '08:00' } },
+  heartbeat: { intervalMin: 60, idleMode: false, archiveRotatedHome: true },
+  gate: { maxDailySend: 10, cooldownMinutes: 30, quietHours: { start: '01:00', end: '08:00' } },
   browse: { windows: [{ start: '11:00', end: '15:00' }], minIntervalHours: 4, maxSeedsPerVisit: 2 },
   seeds: { maxActive: 30, ttlDays: { news: 3, fandom: 14, scene: 60, promise: 90 }, coldBenchDays: 21, archiveCap: 50, retireAfterUsed: 2, scoreWeights: { freshness: 0.4, unused: 0.3, confidence: 0.3 } },
   profile: { consolidation: { minIntervalHours: 12, inboxBacklog: 30 }, partitionCap: 50, maxOpsPerRun: 10, confidenceCap: { chat: 0.6, screen: 0.4, browse: 0.4 }, volatileDays: 14, stableLowActivityDays: 180, psyEnabled: false },
   observe: { maxChars: 80, perBeat: 10 },
-  weekly: { enabled: true },
+  weekly: { enabled: true, keepReports: 3 },
   retention: { envPulseHours: 48, decisionLogDays: 30 },
 };
 
@@ -34,8 +34,8 @@ const guardStub = { assert: (p: string) => p } as never;
 
 test('factory-only load returns factory values', () => {
   const p = loadPolicy(guardStub, path.join(sandbox, 'config'), path.join(sandbox, 'settings'));
-  assert.equal(p.heartbeat.intervalMin, 20);
-  assert.equal(p.gate.maxDailySend, 3);
+  assert.equal(p.heartbeat.intervalMin, 60);
+  assert.equal(p.gate.maxDailySend, 10);
   assert.equal(p.profile.psyEnabled, false);
 });
 

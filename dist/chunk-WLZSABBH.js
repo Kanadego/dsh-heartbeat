@@ -459,7 +459,7 @@ function saveWeeklyReport(guard, dataDir, report) {
   atomicWriteJsonSync(stateFilePath(dataDir), { lastGeneratedAt: Date.parse(report.generatedAt) });
   return file;
 }
-function listWeeklyReports(guard, dataDir) {
+function listWeeklyReports(guard, dataDir, limit) {
   const out = [];
   try {
     for (const file of fs2.readdirSync(weeklyDirPath(dataDir))) {
@@ -470,7 +470,20 @@ function listWeeklyReports(guard, dataDir) {
     }
   } catch {
   }
-  return out.sort((a, b) => a.end < b.end ? 1 : -1);
+  const sorted = out.sort((a, b) => a.end < b.end ? 1 : -1);
+  return limit !== void 0 && limit > 0 ? sorted.slice(0, limit) : sorted;
+}
+function pruneWeeklyReports(guard, dataDir, keep) {
+  if (!Number.isFinite(keep) || keep <= 0) return [];
+  const removed = [];
+  for (const meta of listWeeklyReports(guard, dataDir).slice(keep)) {
+    try {
+      fs2.rmSync(guard.assert(path5.join(weeklyDirPath(dataDir), meta.file)));
+      removed.push(meta.file);
+    } catch {
+    }
+  }
+  return removed;
 }
 function readWeeklyReport(guard, dataDir, file) {
   if (!/^report-\d{4}-\d{2}-\d{2}\.json$/.test(file)) return null;
@@ -562,8 +575,9 @@ export {
   ensureWeeklyAnchor,
   saveWeeklyReport,
   listWeeklyReports,
+  pruneWeeklyReports,
   readWeeklyReport,
   buildWeeklyPrompt,
   renderTemplateReport
 };
-//# sourceMappingURL=chunk-Y37A2HGP.js.map
+//# sourceMappingURL=chunk-WLZSABBH.js.map

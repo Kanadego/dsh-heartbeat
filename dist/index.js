@@ -6,7 +6,7 @@ import {
   loadPolicy,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-ZLV4NMFX.js";
+} from "./chunk-XYYEJK3W.js";
 import {
   addBinding,
   loadBindings,
@@ -27,7 +27,7 @@ import {
   sessionEventCount,
   sessionEvents,
   startOrchestrator
-} from "./chunk-QHUOFQYT.js";
+} from "./chunk-TRO4E6WG.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -36,7 +36,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-Y37A2HGP.js";
+} from "./chunk-WLZSABBH.js";
 import {
   getRuntime,
   setRuntime
@@ -1450,8 +1450,35 @@ function buildEndpoints(deps, isLive) {
         tact: d.tact,
         topic: d.topic,
         wander: d.wander,
-        withinBudget: d.withinBudget
+        withinBudget: d.withinBudget,
+        // v2.0 (item 6): the card shows the budget and what the caps dropped.
+        totalChars: d.totalChars,
+        budgetChars: d.budgetChars,
+        omitted: d.omitted
       });
+    },
+    "profile.partitions"() {
+      const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+      const partitions = {};
+      for (const part of ["interest", "projects", "comm", "psy"]) {
+        const all = doc.partitions[part]?.entries ?? [];
+        const valid = all.filter((e) => e.validTo === null);
+        partitions[part] = {
+          total: all.length,
+          valid: valid.length,
+          entries: valid.slice().sort((a, b) => b.confidence - a.confidence || (a.updatedAt < b.updatedAt ? 1 : -1)).map((e) => ({
+            id: e.id,
+            topic: e.topic,
+            subTopic: e.subTopic,
+            content: e.content,
+            confidence: e.confidence,
+            temporal: e.temporal,
+            updatedAt: e.updatedAt,
+            lowActivity: e.lowActivity === true
+          }))
+        };
+      }
+      return ok({ partitions });
     },
     "profile.export"() {
       const doc = loadProfile(guard, profileFilePath(paths.dataDir));
@@ -1473,7 +1500,7 @@ function buildEndpoints(deps, isLive) {
       spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
       return ok({ path: f });
     },
-    "weekly.list": () => ok({ reports: listWeeklyReports(guard, paths.dataDir) }),
+    "weekly.list": () => ok({ reports: listWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports) }),
     "weekly.get"(p) {
       const file = String(p.file ?? "");
       const rep = readWeeklyReport(guard, paths.dataDir, file);
@@ -1815,7 +1842,7 @@ var Config = Schema.object({
   /** IANA timezone for the injected clock; empty = process zone. */
   timeZone: Schema.string().default(""),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-  statusbar: Schema.boolean().default(true),
+  statusbar: Schema.boolean().default(false),
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
   idleMode: Schema.boolean().default(false),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */

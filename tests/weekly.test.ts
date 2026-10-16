@@ -18,6 +18,7 @@ import {
   ensureWeeklyAnchor,
   saveWeeklyReport,
   listWeeklyReports,
+  pruneWeeklyReports,
   readWeeklyReport,
   renderTemplateReport,
   buildWeeklyPrompt,
@@ -43,6 +44,28 @@ after(() => {
 });
 
 const policy = () => loadPolicy(guard, workspace().configDir, workspace().settingsDir);
+
+test('pruneWeeklyReports: only the newest N report files survive (v2.0 item 5)', () => {
+  const dataDir = workspace().dataDir;
+  const mint = (day: string): void => {
+    saveWeeklyReport(guard, dataDir, {
+      start: `2026-09-${day}T00:00:00.000Z`,
+      end: `2026-09-${day}T23:59:59.000Z`,
+      generatedAt: `2026-09-${day}T23:59:59.000Z`,
+      source: 'template',
+      text: '报告',
+    });
+  };
+  for (const d of ['01', '08', '15', '22', '29']) mint(d);
+  assert.equal(listWeeklyReports(guard, dataDir).length, 5);
+  assert.deepEqual(listWeeklyReports(guard, dataDir, 3).map((r) => r.end.slice(0, 10)), ['2026-09-29', '2026-09-22', '2026-09-15']);
+  const removed = pruneWeeklyReports(guard, dataDir, 3);
+  assert.deepEqual(removed, ['report-2026-09-08.json', 'report-2026-09-01.json']);
+  assert.deepEqual(listWeeklyReports(guard, dataDir).map((r) => r.end.slice(0, 10)), ['2026-09-29', '2026-09-22', '2026-09-15']);
+  assert.equal(weeklyDue(guard, dataDir, Date.parse('2026-10-01T00:00:00.000Z')), false);
+  assert.deepEqual(pruneWeeklyReports(guard, dataDir, 0), []);
+  assert.equal(listWeeklyReports(guard, dataDir).length, 3);
+});
 
 test('weeklyDue: a fresh install is anchored (waits a full week), a saved report resets the clock', () => {
   const now = Date.parse('2026-10-05T12:00:00');

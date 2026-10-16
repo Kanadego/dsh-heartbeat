@@ -392,7 +392,41 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
         topic: d.topic,
         wander: d.wander,
         withinBudget: d.withinBudget,
+        // v2.0 (item 6): the card shows the budget and what the caps dropped.
+        totalChars: d.totalChars,
+        budgetChars: d.budgetChars,
+        omitted: d.omitted,
       });
+    },
+
+    'profile.partitions'() {
+      // v2.0 (item 6): the card shows ONE partition at a time, entry by entry.
+      // The digest view was a wall of text and never showed what the profile
+      // actually holds. Read-only, same data profile.export walks.
+      const doc = loadProfile(guard, profileFilePath(paths.dataDir));
+      const partitions: Record<string, { total: number; valid: number; entries: Record<string, unknown>[] }> = {};
+      for (const part of ['interest', 'projects', 'comm', 'psy'] as const) {
+        const all = doc.partitions[part]?.entries ?? [];
+        const valid = all.filter((e) => e.validTo === null);
+        partitions[part] = {
+          total: all.length,
+          valid: valid.length,
+          entries: valid
+            .slice()
+            .sort((a, b) => b.confidence - a.confidence || (a.updatedAt < b.updatedAt ? 1 : -1))
+            .map((e) => ({
+              id: e.id,
+              topic: e.topic,
+              subTopic: e.subTopic,
+              content: e.content,
+              confidence: e.confidence,
+              temporal: e.temporal,
+              updatedAt: e.updatedAt,
+              lowActivity: e.lowActivity === true,
+            })),
+        };
+      }
+      return ok({ partitions });
     },
 
     'profile.export'() {
@@ -417,7 +451,7 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
       return ok({ path: f });
     },
 
-    'weekly.list': () => ok({ reports: listWeeklyReports(guard, paths.dataDir) }),
+    'weekly.list': () => ok({ reports: listWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports) }),
 
     'weekly.get'(p) {
       const file = String(p.file ?? '');

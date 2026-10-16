@@ -350,6 +350,8 @@ interface Policy {
     };
     weekly: {
         enabled: boolean;
+        /** v2.0 (item 5): how many past reports the store keeps and the card lists. */
+        keepReports: number;
     };
     retention: {
         envPulseHours: number;
