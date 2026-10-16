@@ -12,6 +12,8 @@ import {
   evaluateGate,
   inQuietHours,
   readSentState,
+  canSend,
+  canSendLive,
   confirmSend,
   gateStatus,
 } from '../src/gate/gate.js';
@@ -132,10 +134,34 @@ test('confirmSend persists and gateStatus reflects it (encrypted at rest)', () =
   assert.equal(raw.subarray(0, 5).toString('ascii'), 'KHBV2');
 });
 
-test('confirmSend refuses when cap is reached (fail-closed)', () => {
+test('confirmSend books the sentence even when the gate had moved on (H-67/HB-13)', () => {
   const st = { today: '2026-09-06', items: sentWith(policy.gate.maxDailySend, NOON - 3600_000).items };
   fs.writeFileSync(path.join(workspace().dataDir, 'sent.json'), JSON.stringify(st), 'utf8');
   const r = confirmSend(guard, policy, workspace(), 'topic', '超限', NOON);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /daily cap/);
+  // HB-13: the words are already out, so the books settle either way - a refusal
+  // only reports that a second look found the gate closed.
+  const after = readSentState(guard, workspace(), NOON);
+  assert.equal(after.items.length, policy.gate.maxDailySend + 1);
+  assert.equal(after.items.at(-1)?.summary, '超限');
+});
+
+test('canSend re-judges the cooldown at the moment of speaking (HB-14)', () => {
+  fs.writeFileSync(
+    path.join(workspace().dataDir, 'sent.json'),
+    JSON.stringify(sentWith(1, NOON - 60_000)),
+    'utf8',
+  );
+  const r = canSend(guard, policy, workspace(), NOON);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /cooldown 29min left/);
+});
+
+test('canSendLive settles the cheap checks before probing (HB-14)', async () => {
+  const st = { today: '2026-09-06', items: sentWith(policy.gate.maxDailySend, NOON - 3600_000).items };
+  fs.writeFileSync(path.join(workspace().dataDir, 'sent.json'), JSON.stringify(st), 'utf8');
+  const r = await canSendLive(guard, policy, workspace(), NOON);
   assert.equal(r.ok, false);
   assert.match(r.reason, /daily cap/);
 });
