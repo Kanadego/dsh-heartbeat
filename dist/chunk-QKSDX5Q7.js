@@ -1,6 +1,6 @@
 import {
   atomicWriteFileSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/core/path-guard.ts
 import fs from "fs";
@@ -333,4 +333,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-XYYEJK3W.js.map
+//# sourceMappingURL=chunk-QKSDX5Q7.js.map

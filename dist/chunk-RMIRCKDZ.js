@@ -4,10 +4,10 @@ import {
   readText,
   saveJson,
   writeText
-} from "./chunk-XCB7HYOM.js";
+} from "./chunk-6S3GQPIW.js";
 import {
   atomicWriteFileSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/core/audit-log.ts
 import fs from "fs";
@@ -851,4 +851,4 @@ export {
   rebuildProfile,
   wipeProfile
 };
-//# sourceMappingURL=chunk-6RC24BMQ.js.map
+//# sourceMappingURL=chunk-RMIRCKDZ.js.map

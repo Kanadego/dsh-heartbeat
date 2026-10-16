@@ -1,6 +1,6 @@
 import {
   burnFileSync
-} from "./chunk-WRUTATW4.js";
+} from "./chunk-IBBAISSW.js";
 
 // src/core/paths.ts
 import fs2 from "fs";
@@ -407,6 +407,29 @@ function runVault(guard, args) {
     throw new Error(`vault ${args[0]} failed (exit ${r.status}): ${detail}`);
   }
 }
+var SCRATCH_STALE_MS = 10 * 6e4;
+var scratchSwept = false;
+function sweepVaultScratch() {
+  if (scratchSwept) return 0;
+  scratchSwept = true;
+  let burned = 0;
+  try {
+    const dir = workspace().tmpDir;
+    for (const name of fs5.readdirSync(dir)) {
+      if (!/\.(plain|enc)$/.test(name)) continue;
+      const p = path4.join(dir, name);
+      try {
+        if (Date.now() - fs5.statSync(p).mtimeMs < SCRATCH_STALE_MS) continue;
+      } catch {
+        continue;
+      }
+      burnFileSync(p);
+      burned += 1;
+    }
+  } catch {
+  }
+  return burned;
+}
 function containerKind(file) {
   if (!fs5.existsSync(file)) return "plain";
   const fd = fs5.openSync(file, "r");
@@ -475,6 +498,7 @@ function decodeKeyFile(guard, file) {
 }
 function masterKey(guard) {
   if (cachedMasterKey) return cachedMasterKey;
+  sweepVaultScratch();
   const file = guard.assert(vaultKeyPath());
   if (fs5.existsSync(file)) {
     cachedMasterKey = decodeKeyFile(guard, file);
@@ -641,4 +665,4 @@ export {
   decryptFile,
   upgradeVaultTree
 };
-//# sourceMappingURL=chunk-XCB7HYOM.js.map
+//# sourceMappingURL=chunk-6S3GQPIW.js.map
