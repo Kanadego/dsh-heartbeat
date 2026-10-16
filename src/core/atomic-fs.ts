@@ -15,10 +15,22 @@ export function tmpSibling(target: string, tag = 'w'): string {
 
 export function atomicWriteFileSync(target: string, data: string | Uint8Array): void {
   const tmp = tmpSibling(target);
+  let fd: number | null = null;
   try {
-    fs.writeFileSync(tmp, data);
+    fd = fs.openSync(tmp, 'w');
+    fs.writeFileSync(fd, data);
+    // 低优先级 review (2026-10-17): rename is atomic against a crash of THIS
+    // process, but without a flush the renamed file can still point at blocks
+    // the OS never wrote — a power loss then leaves an empty or partial file
+    // where a complete one is promised. Flush before publishing.
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
     fs.renameSync(tmp, target);
   } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* the write path already failed */ }
+    }
     fs.rmSync(tmp, { force: true });
   }
 }

@@ -30,6 +30,26 @@ test('atomic json write round-trips', () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { a: 1, b: [2, 3] });
 });
 
+test('atomic write flushes before the rename (低优先级 review)', () => {
+  const file = path.join(dir, 'flushed.json');
+  let flushes = 0;
+  const original = fs.fsyncSync;
+  // The write path goes through the fs default export, so patching the property
+  // is enough to observe the flush the crash-consistency fix added.
+  (fs as unknown as { fsyncSync: typeof fs.fsyncSync }).fsyncSync = ((fd: number) => {
+    flushes += 1;
+    return original(fd);
+  }) as typeof fs.fsyncSync;
+  try {
+    atomicWriteFileSync(file, JSON.stringify({ ok: true }));
+  } finally {
+    (fs as unknown as { fsyncSync: typeof fs.fsyncSync }).fsyncSync = original;
+  }
+  assert.ok(flushes >= 1, 'the payload must reach the disk before it is published');
+  assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify({ ok: true }));
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('.tmp')), []);
+});
+
 test('shred removes the file after random overwrite passes', () => {
   const file = path.join(dir, 'secret.txt');
   fs.writeFileSync(file, 'plain-text-observation');

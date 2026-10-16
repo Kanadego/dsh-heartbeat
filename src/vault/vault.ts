@@ -10,10 +10,11 @@
 //          <dataDir>/vault.key, so the only thing that still needs DPAPI is
 //          unwrapping that one file, and that happens once per process (cached).
 //
-// Migration contract (v2.0): an upgraded plugin must keep opening everything an
-// older version wrote, and a downgraded one must not lose data either — so
-// reads accept BOTH containers, while writes always produce KHBV2. Legacy files
-// are rewritten in place by upgradeVaultTree(), which the CLI runs on demand.
+// Migration contract (v2.0): an upgraded plugin keeps opening everything an
+// older version wrote — reads accept BOTH containers, while writes always
+// produce KHBV2. Legacy files are rewritten in place by upgradeVaultTree(),
+// which the CLI runs on demand. Going the other way is one-way: a 1.x build
+// cannot read KHBV2, so once `vault upgrade` has run, do not downgrade.
 // Encryption stays fail-closed: a missing or unreadable master key throws, and
 // no path ever falls back to plaintext.
 //
@@ -76,6 +77,39 @@ function runVault(guard: PathGuard, args: string[]): void {
   }
 }
 
+/** How long a scratch file may sit before it is treated as crash debris. */
+const SCRATCH_STALE_MS = 10 * 60_000;
+let scratchSwept = false;
+
+/**
+ * Burn plaintext scratch files a crash left behind in data/tmp (低优先级 review,
+ * 2026-10-17). The writers there are wrapped in `finally`, but a kill leaves the
+ * bytes on disk. Only files older than SCRATCH_STALE_MS are touched, so a
+ * concurrent process's live window is never yanked out from under it.
+ */
+export function sweepVaultScratch(): number {
+  if (scratchSwept) return 0;
+  scratchSwept = true;
+  let burned = 0;
+  try {
+    const dir = workspace().tmpDir;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.(plain|enc)$/.test(name)) continue;
+      const p = path.join(dir, name);
+      try {
+        if (Date.now() - fs.statSync(p).mtimeMs < SCRATCH_STALE_MS) continue;
+      } catch {
+        continue; // vanished between readdir and stat
+      }
+      burnFileSync(p);
+      burned += 1;
+    }
+  } catch {
+    /* no tmp dir yet — nothing to sweep */
+  }
+  return burned;
+}
+
 export type ContainerKind = 'v2' | 'v1' | 'plain';
 
 /** Which container a file carries, decided from its first bytes. */
@@ -136,9 +170,11 @@ export function vaultKeyPath(): string {
 
 let cachedMasterKey: Buffer | null = null;
 
-/** Drop the cached key. Tests use it after pointing the workspace elsewhere. */
+/** Drop the cached key and the once-per-process sweep flag. Tests use it after
+ *  pointing the workspace elsewhere. */
 export function resetVaultKeyCacheForTest(): void {
   cachedMasterKey = null;
+  scratchSwept = false;
 }
 
 function decodeKeyFile(guard: PathGuard, file: string): Buffer {
@@ -172,6 +208,7 @@ function decodeKeyFile(guard: PathGuard, file: string): Buffer {
  */
 export function masterKey(guard: PathGuard): Buffer {
   if (cachedMasterKey) return cachedMasterKey;
+  sweepVaultScratch();
   const file = guard.assert(vaultKeyPath());
   if (fs.existsSync(file)) {
     cachedMasterKey = decodeKeyFile(guard, file);
