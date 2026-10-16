@@ -9,6 +9,7 @@ import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { shredFileSync } from '../core/atomic-fs.js';
 import { appendAuditLine } from '../core/audit-log.js';
+import { matchFilesRecursive } from '../core/fs-walk.js';
 
 export interface BurnTarget {
   /** Relative to dataDir. Files are shredded (overwrite x3) then deleted. */
@@ -17,6 +18,11 @@ export interface BurnTarget {
    *  timestamped files a bare `file` cannot name (journal archive shards).
    *  Shredded like files. */
   prefix?: string;
+  /** Every file ANYWHERE below dataDir whose NAME matches this pattern. Used for
+   *  families a prefix cannot reach: `${name}.bak-migrate-${stamp}` and the
+   *  `.incoming-` staging leftovers sit next to whatever they copied, which may
+   *  be a subdirectory. Shredded like files. */
+  match?: RegExp;
   /** Directories are removed recursively (no shred - content is files). */
   dir?: string;
   note: string;
@@ -29,6 +35,12 @@ export const BURN_LIST: BurnTarget[] = [
   // H-19: the rotation shards hold the whole profile history and are written
   // in PLAINTEXT — a burn that leaves them behind leaves the memory readable.
   { prefix: 'profile_journal.archive-', note: '画像流水归档分片（明文；journal 轮转产物）' },
+  // HB-07 (2026-10-17): applyMigrationEntries copies every file it overwrites
+  // to `${abs}.bak-migrate-${stamp}`. Those copies hold the OLD memory — a burn
+  // that left them behind left the thing the user asked to destroy. The
+  // `.incoming-` staging files are the same data, only younger.
+  { match: /\.bak-migrate-\d{14}$/, note: '迁移备份（迁移导入时的原文件副本）' },
+  { match: /\.incoming-\d{14}$/, note: '迁移暂存残留（崩溃遗留的导入副本）' },
   { file: 'profile_rhythm.json', note: '作息聚合（纯统计）' },
   { file: 'screen.json', note: '屏幕快照（加密）' },
   { file: 'screen.jpg', note: '截图（加密）' },
@@ -64,6 +76,15 @@ function prefixMatches(guard: PathGuard, paths: WorkspacePaths, prefix: string):
   }
 }
 
+/** Same as prefixMatches, but for the recursive `match` family. */
+function matchTargets(guard: PathGuard, paths: WorkspacePaths, re: RegExp): string[] {
+  try {
+    return matchFilesRecursive(guard.assert(paths.dataDir), re);
+  } catch {
+    return [];
+  }
+}
+
 export interface BurnPlanItem {
   target: BurnTarget;
   exists: boolean;
@@ -73,10 +94,12 @@ export interface BurnPlanItem {
 export function planBurn(guard: PathGuard, paths: WorkspacePaths, all = false): BurnPlanItem[] {
   const plan: BurnPlanItem[] = [];
   for (const t of BURN_LIST) {
-    const rel = t.file ?? t.dir ?? t.prefix ?? '';
+    const rel = t.file ?? t.dir ?? t.prefix ?? String(t.match ?? '');
     if (!all && rel === SETTINGS_DIR) continue;
     let exists = false;
-    if (t.prefix) {
+    if (t.match) {
+      exists = matchTargets(guard, paths, t.match).length > 0;
+    } else if (t.prefix) {
       exists = prefixMatches(guard, paths, t.prefix).length > 0;
     } else {
       try {
@@ -107,6 +130,20 @@ export function executeBurn(
   const missing: string[] = [];
   const passes = opts.shredPasses ?? 3;
   for (const t of BURN_LIST) {
+    if (t.match) {
+      const matches = matchTargets(guard, paths, t.match);
+      if (matches.length === 0) {
+        missing.push(String(t.match));
+        continue;
+      }
+      for (const f of matches) {
+        try {
+          shredFileSync(guard.assert(path.join(paths.dataDir, f)), passes);
+          burned.push(f);
+        } catch { /* vanished between listing and shredding: not fatal */ }
+      }
+      continue;
+    }
     // H-19: a prefix target is a family of files (timestamped archive shards);
     // shred every match individually.
     if (t.prefix) {
@@ -123,7 +160,7 @@ export function executeBurn(
       }
       continue;
     }
-    const rel = t.file ?? t.dir!;
+    const rel = t.file ?? t.dir ?? String(t.match ?? '');
     const abs = path.join(paths.dataDir, rel);
     let absCanon: string;
     try {

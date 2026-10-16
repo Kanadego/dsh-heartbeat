@@ -17,6 +17,7 @@ import {
   verifyProfile,
   journalFilePath,
   profileFilePath,
+  wipeProfile,
 } from '../src/profile/store.js';
 import { emptyProfile, type ProfileOp } from '../src/profile/types.js';
 import { appendAuditLine } from '../src/core/audit-log.js';
@@ -247,4 +248,43 @@ test('H-17: an unusable factory schema yields no schema and still records ADDs',
   const r = applyOpsToDoc(guard, workspace().dataDir, doc, [addOp()], undefined, policy, NOW);
   assert.equal(r.applied.length, 1);
   assert.equal(doc.partitions.interest!.entries.length, 1);
+});
+test('HB-21: wipe removes everything the profile can be rebuilt from', () => {
+  const dataDir = workspace().dataDir;
+  // a real profile, written through the real pipeline
+  const doc = emptyProfile();
+  const r = applyOpsToDoc(guard, dataDir, doc, [addOp()], schema, policy, NOW);
+  assert.equal(r.applied.length, 1);
+  persistWithJournal(guard, dataDir, doc, { runId: 'w1', applied: r.applied, rejected: r.rejected, entries: r.entries });
+
+  fs.writeFileSync(path.join(dataDir, 'profile_inbox.jsonl'), '', 'utf8');
+  // the journal is the authority and replay reads the snapshot + archive shards
+  // FIRST — leaving them behind meant the next rebuild regrew the whole profile
+  fs.writeFileSync(path.join(dataDir, 'profile_snapshot.json'), '{"version":1,"baselineTs":"2026-09-01T00:00:00.000Z","recordsFolded":0,"doc":{"version":1,"partitions":{}}}', 'utf8');
+  fs.writeFileSync(path.join(dataDir, 'profile_journal.archive-20261001T000000.jsonl'), '' , 'utf8');
+  // migration copies (HB-07) hold the same memory, top level and nested
+  fs.writeFileSync(path.join(dataDir, 'ledger.md.bak-migrate-20261017000000'), 'x', 'utf8');
+  const nested = path.join(dataDir, 'weekly', 'profile.json.bak-migrate-20261017000000');
+  fs.mkdirSync(path.dirname(nested), { recursive: true });
+  fs.writeFileSync(nested, 'x', 'utf8');
+  // settings are not profile data: wipe must not touch them
+  const keep = path.join(workspace().settingsDir, 'keep.json');
+  fs.mkdirSync(workspace().settingsDir, { recursive: true });
+  fs.writeFileSync(keep, '{}', 'utf8');
+
+  const removed = wipeProfile(guard, dataDir);
+  assert.equal(fs.existsSync(profileFilePath(dataDir)), false);
+  assert.equal(fs.existsSync(journalFilePath(dataDir)), false);
+  assert.ok(removed.includes('profile.json'));
+  assert.ok(removed.includes('profile_inbox.jsonl'));
+  assert.ok(removed.includes('profile_journal.jsonl'));
+  assert.ok(removed.includes('profile_snapshot.json'));
+  assert.ok(removed.includes('profile_journal.archive-20261001T000000.jsonl'));
+  assert.ok(removed.includes('ledger.md.bak-migrate-20261017000000'));
+  assert.ok(removed.includes('weekly/profile.json.bak-migrate-20261017000000'));
+  assert.equal(fs.existsSync(keep), true);
+
+  // the point of the fix: a wipe followed by the ordinary repair path stays gone
+  rebuildProfile(guard, dataDir, {});
+  assert.equal(loadProfile(guard, profileFilePath(dataDir)).partitions.interest!.entries.length, 0);
 });

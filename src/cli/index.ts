@@ -47,6 +47,7 @@ import {
   profileFilePath,
   verifyProfile,
   rebuildProfile,
+  wipeProfile,
 } from '../profile/store.js';
 import { planBurn, executeBurn } from '../vault/burn-list.js';
 import {
@@ -447,14 +448,16 @@ async function verbProfile(c: CliCtx): Promise<number> {
     }
     case 'wipe': {
       if (!rest.includes('--yes')) {
-        console.log('REFUSED: add --yes to wipe profile data (profile.json/inbox/journal)');
+        console.log('REFUSED: add --yes to wipe profile data (live files, snapshot, journal archives, migration copies)');
         return 1;
       }
-      for (const f of ['profile.json', 'profile_inbox.jsonl', 'profile_journal.jsonl']) {
-        const abs = guard.assert(path.join(paths.dataDir, f));
-        if (fs.existsSync(abs)) fs.rmSync(abs, { force: true });
-      }
-      console.log('WIPED (settings preserved; use burn for full shredding)');
+      // HB-21: the snapshot and the archive shards replay into the profile, so
+      // the old three-file wipe was undone by the next rebuild (and migration
+      // backups held yet another copy). wipeProfile covers everything the
+      // profile can be rebuilt from — see its comment in profile/store.ts.
+      const removed = wipeProfile(guard, paths.dataDir);
+      console.log(`WIPED ${removed.length} file(s) (settings preserved; use burn for full shredding)`);
+      for (const f of removed) console.log(`  - ${f}`);
       return 0;
     }
     case 'snapshot': {
