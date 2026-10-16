@@ -266,6 +266,23 @@ test('digest (v2.0 item 6): per-section caps stay inside the budget and drop who
   assert.match(digest.topic, /条目0/);
 });
 
+test('digest: an over-long ledger row cannot push it past the budget (低优先级 review)', async () => {
+  const { appendEntry, ledgerFilePath } = await import('../src/ledger/ledger.js');
+  const file = ledgerFilePath(paths.dataDir);
+  // pendingOlderThan inside buildDigest reads the wall clock, so "older than 3
+  // days" has to be true of the real clock, not of the frozen NOW fixture.
+  const old = Date.now() - 10 * 86_400_000;
+  appendEntry(guard, file, '甲'.repeat(5000), old);
+  appendEntry(guard, file, '乙'.repeat(5000), old + 1000);
+
+  const digest = buildDigest(guard, paths, policy, {});
+  assert.ok(digest.topic.includes('[账本待跟进]'), 'ledger follow-ups stay reserved space');
+  assert.ok(digest.totalChars <= digest.budgetChars, `total ${digest.totalChars} over budget`);
+  assert.equal(digest.withinBudget, true);
+  // each row is clamped and the block has a ceiling of its own
+  assert.ok(!digest.topic.includes('甲'.repeat(200)), 'an oversized ledger row must be clamped');
+});
+
 test('rhythm: presence samples aggregate into a decaying histogram', () => {
   const env = (presence: string): EnvSnapshot => ({
     takenAt: new Date(NOW).toISOString(), idleSeconds: 0, presence: presence as never,

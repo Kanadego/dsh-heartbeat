@@ -32,6 +32,11 @@ const TACT_MAX_CHARS = 2500;
 const WANDER_MAX_CHARS = 850;
 /** Floor for the topic slice, whatever tact/wander leave behind. */
 const TOPIC_MIN_CHARS = 2400;
+/** Ledger follow-ups are reserved space, but each line is clamped and the block
+ *  has its own ceiling — 低优先级 review (2026-10-17): an unbounded ledger row
+ *  could otherwise push the whole digest past the budget. */
+const LEDGER_ITEM_CHARS = 120;
+const LEDGER_MAX_CHARS = 400;
 /** Default slice size for the topic section (v2.0: was 8, the budget grew). */
 const TOPN_DEFAULT = 12;
 
@@ -131,8 +136,9 @@ export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Pol
   // -- ledger stale items (跟进时机) — reserved space, never budgeted away
   const ledgerBlock = pendingOlderThan(guard, ledgerFilePath(paths.dataDir), 3)
     .slice(0, 3)
-    .map((e) => `- ${e.text}（${e.date}）`);
-  const ledgerText = ledgerBlock.length ? ['[账本待跟进] ', ...ledgerBlock].join('\n') : '';
+    .map((e) => `- ${e.text.slice(0, LEDGER_ITEM_CHARS)}（${e.date}）`);
+  const ledgerCapped = capSection(ledgerBlock, LEDGER_MAX_CHARS);
+  const ledgerText = ledgerCapped.text.length ? ['[账本待跟进] ', ledgerCapped.text].join('\n') : '';
 
   const tact = capSection(tactParts, TACT_MAX_CHARS);
   const wander = capSection(wanderEntries.length ? wanderEntries : ['(无高置信兴趣)'], WANDER_MAX_CHARS);
@@ -141,10 +147,23 @@ export function buildDigest(guard: PathGuard, paths: WorkspacePaths, policy: Pol
     TOPIC_MIN_CHARS,
     BUDGET_CHARS - tact.text.length - wander.text.length - ledgerText.length - 40,
   );
-  const topicCapped = capSection(topicEntries, topicBudget);
-  const topic = [topicCapped.text, ledgerText].filter((s) => s.length > 0).join('\n');
+  let topicCapped = capSection(topicEntries, topicBudget);
+  let topic = [topicCapped.text, ledgerText].filter((s) => s.length > 0).join('\n');
 
-  const totalChars = tact.text.length + topic.length + wander.text.length;
+  let totalChars = tact.text.length + topic.length + wander.text.length;
+  // 低优先级 review (2026-10-17): the ledger block is reserved space and the
+  // topic slice has a floor, so their sum can still pass the budget. The ledger
+  // is a promise and stays; the topic slice gives way — whole entries only — and
+  // the count it cost is folded into `omitted.topic` for the card view.
+  if (totalChars > BUDGET_CHARS) {
+    const room = Math.max(0, topicBudget - (totalChars - BUDGET_CHARS));
+    const trimmed = room === 0
+      ? { text: '', omitted: topicEntries.length }
+      : capSection(topicEntries, room);
+    topicCapped = { text: trimmed.text, omitted: topicCapped.omitted + trimmed.omitted };
+    topic = [topicCapped.text, ledgerText].filter((s) => s.length > 0).join('\n');
+    totalChars = tact.text.length + topic.length + wander.text.length;
+  }
   return {
     tact: tact.text,
     topic,

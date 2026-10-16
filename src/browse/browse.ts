@@ -238,7 +238,10 @@ export function adviseWander(
     candidates.push(picked);
   }
   if (candidates.length === 0) return { focus: null, query: null, skipped: 'no-focus', ...budget };
-  return { focus: candidates[0]!, query: `${candidates[0]!} 2026 最新`, skipped: null, candidates, ...budget };
+  // 低优先级 review (2026-10-17): the year in the query was hardcoded to 2026,
+  // which silently ages the search results as the calendar moves on.
+  const year = now.getFullYear();
+  return { focus: candidates[0]!, query: `${candidates[0]!} ${year} 最新`, skipped: null, candidates, ...budget };
 }
 
 /**
