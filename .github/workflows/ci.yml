@@ -20,3 +20,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # 低优先级 review (2026-10-17): dist/ is tracked, and CI used to stop at
+      # typecheck + test — a release could ship a dist that no longer matches
+      # src. Build it and fail if the tracked artifacts move.
+      - run: npm run build
+      - name: dist matches the sources it was built from
+        run: git diff --exit-code -- dist
