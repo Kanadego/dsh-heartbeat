@@ -100,6 +100,27 @@ function decodeFile(file) {
   return frames;
 }
 
+/** HB-22 (2026-10-17): 复核暂存文件——帧数不变、首帧仍是单行 header、
+ *  每个事件都过宿主的校验面。返回错误字符串，全部通过返回 null。 */
+function verifyStagedFile(staged, expectedFrames) {
+  let frames;
+  try { frames = decodeFile(staged); } catch (e) { return `decode failed: ${String(e).slice(0, 100)}`; }
+  if (frames.length !== expectedFrames) return `frame count changed: ${expectedFrames} -> ${frames.length}`;
+  const head = frames[0].lines.map((l) => l.trim()).filter(Boolean);
+  if (head.length !== 1) return `first frame lines = ${head.length} (must be 1)`;
+  for (const fr of frames) {
+    for (const raw of fr.lines) {
+      if (!raw.trim()) continue;
+      let rec;
+      try { rec = JSON.parse(raw); } catch { return 'undecodable JSON line after fix'; }
+      if (typeof rec?.type !== 'string' || typeof rec?.seq !== 'number') continue;
+      const err = validateEvent(rec);
+      if (err !== null) return `seq ${rec.seq} (${rec.type}) still invalid: ${err.slice(0, 120)}`;
+    }
+  }
+  return null;
+}
+
 // ── 逐事件预检：复刻宿主 transformEvent 的校验面 ──────────────────────
 function validateEvent(record) {
   // packed assistant-chunk run 在宿主管线里整段跳过 payload 断言
@@ -194,7 +215,7 @@ for (const file of v0SessionFiles(SESSIONS_ROOT)) {
 
   if (MODE !== 'fix' || changes.length === 0) { totalFixed += changes.length; continue; }
 
-  // ── 修复：备份 → 帧保持式回写（只重压受影响的帧）──────────────────
+  // ── 修复：备份 → 暂存重压 → 复核通过才原子替换（HB-22）──────────────
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const backup = file + '.bak-pre-v0fix-' + stamp;
   fs.copyFileSync(file, backup);
@@ -210,7 +231,17 @@ for (const file of v0SessionFiles(SESSIONS_ROOT)) {
     const newLines = frames[fi].lines.map((l, li) => (repl.has(li) ? repl.get(li) : l));
     out.push(zlib.zstdCompressSync(Buffer.from(newLines.join('\n'), 'utf8')));
   }
-  fs.writeFileSync(file, Buffer.concat(out));
+  // 写暂存文件 → 复核 → rename 覆盖。旧版直接原地覆盖、事后才复核。────
+  const staged = file + '.fixing-' + stamp;
+  fs.writeFileSync(staged, Buffer.concat(out));
+  const verifyErr = verifyStagedFile(staged, frames.length);
+  if (verifyErr !== null) {
+    fs.rmSync(staged, { force: true });
+    console.error(`  VERIFICATION FAILED (${verifyErr}) — 原文件未被改动: ${file}`);
+    failed.push({ file, seq: -1, type: 'verify', err: verifyErr });
+    continue;
+  }
+  fs.renameSync(staged, file);
   console.log(`  FIXED: ${changes.length} events | backup: ${path.basename(backup)}`);
   totalFixed += changes.length;
 }

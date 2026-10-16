@@ -142,6 +142,11 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // Runtime preset registration (issue #2). The `agentPresets` inject below
   // assigns it; the acquire path awaits it before mounting the preset.
   let presetRegistration: Promise<void> | undefined;
+  /** HB-17: registry undo hook + whether dispose already ran (a reload must
+   *  not leave the preset behind, and an in-flight registration must still be
+   *  undone if dispose wins the race). */
+  let presetDisposer: (() => Promise<void>) | undefined;
+  let presetDisposed = false;
 
   // ── Preset: runtime registration + filesystem install (C13 / issue #2) ───
   // The preset is what lets the heartbeat agent see `web_search` at all, so
@@ -182,6 +187,16 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
 
     presetRegistration = registerHeartbeatPreset(service, presetId, installEnabled).then((result) => {
       audit({ event: 'preset_register', ...result });
+      if (typeof result.disposer === 'function') {
+        if (presetDisposed) {
+          // dispose already ran while registration was in flight: undo now.
+          void Promise.resolve(result.disposer()).catch((e) => {
+            ctx.logger.warn('heartbeat: preset dispose failed (%s)', String(e).slice(0, 120));
+          });
+        } else {
+          presetDisposer = result.disposer;
+        }
+      }
       if (result.action === 'error') {
         ctx.logger.warn('heartbeat: preset register failed (%s) — the engine room runs without it', result.detail ?? '');
       } else if (result.action === 'registered') {
@@ -450,6 +465,14 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // Host effect contract: fn runs immediately, returns the disposer.
   ctx.effect(() => {
     return () => {
+      presetDisposed = true;
+      const undoPreset = presetDisposer;
+      presetDisposer = undefined;
+      if (typeof undoPreset === 'function') {
+        void Promise.resolve(undoPreset()).catch((e) => {
+          ctx.logger.warn('heartbeat: preset dispose failed (%s)', String(e).slice(0, 120));
+        });
+      }
       ctx.logger.info('heartbeat: disposed, timers cleaned up');
     };
   }, 'heartbeat: lifecycle');

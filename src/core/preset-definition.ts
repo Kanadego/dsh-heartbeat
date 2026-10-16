@@ -85,6 +85,12 @@ export interface PresetRegisterResult {
   action: PresetRegisterAction;
   id: string;
   detail?: string;
+  /**
+   * HB-17 (2026-10-17): undo hook returned by the registry. The caller must
+   * run it on dispose — otherwise a plugin reload leaves the preset behind
+   * (and the next registration double-mounts it).
+   */
+  disposer?: () => Promise<void>;
 }
 
 /** Minimal shape of the registry we call (`AgentPresetRegistry.register`). */
@@ -116,8 +122,10 @@ export async function registerHeartbeatPreset(
     return { action: 'skipped-no-api', id };
   }
   try {
-    await registrar.register(heartbeatPresetDefinition(id));
-    return { action: 'registered', id };
+    const disposer = await registrar.register(heartbeatPresetDefinition(id));
+    return typeof disposer === 'function'
+      ? { action: 'registered', id, disposer }
+      : { action: 'registered', id };
   } catch (e) {
     return { action: 'error', id, detail: String(e).slice(0, 200) };
   }

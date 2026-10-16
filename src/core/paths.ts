@@ -62,9 +62,23 @@ export function defaultDataDir(
   env: NodeJS.ProcessEnv = process.env,
   home: string = os.homedir(),
 ): string {
+  return path.join(dshHomeDir(env, home), 'heartbeat-data');
+}
+
+/**
+ * The DSH home: `$DSH_HOME` when set, else `~/.dsh`.
+ *
+ * HB-20 (2026-10-17): this is the ONLY place that computes it. Callers used to
+ * hard-code `path.join(os.homedir(), '.dsh')`, which silently ignored the
+ * `$DSH_HOME` override — a relocated host got its sessions/storages read from
+ * the wrong tree (and, for the data dir, wrote to the wrong one).
+ */
+export function dshHomeDir(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string {
   const override = env.DSH_HOME?.trim();
-  const root = override && override.length > 0 ? override : path.join(home, '.dsh');
-  return path.join(root, 'heartbeat-data');
+  return override && override.length > 0 ? override : path.join(home, '.dsh');
 }
 
 /**

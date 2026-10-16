@@ -8,9 +8,8 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { initWorkspace } from '../core/paths.js';
+import { dshHomeDir, initWorkspace } from '../core/paths.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { createPathGuard } from '../core/path-guard.js';
 import type { PathGuard } from '../core/path-guard.js';
@@ -565,7 +564,7 @@ async function verbSessions(c: CliCtx): Promise<number> {
   const { guard, paths } = c;
   // Read-only enumeration of the host's persisted sessions (ids from the
   // on-disk store; titles live server-side and are not listed here).
-  const root = path.join(os.homedir(), '.dsh', 'sessions');
+  const root = path.join(dshHomeDir(), 'sessions');
   let found = 0;
   if (fs.existsSync(root)) {
     const { homeSessionId } = await import('../core/orchestrator.js');

@@ -75,7 +75,12 @@ export async function probeWorkstationLocked(): Promise<boolean> {
     ['-Command', 'if (Get-Process -Name LogonUI -ErrorAction SilentlyContinue) { "locked" } else { "unlocked" }'],
     10_000,
   );
-  return r.status === 0 && String(r.stdout || '').includes('locked');
+  // HB-01 (2026-10-17): `includes('locked')` also matched "unlocked", so a
+  // live session counted as locked and the whole beat was skipped. Read the
+  // probe's result line exactly; anything unexpected fails OPEN (= unlocked),
+  // which is the documented contract of this probe.
+  const lines = String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  return r.status === 0 && lines[lines.length - 1] === 'locked';
 }
 
 /**

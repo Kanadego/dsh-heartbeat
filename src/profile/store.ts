@@ -259,7 +259,10 @@ export function applyOpsToDoc(
         rejected.push({ op, reason: `unknown or inactive entry: ${op.id}` });
         continue;
       }
-      if (op.changes.content !== undefined) entry.content = op.changes.content.trim();
+      // HB-04 (2026-10-17): validate BEFORE mutating. The old order wrote
+      // `content` first and then bailed out on the confidence rule, so an
+      // UPDATE that was reported as REJECTED had already changed the text.
+      let nextConfidence: number | null = null;
       if (op.changes.confidence !== undefined) {
         const cap = capForKinds(entry.evidence.map((e) => e.kind));
         // confidence upgrades need a second confirming observation (§3.3):
@@ -268,8 +271,10 @@ export function applyOpsToDoc(
           rejected.push({ op, reason: 'confidence upgrade requires a second confirming observation' });
           continue;
         }
-        entry.confidence = Math.min(op.changes.confidence, cap);
+        nextConfidence = Math.min(op.changes.confidence, cap);
       }
+      if (op.changes.content !== undefined) entry.content = op.changes.content.trim();
+      if (nextConfidence !== null) entry.confidence = nextConfidence;
       entry.updatedAt = nowIso;
       entry.updateCount += 1;
       applied.push(op);
