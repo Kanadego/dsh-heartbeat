@@ -200,6 +200,37 @@ export function canSend(
   if (sent.items.length >= policy.gate.maxDailySend) {
     return { ok: false, reason: `daily cap reached (${policy.gate.maxDailySend})` };
   }
+  // HB-14: the cooldown is judged at the moment of speaking as well — the gate
+  // decision is minutes old by now, and the interval must not shrink because
+  // the check that enforced it ran before the previous sentence landed.
+  const last = sent.items[sent.items.length - 1]?.ts;
+  if (typeof last === 'number') {
+    const leftMs = policy.gate.cooldownMinutes * 60_000 - (now - last);
+    if (leftMs > 0) return { ok: false, reason: `cooldown ${Math.ceil(leftMs / 60_000)}min left` };
+  }
+  return { ok: true };
+}
+
+/**
+ * HB-14: the full pre-delivery check. `canSend` re-reads the books; this also
+ * re-probes what the user is doing, because a busy window and an actively
+ * typing master are exactly what can change between the gate decision and the
+ * delivery turn. An unknown probe does not block, same as in the gate.
+ */
+export async function canSendLive(
+  guard: PathGuard,
+  policy: Policy,
+  paths: WorkspacePaths,
+  now = Date.now(),
+  signal?: AbortSignal,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const base = canSend(guard, policy, paths, now);
+  if (!base.ok) return base;
+  const rules = loadBusyRules(paths.configDir);
+  const front = await frontWindowClass(guard, paths, rules, signal);
+  if (front.cls === 'busy') return { ok: false, reason: `busy window (${front.why})` };
+  const pulse = readPulse(guard, paths);
+  if (pulse?.presence === 'active') return { ok: false, reason: `master actively typing (front=${front.cls})` };
   return { ok: true };
 }
 
@@ -220,9 +251,13 @@ export function confirmSend(
   kind: string,
   summary: string,
   now = Date.now(),
-): { ok: true; sent: SentState } | { ok: false; reason: string } {
+): { ok: true; sent: SentState } | { ok: false; reason: string; sent: SentState } {
+  // H-67 + HB-13: by the time this runs the sentence is already in the other
+  // session, so the books settle whether or not the gate had moved on. The
+  // verdict only tells the caller what a second look found; it never means "she
+  // stayed silent". Refusing to book a sentence she did say is how the old code
+  // lost deliveries it had actually made.
   const check = canSend(guard, policy, paths, now);
-  if (!check.ok) return check;
   const sent = readSentState(guard, paths, now);
   sent.items.push({
     ts: now,
@@ -231,7 +266,7 @@ export function confirmSend(
     summary: String(summary).slice(0, 80),
   });
   saveJson(guard, sentFilePath(paths), sent);
-  return { ok: true, sent };
+  return check.ok ? { ok: true, sent } : { ok: false, reason: check.reason, sent };
 }
 
 export function gateStatus(guard: PathGuard, policy: Policy, paths: WorkspacePaths, now = Date.now()): {

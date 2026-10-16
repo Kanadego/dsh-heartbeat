@@ -27,7 +27,7 @@ import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
-import { runGate, canSend, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
+import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
 import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
 import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
 import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
@@ -1394,7 +1394,10 @@ async function deliverPackage(
     // ⑤A: last cancellation gate before anything is said or spent. Past this
     // point the sentence exists and the books MUST settle (H-67).
     throwIfAborted(bc.signal, 'expression');
-    const pre = canSend(guard, policy, paths, Date.now());
+    // HB-14: re-check everything that decides "is this a good moment" - quiet
+    // hours, cap, cooldown, busy window, actively typing - not just the first
+    // two. The delivery happens minutes after the gate decision.
+    const pre = await canSendLive(guard, policy, paths, Date.now(), bc.signal);
     if (!pre.ok) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: pre.reason });
       noteBeat('spoke_failed', { reason: pre.reason });
@@ -1470,7 +1473,9 @@ async function deliverPackage(
     // second look (minutes later) found the state had moved on: record it and
     // carry on — refusing to book a sentence she did say is how the old code
     // lost deliveries it had actually made.
-    const confirm = confirmSend(guard, policy, paths, 'topic', text, now);
+    // HB-13: book at the moment of speaking, not at the beat's start time — the
+    // cooldown and the daily cap are anchored to when she actually spoke.
+    const confirm = confirmSend(guard, policy, paths, 'topic', text, Date.now());
     if (!confirm.ok) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
         event: 'spoke_late', reason: `booked after the gate moved on: ${confirm.reason}`, text: text.slice(0, 80),
