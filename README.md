@@ -203,7 +203,7 @@ node <插件目录>/dist/cli/index.js <命令>
 |        | `bind list` / `bind add <id> [--observe]` / `bind remove <id>`                             | 绑定详情（正身也会列出）/ 绑定 / 解绑；`--observe-only` 仅观察、`--no-deliver` 关投递                   |
 | 通知   | `notify check` / `notify register` / `notify send`                                         | toast 通道体检 / 注册 / 测试发送（只提示新消息，不承载正文）                                            |
 | 画像   | `profile list [--all]` / `profile export`                                                  | 当前有效（含过期）/ 解密导出 Markdown                                                                   |
-|        | `profile verify` / `profile rebuild [--check]` / `profile wipe`                            | journal 重放比对（只报不修）/ 重建（可先干跑）/ 清空（要 `--yes`）                                      |
+|        | `profile verify` / `profile rebuild [--check]` / `profile wipe`                            | journal 重放比对（只报不修）/ 重建（可先干跑）/ 清空（要 `--yes`；连快照、归档分片、迁移备份一起删，设定不动） |
 |        | `profile snapshot [--force]`                                                               | 折叠 journal 为快照 + 归档分片（维护相到阈值也会自动做）                                                |
 | 周报   | `weekly list` / `weekly show [file]`                                                       | 列出已生成的周报 / 打印某期（默认最新一期）                                                             |
 | 迁移   | `migrate export [file]` / `migrate import <file>`                                          | 打包记忆文件为口令加密容器（口令走 stdin 两行）/ 在新机器恢复（stdin 一行）；卡片「换机迁移」分区同功能 |

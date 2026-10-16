@@ -26,6 +26,7 @@ import {
 } from './types.js';
 import { checkAddAgainstSchema, type ProfileSchema } from './schema.js';
 import { tryParseJournalRecord } from './shapes.js';
+import { matchFilesRecursive } from '../core/fs-walk.js';
 
 const DAY_MS = 86_400_000;
 
@@ -549,4 +550,54 @@ export function rebuildProfile(
     );
   }
   return { ok: true, truncatedTail: replayed.truncatedTail, records: replayed.records, wrote: true };
+}
+
+// ── wipe (HB-21, 2026-10-17) ───────────────────────────────────────────────
+// `profile wipe` used to delete three files: the materialized view, the inbox
+// and the live journal. The journal is the authority, and its history lives on
+// in profile_snapshot.json plus the archive shards — so a rebuild after a wipe
+// replayed the whole memory back, and a user who asked to forget got the
+// profile regrown instead. Migration backups (HB-07) and crash leftovers carry
+// copies of the same data.
+//
+// Wipe therefore removes every file the profile can be rebuilt from, and only
+// that: settings, seeds, weekly reports and audit logs are not profile data and
+// stay (burn is the tool for a full shred). Shredding remains burn's job — wipe
+// is a delete, not a destroy.
+
+const WIPE_FILES = ['profile.json', 'profile_inbox.jsonl', 'profile_journal.jsonl', SNAPSHOT_FILE];
+const WIPE_PATTERNS: RegExp[] = [
+  /^profile_journal\.archive-/,
+  /\.bak-migrate-\d{14}$/,
+  /\.incoming-\d{14}$/,
+];
+
+/** Delete every file the profile can be rebuilt from; returns what was removed
+ *  (relative to dataDir, sorted per family). */
+export function wipeProfile(guard: PathGuard, dataDir: string): string[] {
+  const removed: string[] = [];
+  for (const f of WIPE_FILES) {
+    const abs = guard.assert(path.join(dataDir, f));
+    if (fs.existsSync(abs)) {
+      fs.rmSync(abs, { force: true });
+      removed.push(f);
+    }
+  }
+  for (const re of WIPE_PATTERNS) {
+    let rels: string[] = [];
+    try {
+      rels = matchFilesRecursive(guard.assert(dataDir), re);
+    } catch {
+      rels = [];
+    }
+    for (const rel of rels) {
+      try {
+        fs.rmSync(guard.assert(path.join(dataDir, rel)), { force: true });
+        removed.push(rel);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  return removed;
 }

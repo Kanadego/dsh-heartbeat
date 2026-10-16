@@ -28,6 +28,38 @@ test('H-19: every migrated memory file is also on the burn list', () => {
   );
 });
 
+test('HB-07: a burn shreds migration backups and staging leftovers, subdirs included', () => {
+  const dir = sandboxDir('hb-burn-');
+  process.env.HEARTBEAT_DATA_DIR = path.join(dir, 'data');
+  resetWorkspaceForTest();
+  initWorkspace();
+  try {
+    const guard = createPathGuard(workspace().dataDir);
+    const dataDir = workspace().dataDir;
+    // every file applyMigrationEntries overwrites is copied to
+    // <abs>.bak-migrate-<stamp> — the OLD memory, sitting right next to it,
+    // and the staging leftover is the same data, only younger
+    const top = path.join(dataDir, 'ledger.md.bak-migrate-20261017000000');
+    const nested = path.join(dataDir, 'weekly', 'profile.json.bak-migrate-20261017000000');
+    const staging = path.join(dataDir, 'profile_journal.jsonl.incoming-20261017000000');
+    fs.mkdirSync(path.dirname(nested), { recursive: true });
+    fs.writeFileSync(top, 'x', 'utf8');
+    fs.writeFileSync(nested, 'x', 'utf8');
+    fs.writeFileSync(staging, 'x', 'utf8');
+
+    const res = executeBurn(guard, workspace());
+    assert.equal(fs.existsSync(top), false);
+    assert.equal(fs.existsSync(nested), false);
+    assert.equal(fs.existsSync(staging), false);
+    assert.ok(res.burned.includes('ledger.md.bak-migrate-20261017000000'));
+    assert.ok(res.burned.includes('weekly/profile.json.bak-migrate-20261017000000'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    delete process.env.HEARTBEAT_DATA_DIR;
+    resetWorkspaceForTest();
+  }
+});
+
 test('H-19: a burn shreds the journal archive shards too', () => {
   const dir = sandboxDir('hb-burn-');
   process.env.HEARTBEAT_DATA_DIR = path.join(dir, 'data');
