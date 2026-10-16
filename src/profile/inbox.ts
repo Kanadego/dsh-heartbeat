@@ -7,7 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
 import { loadEncryptedText, saveEncryptedText } from '../vault/vault.js';
-import { withFileLock } from '../core/file-lock.js';
+import { tryWithFileLock } from '../core/file-lock.js';
 import type { InboxItem } from './types.js';
 
 const MAX_NOTE_CHARS = 120;
@@ -25,11 +25,15 @@ export function inboxAppend(
   guard: PathGuard,
   file: string,
   item: Omit<InboxItem, 'id'> & { id?: string },
-): InboxItem {
+): InboxItem | null {
   // H-20 (minimal tier): the append is a whole-file encrypted rewrite, so it
   // needs the same cross-process lock the pool uses — the CLI can be draining
   // or writing the same file while a beat appends.
-  return withFileLock(file, () => inboxAppendLocked(guard, file, item));
+  //
+  // HB-03: fail-closed — when another process holds the lock, the observation is
+  // DROPPED and the caller audits it. Writing without the lock would rewrite the
+  // whole file from a stale read and silently delete their drain.
+  return tryWithFileLock(file, () => inboxAppendLocked(guard, file, item));
 }
 
 function inboxAppendLocked(
@@ -108,8 +112,11 @@ export function inboxRemoveIds(
   file: string,
   ids: ReadonlySet<string>,
   keys?: ReadonlySet<string>,
-): { removed: number; kept: number } {
-  return withFileLock(file, () => {
+): { removed: number; kept: number; conflicted?: true } {
+  // HB-03: fail-closed. `conflicted` means another process held the lock, so
+  // nothing was removed — the caller must say so in the audit log instead of
+  // reporting a clean drain (the observations are still queued).
+  const result = tryWithFileLock(file, () => {
     const raw = loadEncryptedText(guard, file);
     if (!raw) return { removed: 0, kept: 0 };
     let removed = 0;
@@ -137,6 +144,7 @@ export function inboxRemoveIds(
     saveEncryptedText(guard, file, out.length > 0 ? out.join('\n') + '\n' : '');
     return { removed, kept };
   });
+  return result ?? { removed: 0, kept: 0, conflicted: true };
 }
 
 /** Dedupe key (§3.7): same source kind + same ref must not flood the queue. */

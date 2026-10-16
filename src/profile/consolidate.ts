@@ -353,12 +353,23 @@ export async function runConsolidation(
     }
     // drain commits only on success, and only for what this run drained (HB-02)
     const inboxResult = inboxRemoveIds(guard, inboxFilePath(paths.dataDir), drainedIds, drainedKeys);
+    if (inboxResult.conflicted) {
+      // HB-03: fail-closed — another process held the inbox lock, so nothing was
+      // removed. The drained observations stay queued (they will be re-read, and
+      // re-applied as no-ops); hiding this would report a clean drain that never
+      // happened.
+      appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
+        event: 'inbox_locked', runId, drained: drainedIds.size,
+        reason: 'another process holds the inbox lock; drained observations were kept',
+      });
+    }
     markConsolidation(guard, paths, now);
     appendAuditLine(paths.dataDir + '/logs/heartbeat.jsonl', {
       event: 'consolidation', runId,
       applied: report.applied.length, rejected: rejected.length,
       volatileExpired: aged.volatileExpired, lowActivityMarked: aged.lowActivityMarked,
       chatSeeds: chatSeedsAdded, inboxKept: inboxResult.kept,
+      ...(inboxResult.conflicted ? { inboxConflicted: true } : {}),
     });
     return {
       ran: true, reason: 'ok',

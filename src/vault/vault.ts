@@ -28,7 +28,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import type { PathGuard } from '../core/path-guard.js';
 import { workspace } from '../core/paths.js';
 import { burnFileSync } from '../core/atomic-fs.js';
-import { withFileLock } from '../core/file-lock.js';
+import { FileLockTimeoutError, withFileLock } from '../core/file-lock.js';
 import { matchFilesRecursive } from '../core/fs-walk.js';
 
 /** Legacy container: 5-byte magic + DPAPI blob. */
@@ -178,7 +178,14 @@ export function masterKey(guard: PathGuard): Buffer {
     return cachedMasterKey;
   }
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const created = withFileLock(file, (): Buffer | null => {
+  // HB-03: acquisition is fail-closed, so a lock held by another process that is
+  // creating the key right now surfaces as FileLockTimeoutError instead of a
+  // second key. Re-check before bubbling it up: `rename` publishes atomically,
+  // so the file is either absent or complete, and a second key would scramble
+  // every container the first one already wrote.
+  let created: Buffer | null;
+  try {
+    created = withFileLock(file, (): Buffer | null => {
     if (fs.existsSync(file)) return null; // another process created it first
     const plain = tmpPlainName(file);
     const enc = tmpEncName(file);
@@ -201,7 +208,14 @@ export function masterKey(guard: PathGuard): Buffer {
       burnFileSync(plain);
       fs.rmSync(enc, { force: true });
     }
-  });
+    });
+  } catch (e) {
+    if (e instanceof FileLockTimeoutError && fs.existsSync(file)) {
+      cachedMasterKey = decodeKeyFile(guard, file);
+      return cachedMasterKey;
+    }
+    throw e;
+  }
   cachedMasterKey = created ?? decodeKeyFile(guard, file);
   return cachedMasterKey;
 }
