@@ -19,6 +19,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # The client half is plain browser JS outside the tsconfig include, so a
+      # syntax error there used to reach a release unchecked (低优先级 review).
+      - run: npm run check:client
       - run: npm test
       # 低优先级 review (2026-10-17): dist/ is tracked, and CI used to stop at
       # typecheck + test — a release could ship a dist that no longer matches
