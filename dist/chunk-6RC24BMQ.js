@@ -1,9 +1,10 @@
 import {
   loadJson,
+  matchFilesRecursive,
   readText,
   saveJson,
   writeText
-} from "./chunk-K5Y6JP2B.js";
+} from "./chunk-XCB7HYOM.js";
 import {
   atomicWriteFileSync
 } from "./chunk-WRUTATW4.js";
@@ -58,6 +59,7 @@ import { randomUUID } from "crypto";
 import fs3 from "fs";
 
 // src/profile/types.ts
+var JOURNAL_VERSION = 2;
 var PARTITIONS = ["interest", "projects", "comm", "psy"];
 var CONFIDENCE_CAP = {
   chat: 0.6,
@@ -123,6 +125,290 @@ function checkAddAgainstSchema(schema, partition, topic, subTopic, nominated) {
   return { ok: true, temporal: nominated };
 }
 
+// src/profile/shapes.ts
+import z from "@deepseek-ai/schemastery";
+var ShapeError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ShapeError";
+  }
+};
+function isPlainObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function describe(v) {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "an array";
+  return typeof v;
+}
+function closed(schema, keys, required = keys) {
+  return { schema, keys, required };
+}
+function check(shape, value, label) {
+  if (!isPlainObject(value)) throw new ShapeError(`${label}: expected an object, got ${describe(value)}`);
+  for (const req of shape.required) {
+    const key = typeof req === "string" ? req : req.key;
+    const nullable = typeof req !== "string" && req.nullable;
+    if (value[key] === void 0 || value[key] === null && !nullable) {
+      throw new ShapeError(`${label}.${key}: missing required value`);
+    }
+  }
+  for (const k of Object.keys(value)) {
+    if (!shape.keys.includes(k)) throw new ShapeError(`${label}.${k}: unknown field`);
+  }
+  try {
+    return shape.schema(value);
+  } catch (e) {
+    throw new ShapeError(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+var Str = z.string().required();
+var Num = z.number().required();
+var NullableStr = z.union([z.string(), z.const(null)]);
+var PartitionEnum = z.union(PARTITIONS.map((p) => z.const(p))).required();
+var TemporalEnum = z.union([z.const("stable"), z.const("volatile")]).required();
+var OptionalTemporal = z.union([z.const("stable"), z.const("volatile")]);
+var KindEnum = z.union([
+  z.const("chat"),
+  z.const("screen"),
+  z.const("browse"),
+  z.const("hand"),
+  z.const("ledger")
+]).required();
+var ConfidenceNum = z.number().min(0).max(1).required();
+var EvidenceShape = closed(
+  z.object({ kind: KindEnum, at: Str, ref: Str, quote: z.string() }),
+  ["kind", "at", "ref", "quote"],
+  ["kind", "at", "ref"]
+);
+function parseEvidence(value, label = "evidence") {
+  const o = check(EvidenceShape, value, label);
+  return {
+    kind: o.kind,
+    at: String(o.at),
+    ref: String(o.ref),
+    ...o.quote === void 0 ? {} : { quote: String(o.quote) }
+  };
+}
+function parseEvidenceList(value, label) {
+  if (!Array.isArray(value)) throw new ShapeError(`${label}: expected an array`);
+  return value.map((v, i) => parseEvidence(v, `${label}[${i}]`));
+}
+var EntryShape = closed(
+  z.object({
+    id: Str,
+    partition: PartitionEnum,
+    topic: Str,
+    subTopic: Str,
+    content: Str,
+    confidence: ConfidenceNum,
+    temporal: TemporalEnum,
+    validFrom: Str,
+    validTo: NullableStr,
+    supersededBy: NullableStr,
+    evidence: z.array(z.any()).required(),
+    createdAt: Str,
+    updatedAt: Str,
+    updateCount: Num,
+    lowActivity: z.boolean()
+  }),
+  [
+    "id",
+    "partition",
+    "topic",
+    "subTopic",
+    "content",
+    "confidence",
+    "temporal",
+    "validFrom",
+    "validTo",
+    "supersededBy",
+    "evidence",
+    "createdAt",
+    "updatedAt",
+    "updateCount",
+    "lowActivity"
+  ],
+  [
+    "id",
+    "partition",
+    "topic",
+    "subTopic",
+    "content",
+    "confidence",
+    "temporal",
+    "validFrom",
+    { key: "validTo", nullable: true },
+    { key: "supersededBy", nullable: true },
+    "evidence",
+    "createdAt",
+    "updatedAt",
+    "updateCount"
+  ]
+);
+function parseProfileEntry(value, label = "entry") {
+  const o = check(EntryShape, value, label);
+  return {
+    id: String(o.id),
+    partition: o.partition,
+    topic: String(o.topic),
+    subTopic: String(o.subTopic),
+    content: String(o.content),
+    confidence: Number(o.confidence),
+    temporal: o.temporal,
+    validFrom: String(o.validFrom),
+    validTo: o.validTo === null ? null : String(o.validTo),
+    supersededBy: o.supersededBy === null ? null : String(o.supersededBy),
+    evidence: parseEvidenceList(o.evidence, `${label}.evidence`),
+    createdAt: String(o.createdAt),
+    updatedAt: String(o.updatedAt),
+    updateCount: Number(o.updateCount),
+    ...o.lowActivity === void 0 ? {} : { lowActivity: Boolean(o.lowActivity) }
+  };
+}
+var InboxShape = closed(
+  z.object({ id: z.string(), kind: KindEnum, at: Str, ref: Str, note: z.string() }),
+  ["id", "kind", "at", "ref", "note"],
+  ["kind", "at", "ref"]
+);
+var AddShape = closed(
+  z.object({
+    op: z.const("ADD").required(),
+    partition: PartitionEnum,
+    topic: Str,
+    subTopic: Str,
+    content: Str,
+    temporal: OptionalTemporal,
+    confidence: z.number().min(0).max(1),
+    why: z.string(),
+    evidence: z.array(z.any()).required()
+  }),
+  ["op", "partition", "topic", "subTopic", "content", "temporal", "confidence", "why", "evidence"],
+  ["op", "partition", "topic", "subTopic", "content", "evidence"]
+);
+var UpdateShape = closed(
+  z.object({
+    op: z.const("UPDATE").required(),
+    id: Str,
+    changes: z.object({ content: z.string(), confidence: z.number().min(0).max(1) }),
+    why: z.string()
+  }),
+  ["op", "id", "changes", "why"],
+  ["op", "id", "changes"]
+);
+var InvalidateShape = closed(
+  z.object({
+    op: z.const("INVALIDATE").required(),
+    id: Str,
+    why: z.string(),
+    evidence: z.array(z.any())
+  }),
+  ["op", "id", "why", "evidence"],
+  ["op", "id"]
+);
+var NoopShape = closed(
+  z.object({ op: z.const("NOOP").required(), why: z.string() }),
+  ["op", "why"],
+  ["op"]
+);
+function parseObservationRefs(value, label) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value)) throw new ShapeError(`${label}: expected an array of observation ids`);
+  return value.map((v, i) => {
+    if (typeof v !== "string" || !v.trim()) {
+      throw new ShapeError(`${label}[${i}]: expected an observation id like "o1" (refs, timestamps and kinds are code-generated)`);
+    }
+    return v.trim();
+  });
+}
+function parseProposedOp(raw, label) {
+  if (!isPlainObject(raw)) throw new ShapeError(`${label}: expected an object, got ${describe(raw)}`);
+  const tag = raw.op;
+  if (tag === "ADD") {
+    const o = check(AddShape, raw, label);
+    const evidenceRefs = parseObservationRefs(o.evidence, `${label}.evidence`);
+    if (evidenceRefs.length === 0) {
+      throw new ShapeError(`${label}.evidence: ADD needs at least one observation id (axiom 1: no provenance, no memory)`);
+    }
+    return {
+      op: "ADD",
+      partition: o.partition,
+      topic: String(o.topic),
+      subTopic: String(o.subTopic),
+      content: String(o.content),
+      ...o.temporal === void 0 ? {} : { temporal: o.temporal },
+      ...o.confidence === void 0 ? {} : { confidence: Number(o.confidence) },
+      why: typeof o.why === "string" ? o.why : "",
+      evidenceRefs
+    };
+  }
+  if (tag === "UPDATE") {
+    const o = check(UpdateShape, raw, label);
+    const changes = o.changes;
+    const out = {};
+    if (changes.content !== void 0) out.content = String(changes.content);
+    if (changes.confidence !== void 0) out.confidence = Number(changes.confidence);
+    if (out.content === void 0 && out.confidence === void 0) {
+      throw new ShapeError(`${label}.changes: needs content or confidence`);
+    }
+    return { op: "UPDATE", id: String(o.id), changes: out, why: typeof o.why === "string" ? o.why : "" };
+  }
+  if (tag === "INVALIDATE") {
+    const o = check(InvalidateShape, raw, label);
+    return {
+      op: "INVALIDATE",
+      id: String(o.id),
+      why: typeof o.why === "string" ? o.why : "",
+      evidenceRefs: parseObservationRefs(o.evidence, `${label}.evidence`)
+    };
+  }
+  if (tag === "NOOP") {
+    const o = check(NoopShape, raw, label);
+    return { op: "NOOP", why: typeof o.why === "string" ? o.why : "" };
+  }
+  throw new ShapeError(`${label}.op: unknown op ${JSON.stringify(tag)}`);
+}
+function parseProposedOps(list) {
+  const ops = [];
+  const rejected = [];
+  list.forEach((raw, i) => {
+    try {
+      ops.push(parseProposedOp(raw, `op[${i}]`));
+    } catch (e) {
+      rejected.push({ op: raw, reason: e instanceof Error ? e.message : String(e) });
+    }
+  });
+  return { ops, rejected };
+}
+function materializeEvidence(refs, observations, label) {
+  const evidence = [];
+  for (const ref of refs) {
+    const item = observations.get(ref);
+    if (!item) return { evidence: [], reason: `${label}: ${ref} does not match any observation in this batch` };
+    evidence.push({ kind: item.kind, at: item.at, ref: item.ref });
+  }
+  return { evidence };
+}
+function tryParseJournalRecord(value) {
+  try {
+    if (!isPlainObject(value)) return null;
+    const rec = {
+      ts: typeof value.ts === "string" ? value.ts : "",
+      runId: typeof value.runId === "string" ? value.runId : "",
+      applied: Array.isArray(value.applied) ? value.applied : [],
+      rejected: Array.isArray(value.rejected) ? value.rejected : []
+    };
+    if (value.v === JOURNAL_VERSION) {
+      if (!Array.isArray(value.entries)) return null;
+      rec.v = JOURNAL_VERSION;
+      rec.entries = value.entries.map((e, i) => parseProfileEntry(e, `entries[${i}]`));
+    }
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
 // src/profile/store.ts
 var DAY_MS = 864e5;
 function profileFilePath(dataDir) {
@@ -153,34 +439,77 @@ function replayText(doc, text, baselineTs, stats) {
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
     if (!trimmed) continue;
-    try {
-      const rec = JSON.parse(trimmed);
-      if (baselineTs && rec.ts && String(rec.ts) <= baselineTs) continue;
-      for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
-      stats.records += 1;
-    } catch {
+    const tornTail = () => {
       const isLast = lines.slice(i + 1).every((l) => !l.trim());
       if (stats.isLive && isLast) {
         stats.truncatedTail = lines.length - i;
-        break;
+        return true;
       }
+      return false;
+    };
+    let rec = null;
+    try {
+      rec = tryParseJournalRecord(JSON.parse(trimmed));
+    } catch {
+      rec = null;
+    }
+    if (!rec) {
+      if (tornTail()) break;
+      stats.badRecords += 1;
+      continue;
+    }
+    if (baselineTs && rec.ts && String(rec.ts) <= baselineTs) continue;
+    try {
+      if (rec.v === JOURNAL_VERSION && rec.entries) {
+        for (const entry of rec.entries) upsertEntry(doc, entry);
+      } else {
+        for (const op of rec.applied ?? []) applyOpPermissive(doc, op, rec.ts);
+      }
+      stats.records += 1;
+    } catch {
+      stats.badRecords += 1;
     }
   }
+}
+function bucketFor(doc, partition) {
+  let bucket = doc.partitions[partition];
+  if (!bucket) {
+    bucket = { entries: [] };
+    doc.partitions[partition] = bucket;
+  }
+  return bucket;
+}
+function upsertEntry(doc, entry) {
+  const next = structuredClone(entry);
+  for (const p of PARTITIONS) {
+    const list = doc.partitions[p]?.entries;
+    if (!list) continue;
+    const at = list.findIndex((e) => e.id === next.id);
+    if (at < 0) continue;
+    if (p === next.partition) {
+      list[at] = next;
+    } else {
+      list.splice(at, 1);
+      bucketFor(doc, next.partition).entries.push(next);
+    }
+    return;
+  }
+  bucketFor(doc, next.partition).entries.push(next);
 }
 function replayJournal(guard, dataDir) {
   const snap = loadSnapshot(guard, dataDir);
   const doc = snap ? snap.doc : emptyProfile();
   const baselineTs = snap?.baselineTs ?? "";
-  const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, isLive: false };
+  const stats = { records: snap?.recordsFolded ?? 0, truncatedTail: 0, badRecords: 0, isLive: false };
   for (const file of listArchiveFiles(guard, dataDir)) {
     try {
-      replayText(doc, fs3.readFileSync(path3.join(dataDir, file), "utf8"), baselineTs, { records: 0, truncatedTail: 0, isLive: false });
+      replayText(doc, fs3.readFileSync(path3.join(dataDir, file), "utf8"), baselineTs, { records: 0, truncatedTail: 0, badRecords: 0, isLive: false });
     } catch {
     }
   }
   stats.isLive = true;
   replayText(doc, readText(guard, journalFilePath(dataDir), ""), baselineTs, stats);
-  return { doc, truncatedTail: stats.truncatedTail, records: stats.records };
+  return { doc, truncatedTail: stats.truncatedTail, records: stats.records, badRecords: stats.badRecords };
 }
 function readJournalTexts(guard, dataDir) {
   const texts = [];
@@ -229,6 +558,7 @@ function findActive(doc, id) {
 function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
   const applied = [];
   const rejected = [];
+  const entries = [];
   const nowIso = new Date(now).toISOString();
   for (const op of ops) {
     if (op.op === "NOOP") {
@@ -242,12 +572,12 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
       }
       let temporal = "stable";
       if (schema) {
-        const check = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
-        if (!check.ok) {
-          rejected.push({ op, reason: check.reason });
+        const check2 = checkAddAgainstSchema(schema, op.partition, op.topic, op.subTopic, op.temporal);
+        if (!check2.ok) {
+          rejected.push({ op, reason: check2.reason });
           continue;
         }
-        temporal = check.temporal;
+        temporal = check2.temporal;
       } else if (!(op.partition in doc.partitions)) {
         rejected.push({ op, reason: `unknown partition: ${op.partition}` });
         continue;
@@ -288,6 +618,7 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
       };
       op.assignedId = entry.id;
       doc.partitions[op.partition].entries.push(entry);
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
@@ -297,17 +628,20 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
         rejected.push({ op, reason: `unknown or inactive entry: ${op.id}` });
         continue;
       }
-      if (op.changes.content !== void 0) entry.content = op.changes.content.trim();
+      let nextConfidence = null;
       if (op.changes.confidence !== void 0) {
         const cap = capForKinds(entry.evidence.map((e) => e.kind));
         if (op.changes.confidence > entry.confidence && entry.evidence.length < 2) {
           rejected.push({ op, reason: "confidence upgrade requires a second confirming observation" });
           continue;
         }
-        entry.confidence = Math.min(op.changes.confidence, cap);
+        nextConfidence = Math.min(op.changes.confidence, cap);
       }
+      if (op.changes.content !== void 0) entry.content = op.changes.content.trim();
+      if (nextConfidence !== null) entry.confidence = nextConfidence;
       entry.updatedAt = nowIso;
       entry.updateCount += 1;
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
@@ -331,15 +665,17 @@ function applyOpsToDoc(guard, dataDir, doc, ops, schema, policy, now) {
       entry.updatedAt = nowIso;
       entry.updateCount += 1;
       if (op.evidence) entry.evidence.push(...op.evidence);
+      entries.push(structuredClone(entry));
       applied.push(op);
       continue;
     }
   }
-  return { applied, rejected };
+  return { applied, rejected, entries };
 }
 var dbSeq = 0;
 function runDeterministicAging(doc, policy, now) {
   const nowIso = new Date(now).toISOString();
+  const entries = [];
   let volatileExpired = 0;
   let lowActivityMarked = 0;
   for (const p of PARTITIONS) {
@@ -352,18 +688,21 @@ function runDeterministicAging(doc, policy, now) {
           e.updatedAt = nowIso;
           e.updateCount += 1;
           volatileExpired += 1;
+          entries.push(structuredClone(e));
         }
       } else if (!e.lowActivity && now - lastEvidence > policy.profile.stableLowActivityDays * DAY_MS) {
         e.lowActivity = true;
         lowActivityMarked += 1;
+        entries.push(structuredClone(e));
       }
     }
   }
-  return { volatileExpired, lowActivityMarked };
+  return { volatileExpired, lowActivityMarked, entries };
 }
 function persistWithJournal(guard, dataDir, doc, record) {
   saveJson(guard, profileFilePath(dataDir), doc);
-  const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record });
+  const v = record.entries === void 0 ? void 0 : JOURNAL_VERSION;
+  const line = JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), ...record, v });
   const journal = journalFilePath(dataDir);
   try {
     fs3.appendFileSync(guard.assert(journal), line + "\n", "utf8");
@@ -458,12 +797,46 @@ function rebuildProfile(guard, dataDir, opts = {}) {
   }
   return { ok: true, truncatedTail: replayed.truncatedTail, records: replayed.records, wrote: true };
 }
+var WIPE_FILES = ["profile.json", "profile_inbox.jsonl", "profile_journal.jsonl", SNAPSHOT_FILE];
+var WIPE_PATTERNS = [
+  /^profile_journal\.archive-/,
+  /\.bak-migrate-\d{14}$/,
+  /\.incoming-\d{14}$/
+];
+function wipeProfile(guard, dataDir) {
+  const removed = [];
+  for (const f of WIPE_FILES) {
+    const abs = guard.assert(path3.join(dataDir, f));
+    if (fs3.existsSync(abs)) {
+      fs3.rmSync(abs, { force: true });
+      removed.push(f);
+    }
+  }
+  for (const re of WIPE_PATTERNS) {
+    let rels = [];
+    try {
+      rels = matchFilesRecursive(guard.assert(dataDir), re);
+    } catch {
+      rels = [];
+    }
+    for (const rel of rels) {
+      try {
+        fs3.rmSync(guard.assert(path3.join(dataDir, rel)), { force: true });
+        removed.push(rel);
+      } catch {
+      }
+    }
+  }
+  return removed;
+}
 
 export {
   appendAuditLine,
   readAuditLines,
   pruneAuditFile,
   loadProfileSchema,
+  parseProposedOps,
+  materializeEvidence,
   profileFilePath,
   journalFilePath,
   ARCHIVE_PREFIX,
@@ -475,6 +848,7 @@ export {
   runDeterministicAging,
   persistWithJournal,
   verifyProfile,
-  rebuildProfile
+  rebuildProfile,
+  wipeProfile
 };
-//# sourceMappingURL=chunk-CUOSICYJ.js.map
+//# sourceMappingURL=chunk-6RC24BMQ.js.map

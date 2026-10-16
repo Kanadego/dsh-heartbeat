@@ -1,9 +1,11 @@
 import {
+  BeatAbortedError,
   ENGINE_ROOM_EXTRA_TOOLS,
   HOME_ROTATE_EVENT_COUNT,
   TOKEN_SAVER_IDLE_SECONDS,
   TOKEN_SAVER_WAKE_MS,
   agentLooksAlive,
+  agentTurn,
   applyHeartbeatInterval,
   beat,
   buildEngineRoomAllowList,
@@ -24,23 +26,26 @@ import {
   shouldRotateHome,
   spokeTextSince,
   startOrchestrator,
-  userActiveInBoundSessions
-} from "./chunk-TRO4E6WG.js";
-import "./chunk-WLZSABBH.js";
+  throwIfAborted,
+  userActiveInBoundSessions,
+  withTimeout
+} from "./chunk-3HXWVPEO.js";
+import "./chunk-KFQ3LDZY.js";
 import "./chunk-3QJJRXIR.js";
-import "./chunk-JDH2LDFS.js";
-import "./chunk-3MDBU6WY.js";
-import "./chunk-IV2ZWQA3.js";
-import "./chunk-KB5SMG3F.js";
-import "./chunk-CUOSICYJ.js";
-import "./chunk-K5Y6JP2B.js";
+import "./chunk-MTT27TSV.js";
+import "./chunk-HXOWN3RN.js";
+import "./chunk-TSPNMKIP.js";
+import "./chunk-6RC24BMQ.js";
+import "./chunk-XCB7HYOM.js";
 import "./chunk-WRUTATW4.js";
 export {
+  BeatAbortedError,
   ENGINE_ROOM_EXTRA_TOOLS,
   HOME_ROTATE_EVENT_COUNT,
   TOKEN_SAVER_IDLE_SECONDS,
   TOKEN_SAVER_WAKE_MS,
   agentLooksAlive,
+  agentTurn,
   applyHeartbeatInterval,
   beat,
   buildEngineRoomAllowList,
@@ -61,6 +66,8 @@ export {
   shouldRotateHome,
   spokeTextSince,
   startOrchestrator,
-  userActiveInBoundSessions
+  throwIfAborted,
+  userActiveInBoundSessions,
+  withTimeout
 };
-//# sourceMappingURL=orchestrator-ZPRGVDCB.js.map
+//# sourceMappingURL=orchestrator-FJHKMHLO.js.map

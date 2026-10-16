@@ -1,21 +1,27 @@
 import {
   MIGRATE_FILES,
   MIGRATE_MAGIC,
+  MIGRATE_MAX_BYTES,
+  MIGRATE_MAX_FILES,
   MIGRATE_VERSION,
   applyMigrationEntries,
   collectMigrationEntries,
   decryptContainer,
-  encryptContainer
-} from "./chunk-XFNCTOW7.js";
-import "./chunk-K5Y6JP2B.js";
+  encryptContainer,
+  isMigratablePath
+} from "./chunk-VQMT5YAY.js";
+import "./chunk-XCB7HYOM.js";
 import "./chunk-WRUTATW4.js";
 export {
   MIGRATE_FILES,
   MIGRATE_MAGIC,
+  MIGRATE_MAX_BYTES,
+  MIGRATE_MAX_FILES,
   MIGRATE_VERSION,
   applyMigrationEntries,
   collectMigrationEntries,
   decryptContainer,
-  encryptContainer
+  encryptContainer,
+  isMigratablePath
 };
-//# sourceMappingURL=migrate-D4VKAKYT.js.map
+//# sourceMappingURL=migrate-VSIFLYCI.js.map
