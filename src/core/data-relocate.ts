@@ -24,7 +24,8 @@ import { createHash } from 'node:crypto';
 const SKELETON_DIRS = ['settings', 'logs', 'tmp', 'exports'];
 /** Scratch space (decrypt windows, downloads): never copied, never verified. */
 const SCRATCH_DIR = 'tmp';
-const MAGIC = Buffer.from('KHBV1', 'ascii');
+const MAGIC_V1 = Buffer.from('KHBV1', 'ascii');
+const MAGIC_V2 = Buffer.from('KHBV2', 'ascii');
 
 export interface RelocateOptions {
   srcDir: string;
@@ -119,13 +120,18 @@ function sha256(file: string): string {
   return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-/** KHBV1 header check (local copy: importing vault here would cycle through paths). */
+/**
+ * Encrypted-container header check (local copy: importing vault here would
+ * cycle through paths). Both generations count: KHBV1 is the DPAPI legacy
+ * container, KHBV2 the AES-GCM one v2.0 writes.
+ */
 function isEncryptedFile(file: string): boolean {
   const fd = fs.openSync(file, 'r');
   try {
-    const head = Buffer.alloc(MAGIC.length);
-    const read = fs.readSync(fd, head, 0, MAGIC.length, 0);
-    return read === MAGIC.length && head.equals(MAGIC);
+    const head = Buffer.alloc(MAGIC_V2.length);
+    const read = fs.readSync(fd, head, 0, head.length, 0);
+    if (read === MAGIC_V1.length && head.subarray(0, MAGIC_V1.length).equals(MAGIC_V1)) return true;
+    return read === MAGIC_V2.length && head.equals(MAGIC_V2);
   } finally {
     fs.closeSync(fd);
   }

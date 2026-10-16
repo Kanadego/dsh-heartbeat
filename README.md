@@ -135,14 +135,14 @@ dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 ### 记忆 · 账本 · 周报
 
 - **用户画像**：本地结构化档案（兴趣 / 项目 / 沟通偏好 / 心理基线），带来源与置信度，稳定特质不因时间遗忘；journal 单一权威，可校验、可重建、可解密导出。
-- **周报**：每 7 天一份，只报道这周干了些什么——表达与静默、新认识、账本、素材池、活跃高峰。由后台「心跳」署名写成平实中性的一句话档案，DPAPI 加密落盘，卡片可翻，默认只留最近 3 期（`policy.weekly.keepReports`）。
+- **周报**：每 7 天一份，只报道这周干了些什么——表达与静默、新认识、账本、素材池、活跃高峰。由后台「心跳」署名写成平实中性的一句话档案，加密落盘，卡片可翻，默认只留最近 3 期（`policy.weekly.keepReports`）。
 - **账本工具**：账本注册成模型工具，日常会话里的 agent 听到你提到待办/承诺会自己记账、完成后自己勾掉，不用你下命令——和心跳、CLI 记的是同一本账。
 - **journal 快照基点**：画像 journal 超 5000 条自动折叠成快照 + 归档分片，重放成本有界；verify/rebuild 跨快照依然正确。
 
 ### 数据 · 迁移 · 焚毁
 
-- **换机迁移**：一键打包画像/账本/素材池/周报为口令加密容器（卡片或 CLI），新机器导入自动用本机 DPAPI 重加密。
-- **加密与焚毁**：敏感文件 DPAPI（CurrentUser）全文件加密；一键焚毁运行时数据；模型出库仅限合并裁决的最小必要摘要。
+- **换机迁移**：一键打包画像/账本/素材池/周报为口令加密容器（卡片或 CLI），新机器导入自动用本机主密钥重加密。
+- **加密与焚毁**：敏感文件 **AES-256-GCM** 整文件加密，数据密钥由 **Windows DPAPI（CurrentUser）** 保管在 `data/vault.key`，只在进程启动解一次；旧版（1.x）留下的 DPAPI 容器照样能读，`vault upgrade` 一次性改写成新格式；一键焚毁运行时数据；模型出库仅限合并裁决的最小必要摘要。
 
 ## 常见故障与诊断
 
@@ -207,6 +207,7 @@ node <插件目录>/dist/cli/index.js <命令>
 |        | `profile snapshot [--force]`                                                               | 折叠 journal 为快照 + 归档分片（维护相到阈值也会自动做）                                                |
 | 周报   | `weekly list` / `weekly show [file]`                                                       | 列出已生成的周报 / 打印某期（默认最新一期）                                                             |
 | 迁移   | `migrate export [file]` / `migrate import <file>`                                          | 打包记忆文件为口令加密容器（口令走 stdin 两行）/ 在新机器恢复（stdin 一行）；卡片「换机迁移」分区同功能 |
+| 加密   | `vault status` / `vault upgrade`                                                           | 盘上各格式容器计数 + 主密钥位置 / 把 1.x 的 DPAPI 容器就地改写成 AES-GCM                                |
 | 日志   | `logs cleanup [--dry-run]`                                                                 | 立即执行日志保留策略                                                                                    |
 | 预设   | `preset status` / `preset install [--force]`                                               | 装没装、与模板是否一致 / 补装（`--force` 还原成模板）                                                   |
 | 焚毁   | `burn [--yes] [--all]`                                                                     | 预演（默认）→ 执行；运行时数据覆写 x3 后删除，设置保留（`--all` 连设置归零）                            |
@@ -222,17 +223,22 @@ node <插件目录>/dist/cli/index.js <命令>
 | 文件                                                                                                                                 | 内容                                                               | 状态                                     |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------------- |
 | `data/settings/`                                                                                                                     | 绑定、策略覆盖、节律配置（`ui.json`）、画像白名单、心跳状态        | 明文（用户设定要可手编）                 |
-| `data/seeds.jsonl`                                                                                                                   | 素材池                                                             | 🔒 DPAPI                                 |
-| `data/profile.*`                                                                                                                     | 画像三件套（journal / 物化视图 / 收件箱）                          | 🔒 DPAPI                                 |
-| `data/sent.json` / `data/browse.json` / `data/screen.*`                                                                              | 表达记录 / 浏览流状态 / 屏幕快照                                   | 🔒 DPAPI                                 |
+| `data/vault.key`                                                                                                                     | 主密钥（AES 数据密钥，由 DPAPI 保护）                              | 🔒 本机本账户可解；不随迁移包移动        |
+| `data/seeds.jsonl`                                                                                                                   | 素材池                                                             | 🔒 加密                                  |
+| `data/profile.*`                                                                                                                     | 画像三件套（journal / 物化视图 / 收件箱）                          | 🔒 加密                                  |
+| `data/sent.json` / `data/browse.json` / `data/screen.*`                                                                              | 表达记录 / 浏览流状态 / 屏幕快照                                   | 🔒 加密                                  |
 | `data/ledger.md`                                                                                                                     | 账本（agent 的待办与话题来源，可直接手编）                         | 明文                                     |
-| `data/profile_snapshot.json` / `data/profile_journal.archive-*.jsonl`                                                                | 画像快照基点 / journal 归档分片                                    | 🔒 快照 DPAPI / 分片明文                 |
-| `data/weekly/`                                                                                                                       | 周报（每 7 天一份，含画像/账本摘录）                               | 🔒 DPAPI                                 |
+| `data/profile_snapshot.json` / `data/profile_journal.archive-*.jsonl`                                                                | 画像快照基点 / journal 归档分片                                    | 🔒 快照加密 / 分片明文                   |
+| `data/weekly/`                                                                                                                       | 周报（每 7 天一份，含画像/账本摘录）                               | 🔒 加密                                  |
 | `data/envpulse.jsonl` / `data/logs/heartbeat.jsonl`                                                                                  | 作息聚合 / 审计日志（不含敏感原文）                                | 明文，按保留策略滚动清理                 |
 | `data/cursors.json` / `data/preference.json` / `data/seed_report.jsonl` / `data/profile_rhythm.json` / `data/time-inject-state.json` | 观察游标 / 话题偏好权重 / 素材报账流水 / 作息直方图 / 时间注入节流 | 明文（只含编号、计数与聚合，无对话原文） |
 | `data/tmp/` / `data/exports/`                                                                                                        | 临时文件 / 画像导出                                                | 临时区                                   |
 
-加密用 **Windows DPAPI（CurrentUser 作用域）**整文件加密：本机本账户可自动解密使用，其他账户、其他机器、云同步副本都解不开。防的是他人 / 他机 / 误同步，不防同账户的恶意软件——那是操作系统边界的事。
+加密分两层：数据用 **AES-256-GCM** 整文件加密（带认证，改一个字节就解不开也不会给出一半内容），数据密钥存在 `data/vault.key`，那一个文件由 **Windows DPAPI（CurrentUser 作用域）** 保护——所以本机本账户可自动解密使用，其他账户、其他机器、云同步副本都解不开。防的是他人 / 他机 / 误同步，不防同账户的恶意软件——那是操作系统边界的事。
+
+1.x 写的文件用的是旧的 DPAPI 容器（`KHBV1`），v2.0 读得懂但写的是新容器（`KHBV2`）：升级插件不会让任何旧数据变成打不开的死文件。想把旧文件也换成新格式，跑一次 `heartbeat vault upgrade`（`vault status` 看盘上各格式各有多少）。
+
+反过来要注意：`KHBV2` 只有 2.0 及以后的版本认识——**升级到 2.0 之后不要再回退到 1.x**，旧版本会把新容器当作打不开的文件。（要回退就趁早，且先别跑 `vault upgrade`。）
 
 ### 安全边界
 

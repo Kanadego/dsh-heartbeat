@@ -36,6 +36,12 @@ function legacyTree(src: string): void {
     path.join(src, 'gate.json'),
     Buffer.concat([Buffer.from('KHBV1', 'ascii'), Buffer.from([0, 1, 2, 3])]),
   );
+  // Both container generations are opaque to the verifier: KHBV1 (legacy
+  // DPAPI) and KHBV2 (AES-GCM, what v2.0 writes).
+  write(
+    path.join(src, 'browse.json'),
+    Buffer.concat([Buffer.from('KHBV2', 'ascii'), Buffer.from([0, 1, 2, 3])]),
+  );
   write(path.join(src, 'tmp', 'leftover.plain'), 'scratch\n');
 }
 
@@ -61,7 +67,7 @@ test('verifyTrees gates on the file list, the sizes and the bytes', () => {
   const clean = verifyTrees(src, copy);
   assert.equal(clean.ok, true);
   assert.deepEqual(clean.problems, []);
-  assert.equal(clean.files, 6, 'tmp/ is skipped on both sides');
+  assert.equal(clean.files, 7, 'tmp/ is skipped on both sides');
   assert.ok(clean.bytes > 0);
 
   write(path.join(copy, 'ledger.md'), '- #1 lesT\n'); // same size, different byte
@@ -96,7 +102,7 @@ test('verifyTrees warns about unreadable plaintext without failing the move', ()
   assert.deepEqual(report.warnings, ['unparseable: profile.json']);
 });
 
-test('verifyTrees accepts KHBV1 containers as opaque bytes', () => {
+test('verifyTrees accepts encrypted containers from either generation as opaque bytes', () => {
   const { root, src } = box();
   const copy = path.join(root, 'copy');
   legacyTree(src);
@@ -110,7 +116,7 @@ test('relocateDataDir moves the tree out, verifies it, then deletes the original
   const result = relocateDataDir({ srcDir: src, dstDir: dst, now: Date.UTC(2026, 9, 10, 5, 0, 0) });
   assert.equal(result.action, 'relocated');
   if (result.action !== 'relocated') return;
-  assert.equal(result.files, 6);
+  assert.equal(result.files, 7);
   assert.equal(result.srcDir, src);
   assert.equal(result.dstDir, dst);
   assert.deepEqual(result.leftovers, []);
