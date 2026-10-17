@@ -1,0 +1,8 @@
+# Text files are stored and checked out with LF everywhere: the bundled dist is
+# committed as a build artifact, and tsup's chunk names are content hashes, so a
+# checkout with different line endings produces a different bundle.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
