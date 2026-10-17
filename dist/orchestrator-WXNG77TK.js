@@ -18,8 +18,10 @@ import {
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pickSpokenLine,
+  pinEngineRoomTools,
   resetHomeAgent,
   resetHomeSession,
+  selectedPresetId,
   sessionEventCount,
   sessionEvents,
   shouldArchiveRotatedHome,
@@ -29,7 +31,7 @@ import {
   throwIfAborted,
   userActiveInBoundSessions,
   withTimeout
-} from "./chunk-EKO2JAAF.js";
+} from "./chunk-ZLX4UUNI.js";
 import "./chunk-UCWLBKQE.js";
 import "./chunk-3QJJRXIR.js";
 import "./chunk-TVX4HV4Y.js";
@@ -58,8 +60,10 @@ export {
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pickSpokenLine,
+  pinEngineRoomTools,
   resetHomeAgent,
   resetHomeSession,
+  selectedPresetId,
   sessionEventCount,
   sessionEvents,
   shouldArchiveRotatedHome,
@@ -70,4 +74,4 @@ export {
   userActiveInBoundSessions,
   withTimeout
 };
-//# sourceMappingURL=orchestrator-HYN55UUL.js.map
+//# sourceMappingURL=orchestrator-WXNG77TK.js.map

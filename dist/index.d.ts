@@ -187,20 +187,28 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * never overwritten; set false to manage the preset entirely by hand.
      */
     installPreset: z<boolean, boolean, "defined">;
-    /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
-    timeInjectMin: z<number, number, "defined">;
+    /** Self-built time injection interval (D20, §17.6). 0 disables injection.
+     *  Left OPTIONAL on purpose (2026-10-17): a schema default here is
+     *  indistinguishable from an explicit choice, and `applySettingsOverrides`
+     *  applies this value over ui.json — so a default would silently undo the
+     *  card on every reload. Unset falls back at the refs below. */
+    timeInjectMin: z<number, number, "plain">;
     /** IANA timezone for the injected clock; empty = process zone. */
     timeZone: z<string, string, "defined">;
     /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-    statusbar: z<boolean, boolean, "defined">;
+    statusbar: z<boolean, boolean, "plain">;
     /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
-    idleMode: z<boolean, boolean, "defined">;
+    idleMode: z<boolean, boolean, "plain">;
     /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
-    tokenSaver: z<boolean, boolean, "defined">;
+    tokenSaver: z<boolean, boolean, "plain">;
     /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
     ledgerTool: z<boolean, boolean, "defined">;
     /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
     seedReportTool: z<boolean, boolean, "defined">;
+    /** v2.0.0 心事匣工具：留给下一跳的一句便签（默认开）。 */
+    notepadTool: z<boolean, boolean, "defined">;
+    /** v2.0.0 摘抄本工具：留句子和小事的地方（默认开）。 */
+    excerptTool: z<boolean, boolean, "defined">;
     /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
     extraTools: z<string, string, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
@@ -222,20 +230,28 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
      * never overwritten; set false to manage the preset entirely by hand.
      */
     installPreset: z<boolean, boolean, "defined">;
-    /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
-    timeInjectMin: z<number, number, "defined">;
+    /** Self-built time injection interval (D20, §17.6). 0 disables injection.
+     *  Left OPTIONAL on purpose (2026-10-17): a schema default here is
+     *  indistinguishable from an explicit choice, and `applySettingsOverrides`
+     *  applies this value over ui.json — so a default would silently undo the
+     *  card on every reload. Unset falls back at the refs below. */
+    timeInjectMin: z<number, number, "plain">;
     /** IANA timezone for the injected clock; empty = process zone. */
     timeZone: z<string, string, "defined">;
     /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-    statusbar: z<boolean, boolean, "defined">;
+    statusbar: z<boolean, boolean, "plain">;
     /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
-    idleMode: z<boolean, boolean, "defined">;
+    idleMode: z<boolean, boolean, "plain">;
     /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
-    tokenSaver: z<boolean, boolean, "defined">;
+    tokenSaver: z<boolean, boolean, "plain">;
     /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
     ledgerTool: z<boolean, boolean, "defined">;
     /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
     seedReportTool: z<boolean, boolean, "defined">;
+    /** v2.0.0 心事匣工具：留给下一跳的一句便签（默认开）。 */
+    notepadTool: z<boolean, boolean, "defined">;
+    /** v2.0.0 摘抄本工具：留句子和小事的地方（默认开）。 */
+    excerptTool: z<boolean, boolean, "defined">;
     /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
     extraTools: z<string, string, "defined">;
 }>>, "plain">;
@@ -252,6 +268,8 @@ interface HeartbeatConfig {
     tokenSaver?: boolean;
     ledgerTool?: boolean;
     seedReportTool?: boolean;
+    notepadTool?: boolean;
+    excerptTool?: boolean;
     extraTools?: string;
 }
 declare function apply(ctx: OrchestratorDeps['ctx'] & {

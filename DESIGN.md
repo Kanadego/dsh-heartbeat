@@ -18,17 +18,17 @@
 | 项 | 值 |
 |---|---|
 | 形态 | DSH cordis 插件 = 宿主进程内服务（定时器 / 编排 / 探针）+ web 设置卡片 + 独立 CLI |
-| 宿主 | DSH 0.2.0-rc.2 实测运行；0.1.7-rc.2 / 0.2.0-rc.1 / 0.2.0-rc.2 已验收；0.1.5-rc.2 兼容。≤ 0.1.1-rc.2 请用 v1.0（v1.1 起依赖 `snapshotEvents()` 与 agent 预设机制） |
-| 适配声明 | peer 依赖 `@deepseek-ai/dsh-llm`：`^0.1.1-rc.2 \|\| ^0.1.5-rc.2 \|\| ^0.1.7-rc.1 \|\| ^0.2.0-rc.1`。`@deepseek-ai/dsh-settings` 是**运行时真依赖**，必须留在 `dependencies`（原因见 §3.1） |
+| 宿主 | DSH 0.2.0-rc.2 实测运行；0.1.7-rc.2 / 0.2.0-rc.1 / 0.2.0-rc.2 / 0.2.1-rc.1 / 0.2.1-rc.2 已验收；0.1.5-rc.2 兼容。≤ 0.1.1-rc.2 请用 v1.0（v1.1 起依赖 `snapshotEvents()` 与 agent 预设机制） |
+| 适配声明 | peer 依赖 `@deepseek-ai/dsh-llm`：`^0.1.1-rc.2 \|\| ^0.1.5-rc.2 \|\| ^0.1.7-rc.1 \|\| ^0.2.0-rc.1 \|\| ^0.2.1-rc.1`。`@deepseek-ai/dsh-settings` 是**运行时真依赖**，必须留在 `dependencies`（原因见 §3.1） |
 | 平台 | **Windows 专属**：PowerShell 探针、DPAPI 保管的数据密钥（数据本身 AES-256-GCM）、WinRT toast；`package.json` 声明 `os: ["win32"]` |
 | 技术栈 | TypeScript（strict、`noUncheckedIndexedAccess`）、ESM、tsup 构建、Node ≥ 22.19 |
 | 产物 | `dist/index.js`（插件入口）、`dist/cli/index.js`（CLI）、`dist/index.d.ts`（类型）、`client.js`（前端卡片，手写、不参与构建） |
-| 测试 | node:test + tsx，**300 个**（约 78 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
+| 测试 | node:test + tsx，**378 个**（约 17 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
 | 运行数据 | `dataDir` 默认 `<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`），**在包外**，重装 / 升级 / 卸载都不会碰它；换位置用插件配置 `dataDir` 或环境变量 `HEARTBEAT_DATA_DIR`（v1.9.2 / issue #2） |
 | 老数据 | v1.9.1 及更早默认装在包内 `data/`（在 `node_modules` 下面），升级后首次启动自动搬出去：先备份、逐文件校验通过才删原件，失败原地不动并留痕（见 C13b） |
 | 心跳节律 | 出厂 60 分钟一拍（设置页 / CLI 可调）；沉默拍**零模型调用** |
 | 主循环 | `src/core/orchestrator.ts` 的 `beat()` |
-| 代码规模 | 50 个 `.ts` 文件；核心是 `orchestrator.ts`（约 1730 行）与 `rpc.ts` |
+| 代码规模 | 58 个 `.ts` 文件；核心是 `orchestrator.ts`（约 2110 行）与 `rpc.ts`（约 630 行） |
 
 ---
 
@@ -120,11 +120,13 @@ src/
 ├── statusbar/            状态数据源、时间注入、状态栏轨道
 ├── weekly/               周报
 ├── ledger/               账本
+├── notepad/              心事匣（一格便签 + 模型工具）
+├── excerpt/              摘抄本（明文笔记本 + 模型工具）
 └── notify/               Windows 通知
 assets/                   PowerShell 探针 + 随包预设模板
 config/                   出厂配置（policy / busy-rules / interests / profile-schema）
 scripts/                  会话修复等一次性工具
-tests/                    282 个测试
+tests/                    378 个测试
 ```
 
 `message-source.d.ts` 是给宿主消息类型打的补丁声明，不参与运行。
@@ -187,7 +189,7 @@ ctx.effect(() => {
 - 所有写进会话的消息**必须经宿主 `createUserMessage` 严格工厂**。手写消息对象会缺 message id，宿主加载该会话时报 `session event at seq N lacks an identified message`——用户的会话直接打不开（修复工具见 §13）。
 
 **C6 · 工具限制**
-`agentCtx.get('tools').restrict({ allow: ['web_search'] })`，在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效。
+`agentCtx.get('tools').restrict({ allow: ['web_search'] })`，在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效。 这份白名单在两条获取路径上都会套：`create` / `resume` 走 `setup`；取到**已存在且活着**的 agent（审计 `agent_reuse_live`）时 `setup` 会被跳过，复用分支因此单独调一次 `pinEngineRoomTools`（2026-10-17 修——修之前这条路径不套白名单，实测跑到全局层全量 62 个工具）。
 
 - 只能点名**继承层**里的工具。agent 自身层注册的只进 `knownNames`、不进 `restrictableNames`，所以**没有预设的裸 agent 连 `web_search` 都点不了名**（报 `names unknown global tool "web_search"`）——这也是为什么预设是必需的（C13）。
 - `tools.schemas()` 不传 scope 拿到的是**全局视图**，不能拿来判断预设挂上没有。判据是同一行审计里的 `restrict=ok`。
@@ -511,16 +513,47 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | 素材 | `seeds.list` / `archive` / `restore` / `delete` |
 | 画像 | `profile.digest` / `profile.partitions` / `profile.export` |
 | 账本 | `ledger.open`（让宿主拉起编辑器） |
+| 摘抄本 | `excerpt.open`（让宿主拉起编辑器） |
 | 配置 | `config.get` / `config.set` |
 | 兴趣 | `interests.list` / `add` / `remove` / `setWindows` |
 | 周报 | `weekly.list` / `weekly.get` |
 | 维护 | `migrate.export` / `migrate.import` |
 
-`client.js` 是九个分区的卡片：心跳状态（30 秒轮询，默认展开）/ 会话绑定 / 素材池 / 兴趣范围 / 用户画像（只读）/ 账本 / 周报 / 换机迁移 / 节律配置（分区名与顺序见 `client.js:592`–`606`）。**每个分区独立报错**，一个分区挂了不影响别的。v1.9.3 起画像区改成四个分区按钮切换、每条一块、正文自动换行（另加一个只读的「引擎室输入」视图，看引擎室这一拍到底收到了什么），素材池改成话题 / 聊天 × 活跃 / 归档四个按钮，两处列表都补了滚动区。
+`client.js` 是十个分区的卡片：心跳状态（30 秒轮询，默认展开）/ 会话绑定 / 素材池 / 兴趣范围 / 用户画像（只读）/ 账本 / 摘抄本 / 周报 / 换机迁移 / 节律配置（分区名与顺序见 `client.js:597`–`618`）。**每个分区独立报错**，一个分区挂了不影响别的。v1.9.3 起画像区改成四个分区按钮切换、每条一块、正文自动换行（另加一个只读的「引擎室输入」视图，看引擎室这一拍到底收到了什么），素材池改成话题 / 聊天 × 活跃 / 归档四个按钮，两处列表都补了滚动区。
 
 ### 4.14 cli/
 
 `dist/cli/index.js` 是独立进程的运维入口，命令清单见 §7.3。结构是 `main()` + 一张 `VERBS` 表 + 每个 verb 一个函数。它直接读写 `data/`，所以**改不了运行中宿主的内存状态**——想改间隔请走设置页。
+
+### 4.15 notepad/ —— 心事匣
+
+一格便签，把没说完的话留给下一拍。**存储恒定**（不随拍数增长），落 `data/notepad.json`（加密）：`store.ts` 管状态机，`tool.ts` 把它注册成模型工具（与账本同一条路：plain object、ROOT context → 全局工具层，引擎室被预设遮住）。
+
+**生命周期靠两个序号判定，不靠时间戳**（时间戳会被新消息重置，算不出"搁了几拍"）：
+
+```
+dropped  <=>  note.shownAtBeat !== null && note.shownAtBeat > note.touchedAtBeat
+```
+
+- `beginBeat(guard, file, startup)` 在每拍开头跑（`beat_start` 之后）：非启动拍 `counters.beats += 1` 并套用上面的判据；**启动那一拍不加序号、也不丢任何东西**——DSH 每次启动都会先跑一拍，若它算数，"搁了几拍"会被重启污染。
+- `markDelivered` 在投递给目标会话之后跑（成功与 `spoke_late` 两条路都过，提前 return 的不过）：`counters.delivers += 1`，把便签盖上 `shownAtBeat = counters.beats`；**只有这一拍才诞生的便签**（`note.beatNo === counters.beats`）才把 `deliverNo` 锚到当前计数——否则"第一次被读到"会永远显示成"被叫醒过 1 次"。
+- 判据用**严格大于**：本拍才写下或才保留的便签，从没被读过，不能被刚送出它的那次投递吃掉（同拍时两个序号相等）。
+- `writeNote` 同文本 = **保留**（`leftAt` / `beatNo` / `deliverNo` 原样留着，只更新 `touchedAtBeat` 并清 `shownAtBeat`，返回 `{ note, kept }`）；写别的文本 = 换新的，年龄从头算。空文本抛错。
+
+**读在投递包里**：`deliverPackage` 调 `readNotepadSafe()`，把 `notepadView()` 的结果（`text` / `beatsAgo` / `wakesAgo` / `sinceMinutes`）交给 `buildMaterialPrompt()` 的 `notepad` 选项，由 `notepadLines()` 渲染成三行，插在 `PACKAGE_DECLARE` **之后、素材清单之前**。引擎室的反刍备料包（`buildRuminationPrompt`）里**没有**它。
+
+**软失败**：读写异常只记 `notepad_read_failed` / `notepad_write_failed`（带 `where`：`begin_beat` / `deliver_package`），不让一格便签把整拍弄挂；`notepad_dropped` 记下这一拍放掉了哪条。`beat()` 新增 `trigger` 参数（`startup` / `interval` / `retry` / `wake`）并写进 `beat_start`。
+
+---
+
+### 4.16 excerpt/ —— 摘抄本
+
+留句子和想记住的小事的地方。**只增不减**（除非主动 `remove`）：没有状态、不会过期、不参与任何判定。与账本 / 心事匣的分工写在 `tool.ts` 的 description 里，免得模型拿错。
+
+- `excerpt.ts`（存储）：`excerptFilePath(dataDir)` = `data/excerpts.md`；行格式 `- [YYYY-MM-DD HH:MM][#xxxxxx] 正文`，认不出的行进 `rawLines` 原样保留（与账本同一套容忍式解析）；`appendExcerpt` / `removeExcerpt` / `recentExcerpts`。
+- `tool.ts`（模型工具）：`excerpt`，动作 `add` / `list` / `remove`，`MAX_TEXT = 300`、`LIST_LIMIT = 10`；与 `ledger` / `notepad` 同一条注册路径（plain object、ROOT context → 全局工具层），引擎室看不到。
+- **明文落盘**（`readText` / `writeText`）：与 `ledger.md` 同类——**给人看的文档、也可以被人手编**；其余明文文件都是机器状态（游标、计数、日志），没有人会去读。设置卡要能「一键打开」它，加密的笔记本没人能翻。`EXCERPT_HEADER` 兼作读缺省值与新文件头。
+- CLI `excerpt add|list [n]|remove|open`；RPC `excerpt.open`（缺文件时按 `EXCERPT_HEADER` 建）。
 
 ---
 
@@ -571,6 +604,8 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | `time-inject-state.json` | 时间注入的节流状态（按会话记上次注入时刻） | `statusbar/time-inject.ts` |
 | `gate.json` | 正身会话 id（DPAPI 加密；**改它必须重启 DSH**） | `core/orchestrator.ts` |
 | `browse.json` | 闲逛状态（上次闲逛时刻、焦点冷却、当日次数、refill 次数） | `browse/browse.ts` |
+| `notepad.json` | 心事匣那一格便签 + 两个序号计数（`beats` / `delivers`）（**密文**） | `notepad/store.ts` |
+| `excerpts.md` | 摘抄本，一行一条（**明文**，给人的文档，可手编） | `excerpt/excerpt.ts` |
 | `weekly/state.json` | 周报的触发锚点 | `weekly/report.ts` |
 | `weekly/report-<日期>.json` | 已生成的周报正文 | 同上 |
 
@@ -617,11 +652,13 @@ RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用
 | `intervalMin` | 心跳间隔（分钟） | 1–1440 |
 | `maxDailySend` | 每日开口上限（条） | 1–50 |
 | `timeInjectMin` | 时间注入节流（分钟；0 = 关闭） | 0–1440 |
-| `statusbar` | 是否接管状态栏（v1.9.3 起出厂默认**关**） | 布尔 |
+| `statusbar` | 是否接管状态栏（v1.9.3 起出厂默认**关**；卡片打开后以卡片为准） | 布尔 |
 | `idleMode` | 闲人模式（更少打扰） | 布尔 |
 | `tokenSaver` | 用户离开或锁屏时暂停心跳（v1.9.3 起暂停期间每 3 分钟探一次闸门，不取 agent、不调模型；绑定会话里出现用户没消化的新消息就算他在场，立刻恢复） | 布尔 |
 
 保存即生效，不重启。**越界的值会被丢弃而不是夹逼**（写成 `0` 就等于没写），范围表在 `src/config/ui-config.ts:25-29`。
+
+`timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` 这四个字段在 plugin 配置 schema 里**不写默认值**（2026-10-17 改）。原因：写了默认值就分不出「用户明确设了」和「没设」，而启动时配置值会盖过 `ui.json`——默认值于是每次重载都悄悄把卡片的选择掀掉（实测症状：状态栏开关重启后自己变回关）。不设时按上表括号里的出厂值走；真在配置里填了值，就以配置为准。
 
 ### 6.2 冷参数 —— `data/settings/policy.json`（或出厂 `config/policy.json`）
 
@@ -740,12 +777,14 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 
 | 事件 | 含义 |
 |---|---|
-| `beat_start` | 一拍开始 |
+| `beat_start` | 一拍开始（带 `trigger`：startup / interval / retry / wake） |
 | `phase_done` | 某一相跑完（`phase`: maintenance / collect / wander / refill_wander） |
 | `beat_error` | **拍级异常**——整拍挂了，看 `error` |
 | `beat_watchdog` | 超时看门狗强制解锁（上一次拍卡死了 45 分钟以上） |
 | `beat_aborted` | 这一拍被取消（看门狗 / 超时 / 插件卸载），带 `stage` 与 `why` |
 | `vault_upgraded` | 维护相把一个长期没动的旧 `KHBV1` 容器就地改写成 `KHBV2`，带 `file` 相对路径 |
+| `notepad_dropped` | 这一拍放掉了上一条没被保留的心事（带 `beatNo`）——正常流程，不是错误 |
+| `notepad_read_failed` / `notepad_write_failed` | 心事匣读写失败（带 `where`），只留痕，不影响整拍 |
 | `beat_agentless` | 拿不到 agent，本拍只跑维护与采集 |
 | `silent` | 本拍不开口，`reason` 写原因（冷静期 / 上限 / 静默时段 / 没有候选…） |
 
@@ -799,6 +838,7 @@ Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
 | `decision_deferred` | 表达决策抛错，这一拍没开口（看 `reason`） |
 | `deliver_target_live` / `_resumed` / `_released` | 投递目标的取用与归还；`_released` 是**好迹象**（说明干净还回去了） |
 | `deliver_target_resume_failed` / `_release_failed` | 取用或归还失败，看 `error`；偶发无碍，连着出现要查绑定 |
+| `deliver_target_preset` | 投递目标那一轮有没有把会话自己的预设挂回去（`preset=ok(<id>)` / `none` / `no-api` / `threw(…)`，2026-10-17 起） |
 | `delivered` | 落进了用户会话 |
 | `report_missing` / `report_read_failed` | 投递包没报账 / 报账读不出来 |
 | `expression_dropped` / `_streak` | 输出被判不合格丢弃 / 连续丢弃计数 |
@@ -850,6 +890,7 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 | `bind list` / `add` / `remove` | 会话绑定（**删会话后要核对这里的死绑定**） |
 | `seeds list` / `add` / `archive` / `restore` / `delete` | 素材池（`--archived` 看归档区） |
 | `ledger add` / `list` / `done` / `open` | 账本（**别手改 `ledger.md`**） |
+| `excerpt add` / `list` / `remove` / `open` | 摘抄本（明文，能手编） |
 | `profile verify` / `rebuild` / `export` / `wipe` / `snapshot` | 画像（`verify` 只报不修；`rebuild` 原子替换） |
 | `weekly` | 手动跑一次周报 |
 | `logs` | 审计尾部 |
@@ -871,6 +912,7 @@ node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\inde
 | `data/` 下的文件 | 本机、同一 Windows 用户 | AES-256-GCM 整文件加密，数据密钥由 DPAPI（CurrentUser 作用域）保管——换用户或换机器**解不开**，这是特性不是缺陷 |
 | 送进模型的文本 | 远端模型服务 | 只送画像条目字段与 ≤1 句观察引语，不送对话原文、不送证据全量 |
 | 屏幕内容 | 本地视觉桥（可能再转发给它配置的 provider） | 先解密再用、用完即焚，出去的只有识别摘要 |
+| 引擎室 agent 的工具面 | 只该是白名单 | `tools.restrict({ allow })` 把**全局层**收窄到 `web_search` + 压缩三件套；宿主注册在 agent **自身层**的工具不受它约束——完整的正常一跳是 9 个：`web_search`（预设）、`compress`/`decompress`/`acp_status`（billion-context）、`ops_bash`（dsh-ops）、四个 `schedule_*`（dsh-schedule）。**复用路径（2026-10-17 修）**：`ensureAgent` 取到已存在的活 agent 时跳过 `setup`，原先也就不套白名单——实测那一跳拿到全局层全量 62 个工具、决策轮 240s 超时；现在复用分支单独调 `pinEngineRoomTools` 重新钉一遍，记在带 `reuse` 前缀的 `tool_policy` 行 2026-10-17 实测确认：复用那一跳 `reuse restrict=ok`，模型拿到 9 个工具（修前同类场景 62 个） |
 
 **插件不开自己的网络客户端。** 出网只发生在三处：跑模型（宿主执行）、视觉识别（本机 modlens CLI）、闲逛时的 `web_search` 工具（宿主执行）。
 
@@ -958,7 +1000,7 @@ node dist\cli\index.js status
 
 ## 10. 测试与 CI
 
-**282 个测试**，跑在 `node:test` + tsx 上，全量约 90 秒。
+**378 个测试**，跑在 `node:test` + tsx 上，全量约 17 秒。
 
 ```powershell
 npm test                                          # 全部
@@ -984,7 +1026,7 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 | 感知与节奏 | `envpulse` / `gate` / `browse` / `statusbar` / `track` / `vision` |
 | 配置 | `config-load` / `ui-config` / `preset-install` / `interests-edit` |
 | 会话与轮换 | `home-rotation` / `visible-sessions` |
-| 其余 | `vault` / `migrate` / `weekly` / `ledger` / `ledger-tool` / `time-inject` |
+| 其余 | `vault` / `migrate` / `weekly` / `ledger` / `ledger-tool` / `time-inject` / `notepad` / `excerpt` |
 
 **新行为加在哪**：单模块逻辑就近加到同名的文件；跨模块的接线（相顺序、通道、事件流）放 `orchestrator.test.ts` 或 `rpc.test.ts`——这两个文件是回归网，动核心时先看它们有没有兜住。
 
@@ -1057,7 +1099,7 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 
 ## 14. 变更日志
 
-**当前版本 v2.0.0**（仓库已改、**尚未发版**）——第二次全量代码审查的修复与结构整改（22 项主发现 + 一节低优先级观察，逐条证据见 [`CODE-REVIEW-2026-10-17.md`](CODE-REVIEW-2026-10-17.md)）：
+**当前版本 v2.0.0**（仓库已改、**尚未发版**）——心事匣 + 摘抄本 + 第二次全量代码审查的修复与结构整改（22 项主发现 + 一节低优先级观察，逐条证据见 [`CODE-REVIEW-2026-10-17.md`](CODE-REVIEW-2026-10-17.md)）：
 
 1. **加密换代**（`src/vault/vault.ts`）：写路径产出 `KHBV2`（AES-256-GCM，头做 AAD），数据密钥 32 字节随机、由 DPAPI 包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次；读路径三代都认（`KHBV2` / `KHBV1` / 明文）。每文件一次 PowerShell 的开销随之消失（全量测试 97 s → 12 s）。旧容器在写入时自动换代，维护相每跳另换一个作兜底；CLI 提供 `vault status` / `vault upgrade`（一次全换）。**升级后不要退回 1.x**。
 2. **遗忘边界补全**（`src/profile/store.ts` / `src/vault/burn-list.ts`）：`wipe` 改为真遗忘（live 三文件 + 快照 + 归档分片 + 迁移备份 / 暂存残留），`burn` 清单新增 `match: RegExp` 支持那两族；`vault.key` 有意不烧。
@@ -1067,7 +1109,12 @@ node --import tsx --test tests/browse.test.ts     # 单个文件
 6. **取消链**（`src/core/orchestrator.ts` / `src/core/ps.ts` 等）：AbortController 贯穿所有阶段，超时 / 看门狗 / 卸载真正取消模型调用与子进程，记 `beat_aborted`。
 7. **画面不认旧图**（`src/screen/screenpulse.ts`）：新增 `screen.capture` 印章，采集失败烧旧图并取消本跳画面资格。
 8. **RPC 失败关闭**（`src/rpc.ts`）：缺宿主闸门时只放行 `GATE_SAFE_ENDPOINTS` 五个只读端点，端点表改 `Map`。
-9. **其余**：观察不再被整箱清空（只删读过的）、投递按说话时刻记账并复查全部条件、判「别说」的表述收紧、原子写先 `fsync`、摘要与账本块加上限、闲逛年份不再写死、CI 增加构建 / `dist` 一致性 / 客户端语法三查（重建了早已过期的 `dist`）。测试 304 → **342**。
+9. **其余**：观察不再被整箱清空（只删读过的）、投递按说话时刻记账并复查全部条件、判「别说」的表述收紧、原子写先 `fsync`、摘要与账本块加上限、闲逛年份不再写死、CI 增加构建 / `dist` 一致性 / 客户端语法三查（重建了早已过期的 `dist`）。测试 304 → **344**。
+10. **心事匣**（`src/notepad/store.ts` / `src/notepad/tool.ts` / `src/core/material.ts` / `src/core/orchestrator.ts`）：一格加密便签（`data/notepad.json`），投递包里附带上一拍的心事与"搁了几拍 / 被叫醒过几次"，靠 `shownAtBeat` / `touchedAtBeat` 两个序号判定保留与放掉（**严格大于**，启动拍不计序号）；`writeNote` 同文本即保留、年龄不重算。新增模型工具 `notepad`（write / read / clear），`beat()` 新增 `trigger` 参数并写进 `beat_start`。测试 344 → **361**（新增 17 条）。
+11. **摘抄本**（`src/excerpt/excerpt.ts` / `src/excerpt/tool.ts` / `src/cli/index.ts` / `src/rpc.ts` / `client.js`）：留句子和小事的地方，落 `data/excerpts.md` **明文**（与账本同类：给人的文档、能手编）；行格式 `- [YYYY-MM-DD HH:MM][#id] 正文`，容忍式解析。新增模型工具 `excerpt`（add / list / remove）、CLI `excerpt add|list|remove|open`、RPC `excerpt.open` 与设置卡新区。测试 361 → **375**（新增 14 条）。
+12. **复用 agent 时重新钉工具白名单**（`src/core/orchestrator.ts`）：`ensureAgent` 取到已存在且活着的 agent 时（`agent_reuse_live`）跳过 `setup`，而白名单就钉在 `setup` 里——插件重启后的每一跳因此带着全局层全量跑（2026-10-17 实测 62 个工具）。把白名单那段抽成 `pinEngineRoomTools(deps, agentCtx, notes)`，复用分支也调一次（宿主 agent 对象带 `agent.ctx`），结果记进带 `reuse` 前缀的 `tool_policy` 行。测试 375 → **377**（新增 2 条）。
+13. **节律字段不再写 schema 默认值**（`src/index.ts`）：`timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` 原先带 `.default(...)`，而启动时 `applySettingsOverrides` 会拿配置值盖过 `ui.json`——默认值因此分不出「用户设了」和「没设」，每次重载都把卡片的选择掀掉（症状：状态栏开关重启后自己变回关）。改成不给默认值（未设 → 走 `ui.json` → 再落到出厂值），`statusbar` 的判据同步从 `!== false` 改成 `=== true`，保住 v1.9.3 的「出厂默认关」。
+14. **投递目标挂回自己的预设**（`src/core/orchestrator.ts`）：`acquireTargetAgent` 的 resume 没有 `setup`，拉起来的 agent 是裸的——工具按全局层解析、呈现模式退回 native，实测目标会话那一轮从 1 个 `run_code` 变成 61 个、且调不到 `run_code`。新增 `selectedPresetId(events)` 从会话事件流读 `agent-preset/selected`，`mountTargetPreset` 把同一个预设挂回去；读不到 / 无服务 / 被拒一律退回裸跑，并写 `deliver_target_preset` 留痕。测试 377 → **378**。
 
 **v1.9.3**（**尚未发版**）——素材包可留白 + 摘要预算分区 + 画像与素材池 UI 重做：
 

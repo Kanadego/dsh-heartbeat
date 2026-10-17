@@ -6,13 +6,18 @@ import {
 } from "../chunk-ECQNDCO2.js";
 import {
   BUNDLED_PRESET_ID,
+  EXCERPT_HEADER,
+  appendExcerpt,
   conventionalUserPresetRoot,
   createPathGuard,
   describeInstall,
+  excerptFilePath,
   installBundledPreset,
   loadPolicy,
-  presetStatus
-} from "../chunk-QKSDX5Q7.js";
+  presetStatus,
+  readExcerpts,
+  removeExcerpt
+} from "../chunk-YKGA2Y3T.js";
 import {
   adviseWander,
   appendEntry,
@@ -231,6 +236,10 @@ function usage() {
     "  ledger list [--pending]           list entries",
     "  ledger done <id|substring>        mark an entry done",
     "  ledger open                       open ledger.md in the default editor",
+    "  excerpt add <text>                keep a line in the notebook",
+    "  excerpt list [n]                  list entries (newest n if given)",
+    "  excerpt remove <id|substring>     tear a page out",
+    "  excerpt open                      open excerpts.md in the default editor",
     "  logs cleanup [--dry-run]          apply log retention now",
     "  browse status                     browse state summary (wander)",
     "  browse dry                        wander adjudication with forced noon window",
@@ -412,6 +421,57 @@ async function verbLedger(c) {
     }
     default:
       console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbExcerpt(c) {
+  const { guard, sub, rest, excerptFile } = c;
+  switch (sub) {
+    case "add": {
+      let text = rest.join(" ").trim();
+      if (text === "-") text = readStdinText();
+      if (!text) {
+        console.error("usage: excerpt add <text|->");
+        return 1;
+      }
+      const e = appendExcerpt(guard, excerptFile, text);
+      console.log(`KEPT #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case "list": {
+      const all = readExcerpts(guard, excerptFile).entries;
+      const n = Number.parseInt(rest[0] ?? "", 10);
+      const items = Number.isFinite(n) && n > 0 ? all.slice(-n) : all;
+      for (const e of items) console.log(`#${e.id} ${e.date} ${e.time} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log("(empty)");
+      return 0;
+    }
+    case "remove": {
+      const key = rest.join(" ").trim();
+      if (!key) {
+        console.error("usage: excerpt remove <id|substring>");
+        return 1;
+      }
+      const e = removeExcerpt(guard, excerptFile, key);
+      if (!e) {
+        console.log("NOT_FOUND");
+        return 1;
+      }
+      console.log(`REMOVED #${e.id}`);
+      return 0;
+    }
+    case "open": {
+      const f = excerptFile;
+      if (!fs2.existsSync(f)) {
+        fs2.mkdirSync(path2.dirname(f), { recursive: true });
+        fs2.writeFileSync(f, EXCERPT_HEADER, "utf8");
+      }
+      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown excerpt subcommand: ${sub}`);
       return 1;
   }
 }
@@ -671,7 +731,7 @@ async function verbSessions(c) {
   const root = path2.join(dshHomeDir(), "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-HYN55UUL.js");
+    const { homeSessionId } = await import("../orchestrator-WXNG77TK.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -690,7 +750,7 @@ async function verbBind(c) {
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-HYN55UUL.js");
+      const { homeSessionId } = await import("../orchestrator-WXNG77TK.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -718,7 +778,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-HYN55UUL.js");
+      const { resetHomeSession } = await import("../orchestrator-WXNG77TK.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }
@@ -793,6 +853,7 @@ var VERBS = {
   status: verbStatus,
   seeds: verbSeeds,
   ledger: verbLedger,
+  excerpt: verbExcerpt,
   weekly: verbWeekly,
   logs: verbLogs,
   browse: verbBrowse,
@@ -836,6 +897,7 @@ async function main(argv) {
     argv,
     seedsFile: seedsFilePath(paths.dataDir),
     ledgerFile: ledgerFilePath(paths.dataDir),
+    excerptFile: excerptFilePath(paths.dataDir),
     decisionLog,
     seedAudit
   });
