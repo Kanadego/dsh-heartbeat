@@ -30,6 +30,7 @@ import { describeScreenShot } from '../screen/vision.js';
 import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
 import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
 import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
+import { beginBeat, markDelivered, notepadFilePath, notepadView, readNotepad } from '../notepad/store.js';
 import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
 import { loadEncryptedText, saveEncryptedText, upgradeOneLegacyVaultFile } from '../vault/vault.js';
@@ -163,6 +164,21 @@ export function sessionEventCount(session: HostSession | undefined): number {
   if (!session) return 0;
   if (typeof session.seq === 'number') return session.seq;
   return sessionEvents(session).length;
+}
+
+/** Which agent preset a session joined, read back from its own event log.
+ *
+ * A session that came up through the session-start picker records
+ * `agent-preset/selected`; later selections win. A session that never joined
+ * one has no such event — the caller decides what to do with that. */
+export function selectedPresetId(events: HostEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const e = events[i];
+    if (e?.type !== 'agent-preset/selected') continue;
+    const id = (e.data as { agentPreset?: unknown } | undefined)?.agentPreset;
+    if (typeof id === 'string' && id.trim() !== '') return id.trim();
+  }
+  return undefined;
 }
 
 // ── home-session rotation (2026-09-30 context-overflow death spiral) ─────
@@ -422,6 +438,64 @@ export function buildEngineRoomAllowList(globalNames: string[], configExtras: st
   return allow;
 }
 
+/** Pin the engine-room tool allow-list on ONE agent scope.
+ *
+ * Extracted from `makeHomeSetup` on 2026-10-17 so the live-reuse path can
+ * call it too. The restriction lives in dsh-tools' per-scope layers —
+ * dsh-tools filters what a scope INHERITS — and a plugin reload drops that
+ * filtered layer while the agent object itself outlives the plugin. Without
+ * re-pinning, a reused home agent keeps the full global layer (2026-10-17
+ * finding: 62 tools, shell and mail included, instead of the intended 9).
+ *
+ * `notes` collects the fragments the caller writes to the `tool_policy`
+ * audit line; `restrict=ok` in that line is the proof it landed. */
+export function pinEngineRoomTools(
+  deps: OrchestratorDeps,
+  agentCtx: { get(name: string): unknown },
+  notes: string[],
+): void {
+  // ── Runtime belt-and-braces (requirement 8, model side) ──────────────
+  // The preset is structural; this is the explicit allow-list. bash / fs /
+  // edit / subagent rows are absent from the preset already, so a failure
+  // here is a degraded-but-safe outcome, not a hole.
+  const tools = agentCtx.get('tools') as
+    | { restrict?(filter: { allow: string[] }): unknown; schemas?(scope?: unknown): { name?: string }[] }
+    | undefined;
+  if (typeof tools?.restrict !== 'function') {
+    notes.push('restrict=no-api');
+  } else {
+    // Global-layer names, read once: drives both the allow-list (bili
+    // compression tools, config extras) and the diagnostic note.
+    let globalNames: string[] = [];
+    try {
+      globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ''));
+    } catch { /* schemas read is best-effort; allow list falls back to web_search */ }
+    const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
+    try {
+      tools.restrict({ allow });
+      notes.push(`restrict=ok allow=${allow.join('|')}`);
+    } catch (e) {
+      // Never guess a substitute from the error text. The previous version
+      // retried with any `*search*` name the message listed, which picked
+      // ACP's `search_context` (conversation-block search, useless for the
+      // web) and SUCCEEDED — masking the agent down to one wrong tool.
+      notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
+    }
+    try {
+      // NOTE: `schemas()` with no scope argument is the GLOBAL view by
+      // contract (dsh-tools `schemas(scope)` -> `view(scope)`, "omitted =
+      // the global view"), so this list deliberately excludes preset rows
+      // such as web_search. It is a sanity read of the process-global
+      // layer, not the agent's surface — `restrict=ok` above is the line
+      // that proves the preset landed.
+      const visible = globalNames.sort();
+      notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(',') : '(empty)'}`);
+    } catch (e) {
+      notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
+    }
+  }
+}
+
 function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): unknown }) => Promise<void> {
   const { ctx, paths } = deps;
   return async (agentCtx: { get(name: string): unknown }) => {
@@ -465,46 +539,7 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
     } catch (e) {
       notes.push(`preset=threw(${String(e).slice(0, 200)})`);
     }
-      // ── Runtime belt-and-braces (requirement 8, model side) ──────────────
-      // The preset is structural; this is the explicit allow-list. bash / fs /
-      // edit / subagent rows are absent from the preset already, so a failure
-      // here is a degraded-but-safe outcome, not a hole.
-      const tools = agentCtx.get('tools') as
-        | { restrict?(filter: { allow: string[] }): unknown; schemas?(scope?: unknown): { name?: string }[] }
-        | undefined;
-      if (typeof tools?.restrict !== 'function') {
-        notes.push('restrict=no-api');
-      } else {
-        // Global-layer names, read once: drives both the allow-list (bili
-        // compression tools, config extras) and the diagnostic note.
-        let globalNames: string[] = [];
-        try {
-          globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ''));
-        } catch { /* schemas read is best-effort; allow list falls back to web_search */ }
-        const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
-        try {
-          tools.restrict({ allow });
-          notes.push(`restrict=ok allow=${allow.join('|')}`);
-        } catch (e) {
-          // Never guess a substitute from the error text. The previous version
-          // retried with any `*search*` name the message listed, which picked
-          // ACP's `search_context` (conversation-block search, useless for the
-          // web) and SUCCEEDED — masking the agent down to one wrong tool.
-          notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
-        }
-        try {
-          // NOTE: `schemas()` with no scope argument is the GLOBAL view by
-          // contract (dsh-tools `schemas(scope)` -> `view(scope)`, "omitted =
-          // the global view"), so this list deliberately excludes preset rows
-          // such as web_search. It is a sanity read of the process-global
-          // layer, not the agent's surface — `restrict=ok` above is the line
-          // that proves the preset landed.
-          const visible = globalNames.sort();
-          notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(',') : '(empty)'}`);
-        } catch (e) {
-          notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
-        }
-      }
+    pinEngineRoomTools(deps, agentCtx, notes);
       ctx.logger.info('heartbeat: tool policy %s', notes.join(' '));
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'tool_policy', policy: notes.join(' ') });
   };
@@ -605,6 +640,36 @@ export function agentLooksAlive(agent: HostAgent | null | undefined): boolean {
   return Boolean(agent.session);
 }
 
+/** Re-pin the engine-room allow-list on a REUSED home agent.
+ *
+ * `ensureAgent`'s live branch deliberately skips `setup` — the agent is
+ * already published and owned, and `agents.resume` would fight for the
+ * session. But the tool restriction is not part of the agent object: it
+ * lives in the per-scope layer dsh-tools builds for it, which is per-plugin-
+ * load. A plugin reload that finds the home session already live would
+ * therefore run every following beat with the UNRESTRICTED global layer —
+ * measured 2026-10-17: the engine room's model saw 62 tools (shell, mail,
+ * undo, qqbot included) instead of the intended allow-list, and the decision
+ * turn then hit its 240s timeout. Re-pinning restores exactly what a freshly
+ * provisioned agent gets.
+ *
+ * Best-effort, never fatal: a missing `ctx` or a refused `restrict()` is
+ * recorded on the `tool_policy` line (`reuse …`) and the beat goes on. */
+function rePinReusedAgent(deps: OrchestratorDeps, agent: HostAgent): void {
+  const notes: string[] = [];
+  const agentCtx = (agent as { ctx?: { get(name: string): unknown } }).ctx;
+  if (agentCtx === undefined || typeof agentCtx.get !== 'function') {
+    notes.push('reuse-pin=ctx-missing');
+  } else {
+    try {
+      pinEngineRoomTools(deps, agentCtx, notes);
+    } catch (e) {
+      notes.push(`reuse-pin=threw(${String(e).slice(0, 160)})`);
+    }
+  }
+  appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'tool_policy', policy: `reuse ${notes.join(' ')}` });
+}
+
 async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
   if (agentPromise) {
     const cached = await agentPromise;
@@ -636,6 +701,9 @@ async function ensureAgent(deps: OrchestratorDeps): Promise<HostAgent | null> {
         if (live.ok && live.result) {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_reuse_live', sessionId: savedId });
           agent = live.result;
+          // This branch skips `setup` by construction (the agent is already
+          // published and owned), so it must re-pin the allow-list itself.
+          rePinReusedAgent(deps, agent);
         } else {
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'agent_resume_start', sessionId: savedId });
           try {
@@ -1200,6 +1268,48 @@ function ctx_getAgent(deps: OrchestratorDeps, sessionId: string): (HostAgent & {
  * composition setup（预设挂载 + 模型选择投影），留在注册表里会被 UI 接管；
  * 投递一结束就 dispose，让宿主在用户下次打开会话时按它自己的流程重建。
  */
+/** Re-attach the preset a delivery TARGET session had joined.
+ *
+ * `acquireTargetAgent` resumes the target with no `setup`, so that agent is
+ * BARE: it joins no preset, its tools resolve against the process-global layer
+ * and its presentation mode falls back to native. The delivering turn then
+ * looks nothing like the session's own turns — measured 2026-10-17: the target
+ * session flipped from 1 tool (`run_code`, ptc mode) to 61 (native) for the
+ * delivery turn and back again, the model could not call `run_code` at all,
+ * and the GUI raised a tool-change notice mid-conversation.
+ *
+ * The session itself records which preset it joined, so we read that back and
+ * mount the same one. Best-effort: an unrecorded preset, a host without the
+ * presets service or a refused mount all leave the previous bare behaviour,
+ * with the outcome written to the `deliver_target_preset` audit line. */
+async function mountTargetPreset(deps: OrchestratorDeps, sessionId: string, agent: HostAgent): Promise<void> {
+  const notes: string[] = [];
+  try {
+    const presetId = selectedPresetId(sessionEvents(agent.session));
+    if (presetId === undefined) {
+      notes.push('preset=none');
+    } else {
+      const agentCtx = (agent as { ctx?: { get(name: string): unknown } }).ctx;
+      if (agentCtx === undefined || typeof agentCtx.get !== 'function') {
+        notes.push('preset=ctx-missing');
+      } else {
+        const presets = agentCtx.get('agentPresets') as
+          | { mount?(ctx: unknown, id?: string): Promise<unknown> }
+          | undefined;
+        if (typeof presets?.mount !== 'function') {
+          notes.push('preset=no-api');
+        } else {
+          await presets.mount(agentCtx, presetId);
+          notes.push(`preset=ok(${presetId})`);
+        }
+      }
+    }
+  } catch (e) {
+    notes.push(`preset=threw(${String(e).slice(0, 160)})`);
+  }
+  appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'deliver_target_preset', sessionId, policy: notes.join(' ') });
+}
+
 async function acquireTargetAgent(
   deps: OrchestratorDeps,
   sessionId: string,
@@ -1220,6 +1330,10 @@ async function acquireTargetAgent(
     appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
       event: 'deliver_target_resumed', sessionId, model: agent.options?.model ?? '(none)',
     });
+    // The resume above is bare by construction; put the session's own preset
+    // back before the delivery turn runs, or the model would speak through a
+    // surface the session never has.
+    await mountTargetPreset(deps, sessionId, agent);
     return {
       agent,
       release: () => {
@@ -1344,6 +1458,31 @@ function recordDeliveryFromAccount(
   });
 }
 
+/** 心事匣 read for a delivery package. Best-effort by contract: the note is a
+ *  nicety and saying something is the point, so a damaged container logs and
+ *  yields undefined (no note line) instead of failing the package. */
+function readNotepadSafe(deps: OrchestratorDeps, where: string) {
+  try {
+    return notepadView(readNotepad(deps.guard, notepadFilePath(deps.paths.dataDir))) ?? undefined;
+  } catch (e) {
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'notepad_read_failed', where, error: String(e).slice(0, 120),
+    });
+    return undefined;
+  }
+}
+
+/** 心事匣 write. Same best-effort contract as the read. */
+function markDeliveredSafe(deps: OrchestratorDeps, where: string): void {
+  try {
+    markDelivered(deps.guard, notepadFilePath(deps.paths.dataDir));
+  } catch (e) {
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'notepad_write_failed', where, error: String(e).slice(0, 120),
+    });
+  }
+}
+
 /** ⑤b→⑥→⑦ 投递包（v1.6.3 从 expressionPhases 抽出）：在投递目标会话的 agent 上出声，
  * 归账素材、留痕。素材池路径与画像兜底路径共用；失败/沉默时把 resume 出来的 agent 还回去。
  * seedIds = 本轮素材的显式归账 id（画像兜底传空数组，其伪素材不归账）。 */
@@ -1391,6 +1530,9 @@ async function deliverPackage(
     // 想说的话；觉得没什么可说的可以沉默。
     // 本次投递编号（v1.9.0）：报账把它带回来，这一包的账才不会被上一包或下一包认领。
     const deliveryId = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    // 心事匣 (v2.0.0): the note left for this beat rides in the package, so the
+    // engine room neither reads it nor needs to know it exists.
+    const notepad = readNotepadSafe(deps, 'deliver_package');
     const phrasePrompt = buildMaterialPrompt(materials, {
       deliveryId,
       // spec ②: the "我在干嘛" line rides on every delivery when vision
@@ -1398,6 +1540,7 @@ async function deliverPackage(
       ...(typeof opts.doing === 'string' && opts.doing.trim()
         ? { doing: opts.doing.trim().slice(0, 80) }
         : {}),
+      ...(notepad ? { notepad } : {}),
     });
 
     // H-67: run the quiet-hours / daily-cap check immediately before delivery.
@@ -1441,6 +1584,11 @@ async function deliverPackage(
       });
       spokenRaw = late;
     }
+    // 心事匣 (v2.0.0): the package did reach her turn, so this note now counts
+    // as shown — the next beat will let it go unless she rewrites it. Placed
+    // here on purpose: the two early returns above (quiet-hours refusal, a
+    // deferred busy target) never handed her anything, and must not age it.
+    markDeliveredSafe(deps, 'deliver_package');
     // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
     // '</tool_calls>' 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
     // 目标 agent 回合以工具调用收尾时，末行是 '</tool_calls>' 而真正要说的在更前面。
@@ -1741,7 +1889,7 @@ function scheduleDeferredRetry(deps: OrchestratorDeps): void {
   deferredRetries += 1;
   retryTimer = setTimeout(() => {
     retryTimer = undefined;
-    void beat(deps);
+    void beat(deps, 'retry');
   }, delayMs);
 }
 
@@ -1793,7 +1941,7 @@ function scheduleTokenSaverWake(deps: OrchestratorDeps): void {
         pausedSince = 0;
         heldChecks = 0;
         appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'token_saver_resumed', via: 'wake', heldMin, checks });
-        void beat(deps);
+        void beat(deps, 'wake');
       } catch { /* a timer must never throw */ }
     })();
   }, TOKEN_SAVER_WAKE_MS);
@@ -1848,7 +1996,13 @@ export async function userActiveInBoundSessions(deps: OrchestratorDeps): Promise
   }
 }
 
-export async function beat(deps: OrchestratorDeps): Promise<void> {
+/** Why this beat started (v2.0.0 心事匣). Only the ordinals care: `startup` is
+ *  the 15s beat after a DSH boot, which must not consume a beat ordinal — a
+ *  restart would otherwise age every note by one beat for no reason. The other
+ *  three are real beats and count like any interval tick. */
+export type BeatTrigger = 'startup' | 'interval' | 'retry' | 'wake';
+
+export async function beat(deps: OrchestratorDeps, trigger: BeatTrigger = 'interval'): Promise<void> {
   if (beating) return; // single-flight per beat
   beating = true;
   const now = Date.now();
@@ -1876,8 +2030,22 @@ export async function beat(deps: OrchestratorDeps): Promise<void> {
   }, BEAT_WATCHDOG_MS);
   beatWatchdog.unref?.();
   try {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_start' });
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_start', trigger });
     const beatStart = new Date(now).toISOString();
+    // 心事匣 (v2.0.0): open this beat's slot before anything can fail. It both
+    // consumes the beat ordinal and lets go of a note that was shown on an
+    // earlier beat and never rewritten. Best-effort: a damaged container logs
+    // and the beat goes on — losing a note is better than losing the beat.
+    try {
+      const opened = beginBeat(deps.guard, notepadFilePath(paths.dataDir), trigger === 'startup');
+      if (opened.dropped) {
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'notepad_dropped', beatNo: opened.beatNo });
+      }
+    } catch (e) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'notepad_write_failed', where: 'begin_beat', error: String(e).slice(0, 120),
+      });
+    }
     const agent = await ensureAgent(deps);
     if (agent) {
       beatCancel = () => {
@@ -1994,12 +2162,12 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
   const scheduleRecurring = (intervalMin: number) => {
     if (timer) clearInterval(timer);
     const intervalMs = Math.max(1, intervalMin) * 60_000;
-    timer = setInterval(() => { void beat(deps); }, intervalMs);
+    timer = setInterval(() => { void beat(deps, 'interval'); }, intervalMs);
   };
   const scheduleFirst = () => {
     if (firstScheduled) return; // r5 fix: never queue more than one first beat
     firstScheduled = true;
-    first = setTimeout(() => { void beat(deps); }, 15_000);
+    first = setTimeout(() => { void beat(deps, 'startup'); }, 15_000);
   };
   reschedule = (intervalMin: number) => {
     scheduleRecurring(intervalMin);

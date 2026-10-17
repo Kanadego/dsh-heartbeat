@@ -586,6 +586,11 @@ window.__ModuleLoader__.load({
 					(v) => setLedgerMsg("已打开：" + v.path),
 					(e) => setLedgerMsg("失败：" + String(e).slice(0, 80)),
 				);
+				const [excerptMsg, setExcerptMsg] = React.useState("");
+				const openExcerpt = () => rpc("excerpt.open").then(
+					(v) => setExcerptMsg("已打开：" + v.path),
+					(e) => setExcerptMsg("失败：" + String(e).slice(0, 80)),
+				);
 				return React.createElement(
 					"div",
 					{ style: { padding: "2px 0" } },
@@ -601,6 +606,13 @@ window.__ModuleLoader__.load({
 							React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, "一键打开账本"),
 							React.createElement("span", { style: hintStyle }, ledgerMsg || "账本是心跳 agent 的待办与话题来源，可直接手编")),
 					)),
+					React.createElement(Section, { title: "摘抄本" }, React.createElement(
+						"div",
+						null,
+						React.createElement("div", { style: rowStyle },
+							React.createElement("button", { style: buttonStyle, onClick: () => { void openExcerpt(); } }, "一键打开摘抄本"),
+							React.createElement("span", { style: hintStyle }, excerptMsg || "留句子和小事的地方：只增不减，直接手编也不会被覆盖")),
+						)),
 					React.createElement(Section, { title: "周报" }, React.createElement(WeeklySection, null)),
 					React.createElement(Section, { title: "换机迁移" }, React.createElement(MigrateSection, null)),
 					React.createElement(Section, { title: "节律配置" }, React.createElement(ConfigSection, null)),

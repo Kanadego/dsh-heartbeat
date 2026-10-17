@@ -36,6 +36,7 @@ import {
 import { loadProfile, profileFilePath } from './profile/store.js';
 import { buildDigest } from './profile/digest.js';
 import { ledgerFilePath } from './ledger/ledger.js';
+import { EXCERPT_HEADER, excerptFilePath } from './excerpt/excerpt.js';
 import { listWeeklyReports, readWeeklyReport } from './weekly/report.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
 import { addInterest, readEffective, removeInterest, setWanderWindows } from './browse/interests-edit.js';
@@ -452,6 +453,13 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
     'ledger.open'() {
       const f = ledgerFilePath(paths.dataDir);
       if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
+      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      return ok({ path: f });
+    },
+
+    'excerpt.open'() {
+      const f = excerptFilePath(paths.dataDir);
+      if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, EXCERPT_HEADER, 'utf8');
       spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
       return ok({ path: f });
     },

@@ -26,6 +26,10 @@ import { registerHeartbeatPreset } from './core/preset-definition.js';
 import { buildLedgerTool } from './ledger/tool.js';
 import { buildSeedReportTool, reportFilePath } from './seeds/report.js';
 import { ledgerFilePath } from './ledger/ledger.js';
+import { buildNotepadTool } from './notepad/tool.js';
+import { notepadFilePath } from './notepad/store.js';
+import { buildExcerptTool } from './excerpt/tool.js';
+import { excerptFilePath } from './excerpt/excerpt.js';
 
 export const name = 'heartbeat';
 
@@ -57,20 +61,28 @@ export const Config = z.object({
    * never overwritten; set false to manage the preset entirely by hand.
    */
   installPreset: z.boolean().default(true),
-  /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
-  timeInjectMin: z.number().default(25),
+  /** Self-built time injection interval (D20, §17.6). 0 disables injection.
+   *  Left OPTIONAL on purpose (2026-10-17): a schema default here is
+   *  indistinguishable from an explicit choice, and `applySettingsOverrides`
+   *  applies this value over ui.json — so a default would silently undo the
+   *  card on every reload. Unset falls back at the refs below. */
+  timeInjectMin: z.number(),
   /** IANA timezone for the injected clock; empty = process zone. */
   timeZone: z.string().default(''),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-  statusbar: z.boolean().default(false),
+  statusbar: z.boolean(),
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
-  idleMode: z.boolean().default(false),
+  idleMode: z.boolean(),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
-  tokenSaver: z.boolean().default(false),
+  tokenSaver: z.boolean(),
   /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
   ledgerTool: z.boolean().default(true),
   /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
   seedReportTool: z.boolean().default(true),
+  /** v2.0.0 心事匣工具：留给下一跳的一句便签（默认开）。 */
+  notepadTool: z.boolean().default(true),
+  /** v2.0.0 摘抄本工具：留句子和小事的地方（默认开）。 */
+  excerptTool: z.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
   extraTools: z.string().default(''),
 });
@@ -88,6 +100,8 @@ export interface HeartbeatConfig {
   tokenSaver?: boolean;
   ledgerTool?: boolean;
   seedReportTool?: boolean;
+  notepadTool?: boolean;
+  excerptTool?: boolean;
   extraTools?: string;
 }
 
@@ -226,7 +240,9 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // namespace; resolved values apply live (interval reschedules the timer).
   let sectionSource: (() => HeartbeatConfig) | null = null;
   let timeInjectMinRef = ui.timeInjectMin ?? (config.timeInjectMin ?? 25);
-  let statusbarEnabledRef = ui.statusbar ?? (config.statusbar !== false);
+  // Factory default is OFF (v1.9.3); `=== true` so an UNSET config no longer
+  // reads as "not false = on" now that the schema leaves it optional.
+  let statusbarEnabledRef = ui.statusbar ?? (config.statusbar === true);
   let idleModeRef = ui.idleMode ?? (config.idleMode === true);
   let tokenSaverRef = ui.tokenSaver ?? (config.tokenSaver === true);
 
@@ -421,6 +437,24 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // the ledger tool; the engine room never sees it.
   if (config.seedReportTool !== false) {
     registerGlobalTool('seed_report', () => buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+  }
+
+  // ── 心事匣 (v2.0.0): one note she leaves for the next beat ──────────────
+  // Same global-layer pattern, and the same reason as above: the engine room
+  // never sees this tool. It does not need to — the note reaches the next beat
+  // through the delivery package (material.ts notepadLines), which the engine
+  // room builds but never authors. Storage is encrypted (it is more private
+  // than the ledger), so the module goes through the vault, not plain text.
+  if (config.notepadTool !== false) {
+    registerGlobalTool('notepad', () => buildNotepadTool(guard, notepadFilePath(paths.dataDir)));
+  }
+
+  // ── 摘抄本 (v2.0.0): a line worth keeping, kept in plain text ───────────
+  // Same global-layer pattern. Unlike the notepad this one is plaintext on
+  // purpose: the settings card opens the file for the user, and a notebook
+  // nobody can read is not a notebook. The ledger is the other plaintext file.
+  if (config.excerptTool !== false) {
+    registerGlobalTool('excerpt', () => buildExcerptTool(guard, excerptFilePath(paths.dataDir)));
   }
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
