@@ -1,12 +1,18 @@
 import {
+  EXCERPT_HEADER,
+  appendExcerpt,
   createPathGuard,
   deepMerge,
   describeInstall,
+  excerptFilePath,
   installBundledPreset,
   loadPolicy,
+  readExcerpts,
+  recentExcerpts,
+  removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-QKSDX5Q7.js";
+} from "./chunk-YKGA2Y3T.js";
 import {
   addBinding,
   loadBindings,
@@ -17,17 +23,22 @@ import {
   applyHeartbeatInterval,
   buildDigest,
   buildSeedReportTool,
+  clearNote,
   getLastBeat,
   homeSessionId,
   inQuietHours,
+  notepadFilePath,
+  notepadView,
+  readNotepad,
   readSentState,
   readStatus,
   reportFilePath,
   resetHomeSession,
   sessionEventCount,
   sessionEvents,
-  startOrchestrator
-} from "./chunk-EKO2JAAF.js";
+  startOrchestrator,
+  writeNote
+} from "./chunk-ZLX4UUNI.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -635,6 +646,12 @@ function buildEndpoints(deps, isLive) {
       spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
       return ok({ path: f });
     },
+    "excerpt.open"() {
+      const f = excerptFilePath(paths.dataDir);
+      if (!fs4.existsSync(guard.assert(f))) fs4.writeFileSync(f, EXCERPT_HEADER, "utf8");
+      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      return ok({ path: f });
+    },
     "weekly.list": () => ok({ reports: listWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports) }),
     "weekly.get"(p) {
       const file = String(p.file ?? "");
@@ -951,6 +968,161 @@ ${items.join("\n")}` : "\u8D26\u672C\u91CC\u6CA1\u6709\u672A\u5B8C\u6210\u4E8B\u
   };
 }
 
+// src/notepad/tool.ts
+var MAX_NOTE_CHARS = 160;
+function clean2(v) {
+  return String(v ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_NOTE_CHARS);
+}
+function fmtMinutes(m) {
+  if (m < 1) return "\u4E0D\u5230 1 \u5206\u949F";
+  if (m < 60) return `${m} \u5206\u949F`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest > 0 ? `${h} \u5C0F\u65F6 ${rest} \u5206` : `${h} \u5C0F\u65F6`;
+}
+function fmtView(v) {
+  const beats = v.beatsAgo === 0 ? "\u672C\u8DF3" : `${v.beatsAgo} \u8DF3\u524D`;
+  const wakes = v.wakesAgo === 0 ? "\u8FD8\u6CA1\u88AB\u53EB\u9192\u8FC7" : `\u671F\u95F4\u88AB\u53EB\u9192\u8FC7 ${v.wakesAgo} \u6B21`;
+  return `\u5FC3\u4E8B\u5323\u91CC\u73B0\u5728\u6709\uFF1A${v.text}
+\uFF08\u7559\u4E8E${beats}\uFF0C\u5DF2\u6401 ${fmtMinutes(v.sinceMinutes)}\uFF0C${wakes}\uFF09`;
+}
+function buildNotepadTool(guard, file) {
+  return {
+    name: "notepad",
+    description: '\u5FC3\u4E8B\u5323\uFF08\u5FC3\u8DF3\u63D2\u4EF6\u7684"\u7559\u7ED9\u4E0B\u4E00\u8DF3\u7684\u81EA\u5DF1"\u4FBF\u7B7E\uFF09\u3002\u53EA\u6709\u4E00\u683C\uFF1A\u5199\u4E0B\u65B0\u7684\u5C31\u76D6\u6389\u65E7\u7684\u3002\u5F53\u4F60\u6709\u8BDD\u60F3\u7559\u5230\u4E0B\u6B21\u5FC3\u8DF3\u518D\u8BF4\u3001\u6216\u8005\u6709\u4E00\u4EF6\u653E\u4E0D\u4E0B\u7684\u4E8B\u65F6\uFF0C\u7528 action=write \u7559\u4E0B\u4E00\u53E5\u5F15\u5B50\u2014\u2014\u4E0D\u8981\u5199\u6574\u6BB5\uFF0C\u4E0B\u6B21\u8DF3\u7531\u90A3\u65F6\u7684\u4F60\u91CD\u65B0\u5C55\u5F00\u3002\u60F3\u7559\u4F4F\u539F\u6765\u7684\u5C31\u7167\u539F\u6837\u518D\u5199\u4E00\u904D\uFF08\u5B57\u6837\u4E00\u81F4\u7B97\u4FDD\u7559\uFF0C\u5B83\u7684\u5E74\u9F84\u4E0D\u4F1A\u91CD\u7B97\uFF09\uFF1B\u5199\u522B\u7684\u5C31\u662F\u6362\u6389\u5B83\u3002action=read \u770B\u73B0\u5728\u683C\u5B50\u91CC\u662F\u4EC0\u4E48\uFF1Baction=clear \u4E3B\u52A8\u653E\u6389\u3002\u6295\u9012\u5305\u8BFB\u8FC7\u4E4B\u540E\uFF0C\u4EC0\u4E48\u90FD\u4E0D\u505A\u5B83\u5C31\u4E0B\u4E00\u8DF3\u6CA1\u4E86\u3002\u7559\u4E0D\u7559\u90FD\u884C\uFF0C\u6CA1\u8BDD\u5C31\u7A7A\u7740\u3002',
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["write", "read", "clear"],
+          description: "write=\u7559\u4E00\u53E5\uFF08\u76D6\u6389\u65E7\u7684\uFF09\uFF0Cread=\u770B\u73B0\u5728\u662F\u4EC0\u4E48\uFF0Cclear=\u4E3B\u52A8\u653E\u6389"
+        },
+        text: {
+          type: "string",
+          description: "action=write \u65F6\u5FC5\u586B\uFF1A\u4E00\u53E5\u5F15\u5B50\uFF08\u4E0D\u662F\u6574\u6BB5\u5FC3\u4E8B\uFF0C\u4E0B\u6B21\u8DF3\u4F60\u81EA\u5DF1\u91CD\u65B0\u5C55\u5F00\uFF09"
+        }
+      },
+      required: ["action"],
+      additionalProperties: false
+    },
+    output: {
+      schema: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          message: { type: "string" }
+        },
+        required: ["ok", "message"],
+        additionalProperties: false
+      },
+      render: (_args, value) => {
+        const v = value;
+        return [{ type: "text", text: String(v.message ?? "") }];
+      }
+    },
+    timeoutMs: 5e3,
+    // Read-modify-write on one file, and the note's lifecycle depends on it.
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const a = args ?? {};
+      const action = String(a.action ?? "");
+      try {
+        if (action === "write") {
+          const text = clean2(a.text);
+          if (!text) return { ok: false, message: "write \u9700\u8981\u975E\u7A7A text\uFF08\u4E00\u53E5\u5F15\u5B50\uFF09" };
+          const { note, kept } = writeNote(guard, file, text);
+          return {
+            ok: true,
+            message: kept ? `\u8FD8\u60E6\u8BB0\u7740\uFF1A${note.text}\uFF08\u5E74\u9F84\u4E0D\u53D8\uFF09` : `\u5DF2\u7559\u4E0B\u5FC3\u4E8B\uFF1A${note.text}`
+          };
+        }
+        if (action === "read") {
+          const v = notepadView(readNotepad(guard, file));
+          return { ok: true, message: v ? fmtView(v) : "\u5FC3\u4E8B\u5323\u662F\u7A7A\u7684" };
+        }
+        if (action === "clear") {
+          const prev = clearNote(guard, file);
+          return prev ? { ok: true, message: `\u5DF2\u653E\u6389\uFF1A${prev.text}` } : { ok: true, message: "\u5FC3\u4E8B\u5323\u672C\u6765\u5C31\u662F\u7A7A\u7684" };
+        }
+        return { ok: false, message: `\u672A\u77E5 action\uFF08${action || "\u7A7A"}\uFF09\uFF0C\u53EA\u8BA4 write / read / clear` };
+      } catch (e) {
+        return { ok: false, message: `\u5FC3\u4E8B\u5323\u8BFB\u5199\u5931\u8D25\uFF1A${String(e).slice(0, 120)}` };
+      }
+    }
+  };
+}
+
+// src/excerpt/tool.ts
+var MAX_TEXT2 = 300;
+var LIST_LIMIT = 10;
+function clean3(v) {
+  return String(v ?? "").replace(/\s+/g, " ").trim();
+}
+function fmtEntry2(e) {
+  return `#${e.id} ${e.date} ${e.time} ${e.text}`;
+}
+function buildExcerptTool(guard, file) {
+  return {
+    name: "excerpt",
+    description: '\u4F60\u81EA\u5DF1\u7684\u6458\u6284\u672C\uFF1A\u7559\u53E5\u5B50\u548C\u5C0F\u4E8B\u7684\u5730\u65B9\u3002\u60F3\u8BF4"\u8FD9\u53E5\u6211\u8981\u8BB0\u4E0B\u6765"\u7684\u65F6\u5019\u7528\u2014\u2014\u4ED6\u8BF4\u8FC7\u7684\u8BDD\u3001\u770B\u5230\u7684\u53E5\u5B50\u3001\u5FC3\u91CC\u8FC7\u4E86\u4E00\u4E0B\u7684\u5C0F\u4E8B\u3002\u5B83\u548C\u8D26\u672C\u3001\u5FC3\u4E8B\u5323\u90FD\u4E0D\u4E00\u6837\uFF1A\u8D26\u672C\u8BB0\u7684\u662F\u5F85\u529E\u548C\u627F\u8BFA\uFF08\u4F1A\u52FE\u6389\uFF09\uFF0C\u5FC3\u4E8B\u5323\u662F\u7559\u7ED9\u4E0B\u4E00\u8DF3\u7684\u4E00\u53E5\u5F15\u5B50\uFF08\u53EA\u6709\u4E00\u683C\u3001\u4F1A\u88AB\u76D6\u6389\uFF09\uFF0C\u6458\u6284\u672C\u53EA\u589E\u4E0D\u51CF\uFF0C\u9664\u975E\u4F60\u4E3B\u52A8 remove\u3002\u5199\u7684\u65F6\u5019\u628A\u8BDD\u539F\u6837\u7559\u4E0B\uFF0C\u4E0D\u7528\u89E3\u91CA\u3002action=add \u6284\u4E00\u6761\uFF08text \u5FC5\u586B\uFF09\uFF1Baction=list \u7FFB\u6700\u8FD1\u5341\u6761\uFF1Baction=remove \u62B9\u6389\u4E00\u6761\uFF08key \u4E3A #id \u6216\u6B63\u6587\u91CC\u7684\u552F\u4E00\u5B50\u4E32\uFF09\u3002',
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["add", "list", "remove"], description: "add=\u6284\u4E00\u6761\uFF0Clist=\u7FFB\u6700\u8FD1\u5341\u6761\uFF0Cremove=\u62B9\u6389\u4E00\u6761" },
+        text: { type: "string", description: "action=add \u65F6\u5FC5\u586B\uFF1A\u8981\u7559\u4E0B\u7684\u90A3\u53E5\u8BDD\u6216\u90A3\u4EF6\u5C0F\u4E8B" },
+        key: { type: "string", description: "action=remove \u65F6\u5FC5\u586B\uFF1A#id \u6216\u6B63\u6587\u91CC\u7684\u552F\u4E00\u5B50\u4E32" }
+      },
+      required: ["action"],
+      additionalProperties: false
+    },
+    output: {
+      schema: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          message: { type: "string" }
+        },
+        required: ["ok", "message"],
+        additionalProperties: false
+      },
+      render: (_args, value) => {
+        const v = value;
+        return [{ type: "text", text: String(v.message ?? "") }];
+      }
+    },
+    timeoutMs: 5e3,
+    // Read-modify-write on one file; never parallel.
+    isConcurrencySafe: () => false,
+    async execute(args) {
+      const a = args ?? {};
+      const action = String(a.action ?? "");
+      if (action === "add") {
+        const text = clean3(a.text).slice(0, MAX_TEXT2);
+        if (!text) return { ok: false, message: "add \u9700\u8981\u975E\u7A7A text" };
+        const e = appendExcerpt(guard, file, text);
+        return { ok: true, message: `\u5DF2\u6284\u4E0B ${fmtEntry2(e)}` };
+      }
+      if (action === "remove") {
+        const key = clean3(a.key);
+        if (!key) return { ok: false, message: "remove \u9700\u8981 key\uFF08#id \u6216\u6B63\u6587\u91CC\u7684\u552F\u4E00\u5B50\u4E32\uFF09" };
+        const e = removeExcerpt(guard, file, key);
+        if (!e) return { ok: false, message: `\u6458\u6284\u672C\u91CC\u6CA1\u6709\u5339\u914D\u300C${key}\u300D\u7684\u4E00\u6761\uFF08\u5148\u7528 list \u7FFB\uFF09` };
+        return { ok: true, message: `\u5DF2\u62B9\u6389 ${fmtEntry2(e)}` };
+      }
+      if (action === "list") {
+        const total2 = readExcerpts(guard, file).entries.length;
+        if (total2 === 0) return { ok: true, message: "\u6458\u6284\u672C\u8FD8\u662F\u7A7A\u7684" };
+        const items = recentExcerpts(guard, file, LIST_LIMIT).map(fmtEntry2);
+        return { ok: true, message: `\u6458\u6284\u672C\u5171 ${total2} \u6761\uFF0C\u6700\u8FD1 ${items.length} \u6761\uFF1A
+${items.join("\n")}` };
+      }
+      const total = readExcerpts(guard, file).entries.length;
+      return { ok: false, message: `\u672A\u77E5 action\uFF0C\u6458\u6284\u672C\u5171 ${total} \u6761` };
+    }
+  };
+}
+
 // src/index.ts
 var name = "heartbeat";
 var inject = ["agents", "settings"];
@@ -973,20 +1145,28 @@ var Config = z.object({
    * never overwritten; set false to manage the preset entirely by hand.
    */
   installPreset: z.boolean().default(true),
-  /** Self-built time injection interval (D20, §17.6). 0 disables injection. */
-  timeInjectMin: z.number().default(25),
+  /** Self-built time injection interval (D20, §17.6). 0 disables injection.
+   *  Left OPTIONAL on purpose (2026-10-17): a schema default here is
+   *  indistinguishable from an explicit choice, and `applySettingsOverrides`
+   *  applies this value over ui.json — so a default would silently undo the
+   *  card on every reload. Unset falls back at the refs below. */
+  timeInjectMin: z.number(),
   /** IANA timezone for the injected clock; empty = process zone. */
   timeZone: z.string().default(""),
   /** Statusbar master switch (D19). Off = no section/pre-step status; time injection unaffected. */
-  statusbar: z.boolean().default(false),
+  statusbar: z.boolean(),
   /** v1.6.3 闲着模式：素材池为空时用画像话题兜底主动搭话（默认关）。 */
-  idleMode: z.boolean().default(false),
+  idleMode: z.boolean(),
   /** v1.7.0 节省 token 模式：用户离开（闲置 ≥30 分钟）或锁屏时整跳暂停（默认关）。 */
-  tokenSaver: z.boolean().default(false),
+  tokenSaver: z.boolean(),
   /** v1.8.0 账本工具：向所有日常会话 agent 注册共享账本工具（默认开）。 */
   ledgerTool: z.boolean().default(true),
   /** v1.9.0 素材报账工具：投递后由陪伴 agent 主动报账（默认开）。 */
   seedReportTool: z.boolean().default(true),
+  /** v2.0.0 心事匣工具：留给下一跳的一句便签（默认开）。 */
+  notepadTool: z.boolean().default(true),
+  /** v2.0.0 摘抄本工具：留句子和小事的地方（默认开）。 */
+  excerptTool: z.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
   extraTools: z.string().default("")
 });
@@ -1077,7 +1257,7 @@ function apply(ctx, config = {}) {
   });
   let sectionSource = null;
   let timeInjectMinRef = ui.timeInjectMin ?? (config.timeInjectMin ?? 25);
-  let statusbarEnabledRef = ui.statusbar ?? config.statusbar !== false;
+  let statusbarEnabledRef = ui.statusbar ?? config.statusbar === true;
   let idleModeRef = ui.idleMode ?? config.idleMode === true;
   let tokenSaverRef = ui.tokenSaver ?? config.tokenSaver === true;
   const applyLiveSettings = (v) => {
@@ -1216,6 +1396,12 @@ function apply(ctx, config = {}) {
   }
   if (config.seedReportTool !== false) {
     registerGlobalTool("seed_report", () => buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+  }
+  if (config.notepadTool !== false) {
+    registerGlobalTool("notepad", () => buildNotepadTool(guard, notepadFilePath(paths.dataDir)));
+  }
+  if (config.excerptTool !== false) {
+    registerGlobalTool("excerpt", () => buildExcerptTool(guard, excerptFilePath(paths.dataDir)));
   }
   startOrchestrator(deps);
   const statusReader = new StatusReader();

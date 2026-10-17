@@ -76,7 +76,7 @@ import {
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
 import fs8 from "fs";
-import path9 from "path";
+import path10 from "path";
 
 // src/env/envpulse.ts
 import fs2 from "fs";
@@ -622,6 +622,22 @@ var SILENCE_DECLARE = '(\u51B3\u5B9A\u4E0D\u8BF4\u7684\u65F6\u5019:\u56DE\u590D\
 function materialLines(materials) {
   return materials.map((m) => `- [${m.id}] ${m.text.trim()}`);
 }
+function fmtAgo(minutes) {
+  if (minutes < 1) return "\u4E0D\u5230 1 \u5206\u949F";
+  if (minutes < 60) return `${minutes} \u5206\u949F`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours} \u5C0F\u65F6 ${rest} \u5206` : `${hours} \u5C0F\u65F6`;
+}
+function notepadLines(n) {
+  const when = n.beatsAgo === 0 ? "\u672C\u8DF3" : `${n.beatsAgo} \u8DF3\u524D`;
+  const wakes = n.wakesAgo === 0 ? "\u671F\u95F4\u8FD8\u6CA1\u88AB\u53EB\u9192\u8FC7" : `\u671F\u95F4\u88AB\u53EB\u9192\u8FC7 ${n.wakesAgo} \u6B21`;
+  return [
+    `(\u4F60\u4E0A\u8DF3\u7559\u4E0B\u7684\u5FC3\u4E8B:${n.text})`,
+    `(\u7559\u4E8E${when},\u5DF2\u6401 ${fmtAgo(n.sinceMinutes)},${wakes};\u8FD8\u60E6\u8BB0\u5C31\u8C03 notepad \u7167\u539F\u6837\u518D\u5199\u4E00\u904D,\u60F3\u6362\u65B0\u7684\u76F4\u63A5\u5199,\u4EC0\u4E48\u90FD\u4E0D\u505A\u5B83\u4E0B\u4E00\u8DF3\u5C31\u6CA1\u4E86)`,
+    "(\u7167\u539F\u6837\u518D\u5199\u4E00\u904D\u7B97\u4FDD\u7559,\u5B83\u7684\u5E74\u9F84\u4E0D\u4F1A\u91CD\u7B97)"
+  ];
+}
 function wantHonestOption(materials, threshold = 2) {
   return materials.filter((m) => m.used >= 1).length >= threshold;
 }
@@ -631,6 +647,7 @@ function buildMaterialPrompt(materials, opts = {}) {
     lines.push(`(\u4ED6\u6B64\u523B\u5927\u6982\u5728:${opts.doing.trim()})`);
   }
   lines.push(PACKAGE_DECLARE);
+  if (opts.notepad) lines.push(...notepadLines(opts.notepad));
   const items = materialLines(materials);
   for (const it of items) lines.push(it);
   if (wantHonestOption(materials, opts.threshold ?? 2)) {
@@ -846,9 +863,109 @@ function buildSeedReportTool(guard, file) {
   };
 }
 
+// src/notepad/store.ts
+import path7 from "path";
+function notepadFilePath(dataDir) {
+  return path7.join(dataDir, "notepad.json");
+}
+function emptyState() {
+  return { note: null, counters: { beats: 0, delivers: 0 } };
+}
+function int(v) {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+function coerceNote(v) {
+  const n = v;
+  if (!n || typeof n.text !== "string" || !n.text.trim()) return null;
+  const shown = n.shownAtBeat;
+  return {
+    text: n.text.trim(),
+    leftAt: int(n.leftAt),
+    beatNo: int(n.beatNo),
+    deliverNo: int(n.deliverNo),
+    shownAtBeat: typeof shown === "number" && Number.isFinite(shown) ? Math.floor(shown) : null,
+    touchedAtBeat: int(n.touchedAtBeat)
+  };
+}
+function readNotepad(guard, file) {
+  const raw = loadEncryptedText(guard, file);
+  if (raw === null || !raw.trim()) return emptyState();
+  const parsed = JSON.parse(raw);
+  return {
+    note: coerceNote(parsed?.note),
+    counters: {
+      beats: int(parsed?.counters?.beats),
+      delivers: int(parsed?.counters?.delivers)
+    }
+  };
+}
+function writeNotepad(guard, file, state) {
+  saveEncryptedText(guard, file, JSON.stringify(state, null, 2));
+}
+function beginBeat(guard, file, startup) {
+  const st = readNotepad(guard, file);
+  let dropped = false;
+  if (!startup) {
+    st.counters.beats += 1;
+    const note = st.note;
+    if (note && note.shownAtBeat !== null && note.shownAtBeat > note.touchedAtBeat) {
+      st.note = null;
+      dropped = true;
+    }
+  }
+  writeNotepad(guard, file, st);
+  return { beatNo: st.counters.beats, dropped };
+}
+function markDelivered(guard, file) {
+  const st = readNotepad(guard, file);
+  st.counters.delivers += 1;
+  if (st.note) {
+    st.note.shownAtBeat = st.counters.beats;
+    if (st.note.beatNo === st.counters.beats) st.note.deliverNo = st.counters.delivers;
+  }
+  writeNotepad(guard, file, st);
+  return st.counters.delivers;
+}
+function writeNote(guard, file, text, now = Date.now()) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) throw new Error("notepad note must not be empty");
+  const st = readNotepad(guard, file);
+  const prev = st.note;
+  const kept = prev !== null && prev.text === clean;
+  const note = kept ? { ...prev, shownAtBeat: null, touchedAtBeat: st.counters.beats } : {
+    text: clean,
+    leftAt: now,
+    beatNo: st.counters.beats,
+    deliverNo: st.counters.delivers,
+    shownAtBeat: null,
+    touchedAtBeat: st.counters.beats
+  };
+  st.note = note;
+  writeNotepad(guard, file, st);
+  return { note, kept };
+}
+function clearNote(guard, file) {
+  const st = readNotepad(guard, file);
+  const prev = st.note;
+  if (!prev) return null;
+  st.note = null;
+  writeNotepad(guard, file, st);
+  return prev;
+}
+function notepadView(st, now = Date.now()) {
+  const n = st.note;
+  if (!n) return null;
+  return {
+    text: n.text,
+    beatsAgo: Math.max(0, st.counters.beats - n.beatNo),
+    wakesAgo: Math.max(0, st.counters.delivers - n.deliverNo),
+    sinceMinutes: n.leftAt > 0 ? Math.max(0, Math.round((now - n.leftAt) / 6e4)) : 0
+  };
+}
+
 // src/statusbar/store.ts
 import fs6 from "fs";
-import path7 from "path";
+import path8 from "path";
 function deriveScene(input) {
   if (input.quietHours) return "quiet-hours";
   if (input.spokeThisBeat) return "just-spoke";
@@ -863,7 +980,7 @@ function clampNote(note) {
   return t.length <= 30 ? t : t.slice(0, 30);
 }
 function statusFilePath(dataDir) {
-  return path7.join(dataDir, "settings", "status.json");
+  return path8.join(dataDir, "settings", "status.json");
 }
 function writeStatus(guard, paths, state) {
   atomicWriteJsonSync(guard.assert(statusFilePath(paths.dataDir)), state);
@@ -1152,14 +1269,14 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
 
 // src/rhythm/rhythm.ts
 import fs7 from "fs";
-import path8 from "path";
+import path9 from "path";
 var DAY_MS = 864e5;
 var TAU_DAYS = 10;
 var CELL_EPSILON = 1e-3;
 var PEAK_MIN_ACTIVE = 0.25;
 var PEAK_MIN_SHARE = 0.05;
 function rhythmFilePath(paths) {
-  return path8.join(paths.dataDir, "profile_rhythm.json");
+  return path9.join(paths.dataDir, "profile_rhythm.json");
 }
 function loadRhythm(paths) {
   try {
@@ -1449,6 +1566,15 @@ function sessionEventCount(session) {
   if (typeof session.seq === "number") return session.seq;
   return sessionEvents(session).length;
 }
+function selectedPresetId(events) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const e = events[i];
+    if (e?.type !== "agent-preset/selected") continue;
+    const id = e.data?.agentPreset;
+    if (typeof id === "string" && id.trim() !== "") return id.trim();
+  }
+  return void 0;
+}
 var HOME_ROTATE_EVENT_COUNT = 3e3;
 function isContextOverflowError(msg) {
   return /CONTEXT_WINDOW_EXCEEDED|context overflow/i.test(msg);
@@ -1507,7 +1633,7 @@ function noteBeat(verdict, detail) {
   lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
 }
 function gateFilePath(paths) {
-  return path9.join(paths.dataDir, "gate.json");
+  return path10.join(paths.dataDir, "gate.json");
 }
 function readBeatState(guard, paths) {
   try {
@@ -1569,6 +1695,31 @@ function buildEngineRoomAllowList(globalNames, configExtras = []) {
   }
   return allow;
 }
+function pinEngineRoomTools(deps, agentCtx, notes) {
+  const tools = agentCtx.get("tools");
+  if (typeof tools?.restrict !== "function") {
+    notes.push("restrict=no-api");
+  } else {
+    let globalNames = [];
+    try {
+      globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ""));
+    } catch {
+    }
+    const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
+    try {
+      tools.restrict({ allow });
+      notes.push(`restrict=ok allow=${allow.join("|")}`);
+    } catch (e) {
+      notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
+    }
+    try {
+      const visible = globalNames.sort();
+      notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(",") : "(empty)"}`);
+    } catch (e) {
+      notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
+    }
+  }
+}
 function makeHomeSetup(deps) {
   const { ctx, paths } = deps;
   return async (agentCtx) => {
@@ -1591,29 +1742,7 @@ function makeHomeSetup(deps) {
     } catch (e) {
       notes.push(`preset=threw(${String(e).slice(0, 200)})`);
     }
-    const tools = agentCtx.get("tools");
-    if (typeof tools?.restrict !== "function") {
-      notes.push("restrict=no-api");
-    } else {
-      let globalNames = [];
-      try {
-        globalNames = (tools.schemas?.() ?? []).map((s) => String(s?.name ?? ""));
-      } catch {
-      }
-      const allow = buildEngineRoomAllowList(globalNames, deps.extraTools ?? []);
-      try {
-        tools.restrict({ allow });
-        notes.push(`restrict=ok allow=${allow.join("|")}`);
-      } catch (e) {
-        notes.push(`restrict=threw(${String(e).slice(0, 200)})`);
-      }
-      try {
-        const visible = globalNames.sort();
-        notes.push(`visibleGlobal=${visible.length > 0 ? visible.join(",") : "(empty)"}`);
-      } catch (e) {
-        notes.push(`visibleGlobal=threw(${String(e).slice(0, 60)})`);
-      }
-    }
+    pinEngineRoomTools(deps, agentCtx, notes);
     ctx.logger.info("heartbeat: tool policy %s", notes.join(" "));
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "tool_policy", policy: notes.join(" ") });
   };
@@ -1689,6 +1818,20 @@ function agentLooksAlive(agent) {
   if (probe.disposed === true) return false;
   return Boolean(agent.session);
 }
+function rePinReusedAgent(deps, agent) {
+  const notes = [];
+  const agentCtx = agent.ctx;
+  if (agentCtx === void 0 || typeof agentCtx.get !== "function") {
+    notes.push("reuse-pin=ctx-missing");
+  } else {
+    try {
+      pinEngineRoomTools(deps, agentCtx, notes);
+    } catch (e) {
+      notes.push(`reuse-pin=threw(${String(e).slice(0, 160)})`);
+    }
+  }
+  appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "tool_policy", policy: `reuse ${notes.join(" ")}` });
+}
 async function ensureAgent(deps) {
   if (agentPromise) {
     const cached = await agentPromise;
@@ -1713,6 +1856,7 @@ async function ensureAgent(deps) {
         if (live.ok && live.result) {
           appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_reuse_live", sessionId: savedId });
           agent = live.result;
+          rePinReusedAgent(deps, agent);
         } else {
           appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "agent_resume_start", sessionId: savedId });
           try {
@@ -2001,7 +2145,7 @@ async function observeBoundSessions(bc) {
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
-  const cursorFile = path9.join(paths.dataDir, "cursors.json");
+  const cursorFile = path10.join(paths.dataDir, "cursors.json");
   const loaded = loadCursors(cursorFile);
   const cursors = loaded.sessions;
   if (loaded.discardedLegacy) {
@@ -2114,6 +2258,31 @@ function ctx_getAgent(deps, sessionId) {
     return null;
   }
 }
+async function mountTargetPreset(deps, sessionId, agent) {
+  const notes = [];
+  try {
+    const presetId = selectedPresetId(sessionEvents(agent.session));
+    if (presetId === void 0) {
+      notes.push("preset=none");
+    } else {
+      const agentCtx = agent.ctx;
+      if (agentCtx === void 0 || typeof agentCtx.get !== "function") {
+        notes.push("preset=ctx-missing");
+      } else {
+        const presets = agentCtx.get("agentPresets");
+        if (typeof presets?.mount !== "function") {
+          notes.push("preset=no-api");
+        } else {
+          await presets.mount(agentCtx, presetId);
+          notes.push(`preset=ok(${presetId})`);
+        }
+      }
+    }
+  } catch (e) {
+    notes.push(`preset=threw(${String(e).slice(0, 160)})`);
+  }
+  appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "deliver_target_preset", sessionId, policy: notes.join(" ") });
+}
 async function acquireTargetAgent(deps, sessionId) {
   const live = ctx_getAgent(deps, sessionId);
   if (live) {
@@ -2136,6 +2305,7 @@ async function acquireTargetAgent(deps, sessionId) {
       sessionId,
       model: agent.options?.model ?? "(none)"
     });
+    await mountTargetPreset(deps, sessionId, agent);
     return {
       agent,
       release: () => {
@@ -2230,6 +2400,29 @@ function recordDeliveryFromAccount(deps, materials, account) {
     now: Date.now()
   });
 }
+function readNotepadSafe(deps, where) {
+  try {
+    return notepadView(readNotepad(deps.guard, notepadFilePath(deps.paths.dataDir))) ?? void 0;
+  } catch (e) {
+    appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", {
+      event: "notepad_read_failed",
+      where,
+      error: String(e).slice(0, 120)
+    });
+    return void 0;
+  }
+}
+function markDeliveredSafe(deps, where) {
+  try {
+    markDelivered(deps.guard, notepadFilePath(deps.paths.dataDir));
+  } catch (e) {
+    appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", {
+      event: "notepad_write_failed",
+      where,
+      error: String(e).slice(0, 120)
+    });
+  }
+}
 async function deliverPackage(bc, materials, opts) {
   throwIfAborted(bc.signal, "expression");
   const { deps, now } = bc;
@@ -2262,11 +2455,13 @@ async function deliverPackage(bc, materials, opts) {
   const voiceSessionId = voiceAgent.session?.id ?? null;
   try {
     const deliveryId = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const notepad = readNotepadSafe(deps, "deliver_package");
     const phrasePrompt = buildMaterialPrompt(materials, {
       deliveryId,
       // spec ②: the "我在干嘛" line rides on every delivery when vision
       // produced one this beat; absent otherwise (never invented).
-      ...typeof opts.doing === "string" && opts.doing.trim() ? { doing: opts.doing.trim().slice(0, 80) } : {}
+      ...typeof opts.doing === "string" && opts.doing.trim() ? { doing: opts.doing.trim().slice(0, 80) } : {},
+      ...notepad ? { notepad } : {}
     });
     throwIfAborted(bc.signal, "expression");
     const pre = await canSendLive(guard, policy, paths, Date.now(), bc.signal);
@@ -2298,6 +2493,7 @@ async function deliverPackage(bc, materials, opts) {
       });
       spokenRaw = late;
     }
+    markDeliveredSafe(deps, "deliver_package");
     const { text, spokeText } = pickSpokenLine(spokenRaw);
     let report = null;
     try {
@@ -2521,7 +2717,7 @@ function scheduleDeferredRetry(deps) {
   deferredRetries += 1;
   retryTimer = setTimeout(() => {
     retryTimer = void 0;
-    void beat(deps);
+    void beat(deps, "retry");
   }, delayMs);
 }
 var TOKEN_SAVER_IDLE_SECONDS = 1800;
@@ -2554,7 +2750,7 @@ function scheduleTokenSaverWake(deps) {
         pausedSince = 0;
         heldChecks = 0;
         appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "token_saver_resumed", via: "wake", heldMin, checks });
-        void beat(deps);
+        void beat(deps, "wake");
       } catch {
       }
     })();
@@ -2573,7 +2769,7 @@ async function userActiveInBoundSessions(deps) {
     const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
     const targets = observeTargets(loadBindings(deps.guard, deps.paths.settingsDir));
     if (targets.length === 0) return false;
-    const cursors = loadCursors(path9.join(deps.paths.dataDir, "cursors.json")).sessions;
+    const cursors = loadCursors(path10.join(deps.paths.dataDir, "cursors.json")).sessions;
     for (const b of targets) {
       const agent = ctx_getAgent(deps, b.sessionId);
       if (!agent) continue;
@@ -2591,7 +2787,7 @@ async function userActiveInBoundSessions(deps) {
     return false;
   }
 }
-async function beat(deps) {
+async function beat(deps, trigger = "interval") {
   if (beating) return;
   beating = true;
   const now = Date.now();
@@ -2612,8 +2808,20 @@ async function beat(deps) {
   }, BEAT_WATCHDOG_MS);
   beatWatchdog.unref?.();
   try {
-    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "beat_start" });
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "beat_start", trigger });
     const beatStart = new Date(now).toISOString();
+    try {
+      const opened = beginBeat(deps.guard, notepadFilePath(paths.dataDir), trigger === "startup");
+      if (opened.dropped) {
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "notepad_dropped", beatNo: opened.beatNo });
+      }
+    } catch (e) {
+      appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+        event: "notepad_write_failed",
+        where: "begin_beat",
+        error: String(e).slice(0, 120)
+      });
+    }
     const agent = await ensureAgent(deps);
     if (agent) {
       beatCancel = () => {
@@ -2720,14 +2928,14 @@ function startOrchestrator(deps) {
     if (timer) clearInterval(timer);
     const intervalMs = Math.max(1, intervalMin) * 6e4;
     timer = setInterval(() => {
-      void beat(deps);
+      void beat(deps, "interval");
     }, intervalMs);
   };
   const scheduleFirst = () => {
     if (firstScheduled) return;
     firstScheduled = true;
     first = setTimeout(() => {
-      void beat(deps);
+      void beat(deps, "startup");
     }, 15e3);
   };
   reschedule = (intervalMin) => {
@@ -2779,6 +2987,11 @@ export {
   inQuietHours,
   reportFilePath,
   buildSeedReportTool,
+  notepadFilePath,
+  readNotepad,
+  writeNote,
+  clearNote,
+  notepadView,
   readStatus,
   StatusReader,
   buildDigest,
@@ -2786,6 +2999,7 @@ export {
   looksPermanentResumeFailure,
   sessionEvents,
   sessionEventCount,
+  selectedPresetId,
   HOME_ROTATE_EVENT_COUNT,
   isContextOverflowError,
   shouldRotateHome,
@@ -2799,6 +3013,7 @@ export {
   resetHomeAgent,
   ENGINE_ROOM_EXTRA_TOOLS,
   buildEngineRoomAllowList,
+  pinEngineRoomTools,
   shouldArchiveRotatedHome,
   agentLooksAlive,
   agentTurn,
@@ -2813,4 +3028,4 @@ export {
   beat,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-EKO2JAAF.js.map
+//# sourceMappingURL=chunk-ZLX4UUNI.js.map

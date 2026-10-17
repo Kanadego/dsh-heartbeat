@@ -1,4 +1,8 @@
 import {
+  readText,
+  writeText
+} from "./chunk-AKIJ4LS2.js";
+import {
   atomicWriteFileSync
 } from "./chunk-IBBAISSW.js";
 
@@ -191,10 +195,61 @@ function updateUserPolicy(guard, settingsDir, patch) {
   return merged;
 }
 
+// src/excerpt/excerpt.ts
+import path3 from "path";
+import { randomUUID } from "crypto";
+var EXCERPT_HEADER = "# \u6458\u6284\u672C\n\n> \u7559\u53E5\u5B50\u548C\u5C0F\u4E8B\u7684\u5730\u65B9\u3002\u53EF\u4EE5\u76F4\u63A5\u624B\u7F16\uFF0C\u6539\u4E71\u4E86\u4E5F\u4E0D\u5F71\u54CD\uFF1A\u8BA4\u4E0D\u51FA\u7684\u884C\u4F1A\u539F\u6837\u7559\u7740\u3002\n\n";
+function excerptFilePath(dataDir) {
+  return path3.join(dataDir, "excerpts.md");
+}
+var LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[#([0-9a-f]{6})\] (.*)$/;
+function renderEntry(e) {
+  return `- [${e.date} ${e.time}][#${e.id}] ${e.text}`;
+}
+function readExcerpts(guard, file) {
+  const raw = readText(guard, file, EXCERPT_HEADER);
+  const rawLines = [];
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const m = LINE_RE.exec(line);
+    if (m) entries.push({ date: m[1], time: m[2], id: m[3], text: m[4] });
+    rawLines.push(line);
+  }
+  return { entries, rawLines };
+}
+function appendExcerpt(guard, file, text, now = Date.now()) {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("excerpt must not be empty");
+  const d = new Date(now);
+  const pad = (n) => String(n).padStart(2, "0");
+  const entry = {
+    id: randomUUID().slice(0, 6),
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    text: trimmed.replace(/\r?\n/g, " ")
+  };
+  const { rawLines } = readExcerpts(guard, file);
+  rawLines.push(renderEntry(entry));
+  writeText(guard, file, rawLines.join("\n").replace(/\n*$/, "\n"));
+  return entry;
+}
+function removeExcerpt(guard, file, key) {
+  const { rawLines, entries } = readExcerpts(guard, file);
+  const target = entries.find((e) => e.id === key || e.text.includes(key));
+  if (!target) return null;
+  const out = rawLines.filter((line) => !line.startsWith(`- [${target.date} ${target.time}][#${target.id}] `));
+  writeText(guard, file, out.join("\n").replace(/\n*$/, "\n"));
+  return target;
+}
+function recentExcerpts(guard, file, limit) {
+  const { entries } = readExcerpts(guard, file);
+  return limit > 0 ? entries.slice(-limit) : [];
+}
+
 // src/core/preset-install.ts
 import fs3 from "fs";
 import os from "os";
-import path3 from "path";
+import path4 from "path";
 import { fileURLToPath } from "url";
 var COMPOSITION_FILE = "agent.cordis.yml";
 var METADATA_FILE = "preset.yml";
@@ -202,14 +257,14 @@ var BUNDLED_PRESET_ID = "heartbeat";
 function bundledPresetDir(moduleUrl, id = BUNDLED_PRESET_ID) {
   let dir;
   try {
-    dir = path3.dirname(fileURLToPath(moduleUrl));
+    dir = path4.dirname(fileURLToPath(moduleUrl));
   } catch {
     return void 0;
   }
   for (let depth = 0; depth < 5; depth += 1) {
-    const candidate = path3.join(dir, "assets", "presets", id);
-    if (fs3.existsSync(path3.join(candidate, COMPOSITION_FILE))) return candidate;
-    const parent = path3.dirname(dir);
+    const candidate = path4.join(dir, "assets", "presets", id);
+    if (fs3.existsSync(path4.join(candidate, COMPOSITION_FILE))) return candidate;
+    const parent = path4.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -219,12 +274,12 @@ function userPresetRoot(roots) {
   const found = roots?.find(
     (root) => root?.trust === "user" && typeof root.path === "string" && root.path.length > 0
   );
-  return found?.path === void 0 ? void 0 : path3.resolve(found.path);
+  return found?.path === void 0 ? void 0 : path4.resolve(found.path);
 }
 function conventionalUserPresetRoot(env = process.env, home = os.homedir()) {
   const override = env.DSH_HOME?.trim();
-  const root = override && override.length > 0 ? override : path3.join(home, ".dsh");
-  return path3.join(root, ".agent-presets");
+  const root = override && override.length > 0 ? override : path4.join(home, ".dsh");
+  return path4.join(root, ".agent-presets");
 }
 function installBundledPreset(options) {
   const id = options.id && options.id.length > 0 ? options.id : BUNDLED_PRESET_ID;
@@ -256,12 +311,12 @@ function installBundledPreset(options) {
       detail: "the roster mounts no user preset root (includeUserRoot=false)"
     };
   }
-  const dir = path3.join(root, id);
-  const composition = path3.join(dir, COMPOSITION_FILE);
+  const dir = path4.join(root, id);
+  const composition = path4.join(dir, COMPOSITION_FILE);
   try {
     if (fs3.existsSync(composition)) {
       if (options.force !== true) {
-        const drifted = !sameBytes(composition, path3.join(bundledDir, COMPOSITION_FILE));
+        const drifted = !sameBytes(composition, path4.join(bundledDir, COMPOSITION_FILE));
         return {
           action: "exists",
           id,
@@ -270,7 +325,7 @@ function installBundledPreset(options) {
           detail: drifted ? "kept as-is (differs from the bundled template)" : "kept as-is"
         };
       }
-      fs3.copyFileSync(path3.join(bundledDir, COMPOSITION_FILE), composition);
+      fs3.copyFileSync(path4.join(bundledDir, COMPOSITION_FILE), composition);
       return {
         action: "restored",
         id,
@@ -281,9 +336,9 @@ function installBundledPreset(options) {
     }
     const existed = fs3.existsSync(dir);
     fs3.mkdirSync(dir, { recursive: true });
-    fs3.copyFileSync(path3.join(bundledDir, COMPOSITION_FILE), composition);
-    const metadata = path3.join(dir, METADATA_FILE);
-    if (!fs3.existsSync(metadata)) fs3.copyFileSync(path3.join(bundledDir, METADATA_FILE), metadata);
+    fs3.copyFileSync(path4.join(bundledDir, COMPOSITION_FILE), composition);
+    const metadata = path4.join(dir, METADATA_FILE);
+    if (!fs3.existsSync(metadata)) fs3.copyFileSync(path4.join(bundledDir, METADATA_FILE), metadata);
     return {
       action: existed ? "repaired" : "created",
       id,
@@ -301,16 +356,16 @@ function describeInstall(result) {
   return `preset ${result.id} ${result.action}${where}${why}`;
 }
 function presetStatus(moduleUrl, id = BUNDLED_PRESET_ID, root = conventionalUserPresetRoot()) {
-  const dir = path3.join(root, id);
+  const dir = path4.join(root, id);
   const bundledDir = bundledPresetDir(moduleUrl, id);
-  const installed = fs3.existsSync(path3.join(dir, COMPOSITION_FILE));
+  const installed = fs3.existsSync(path4.join(dir, COMPOSITION_FILE));
   return {
     id,
     dir,
     ...bundledDir === void 0 ? {} : { bundledDir },
     installed,
-    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path3.join(dir, COMPOSITION_FILE), path3.join(bundledDir, COMPOSITION_FILE)),
-    metadataMatches: bundledDir !== void 0 && fs3.existsSync(path3.join(dir, METADATA_FILE)) && sameBytes(path3.join(dir, METADATA_FILE), path3.join(bundledDir, METADATA_FILE))
+    compositionMatches: installed && bundledDir !== void 0 && sameBytes(path4.join(dir, COMPOSITION_FILE), path4.join(bundledDir, COMPOSITION_FILE)),
+    metadataMatches: bundledDir !== void 0 && fs3.existsSync(path4.join(dir, METADATA_FILE)) && sameBytes(path4.join(dir, METADATA_FILE), path4.join(bundledDir, METADATA_FILE))
   };
 }
 function sameBytes(left, right) {
@@ -326,6 +381,12 @@ export {
   deepMerge,
   loadPolicy,
   updateUserPolicy,
+  EXCERPT_HEADER,
+  excerptFilePath,
+  readExcerpts,
+  appendExcerpt,
+  removeExcerpt,
+  recentExcerpts,
   BUNDLED_PRESET_ID,
   userPresetRoot,
   conventionalUserPresetRoot,
@@ -333,4 +394,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-QKSDX5Q7.js.map
+//# sourceMappingURL=chunk-YKGA2Y3T.js.map
