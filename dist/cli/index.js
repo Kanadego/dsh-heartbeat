@@ -3,7 +3,7 @@ import {
   collectMigrationEntries,
   decryptContainer,
   encryptContainer
-} from "../chunk-ECQNDCO2.js";
+} from "../chunk-NCPKOWS7.js";
 import {
   BUNDLED_PRESET_ID,
   EXCERPT_HEADER,
@@ -33,7 +33,7 @@ import {
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-UCWLBKQE.js";
+} from "../chunk-6XM6KY7M.js";
 import {
   activeSeeds,
   addSeed,
@@ -731,7 +731,7 @@ async function verbSessions(c) {
   const root = path2.join(dshHomeDir(), "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-WXNG77TK.js");
+    const { homeSessionId } = await import("../orchestrator-P7AEWVYR.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -750,7 +750,7 @@ async function verbBind(c) {
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-WXNG77TK.js");
+      const { homeSessionId } = await import("../orchestrator-P7AEWVYR.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -778,7 +778,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-WXNG77TK.js");
+      const { resetHomeSession } = await import("../orchestrator-P7AEWVYR.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }
