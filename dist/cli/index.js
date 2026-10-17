@@ -17,7 +17,7 @@ import {
   presetStatus,
   readExcerpts,
   removeExcerpt
-} from "../chunk-YKGA2Y3T.js";
+} from "../chunk-IFRMKVIC.js";
 import {
   adviseWander,
   appendEntry,
