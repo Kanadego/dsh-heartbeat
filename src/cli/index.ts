@@ -36,6 +36,13 @@ import {
   scanPending,
 } from '../ledger/ledger.js';
 import {
+  EXCERPT_HEADER,
+  appendExcerpt,
+  excerptFilePath,
+  readExcerpts,
+  removeExcerpt,
+} from '../excerpt/excerpt.js';
+import {
   adviseWander,
   browseStatus,
   completeWander,
@@ -88,6 +95,10 @@ function usage(): string {
     '  ledger list [--pending]           list entries',
     '  ledger done <id|substring>        mark an entry done',
     '  ledger open                       open ledger.md in the default editor',
+    '  excerpt add <text>                keep a line in the notebook',
+    '  excerpt list [n]                  list entries (newest n if given)',
+    '  excerpt remove <id|substring>     tear a page out',
+    '  excerpt open                      open excerpts.md in the default editor',
     '  logs cleanup [--dry-run]          apply log retention now',
     '  browse status                     browse state summary (wander)',
     '  browse dry                        wander adjudication with forced noon window',
@@ -162,6 +173,7 @@ interface CliCtx {
   argv: string[];
   seedsFile: string;
   ledgerFile: string;
+  excerptFile: string;
   decisionLog: string;
   seedAudit: (entry: Record<string, unknown>) => void;
 }
@@ -304,6 +316,58 @@ async function verbLedger(c: CliCtx): Promise<number> {
     }
     default:
       console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbExcerpt(c: CliCtx): Promise<number> {
+  const { guard, sub, rest, excerptFile } = c;
+  switch (sub) {
+    case 'add': {
+      let text = rest.join(' ').trim();
+      if (text === '-') text = readStdinText();
+      if (!text) {
+        console.error('usage: excerpt add <text|->');
+        return 1;
+      }
+      const e = appendExcerpt(guard, excerptFile, text);
+      console.log(`KEPT #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case 'list': {
+      const all = readExcerpts(guard, excerptFile).entries;
+      const n = Number.parseInt(rest[0] ?? '', 10);
+      const items = Number.isFinite(n) && n > 0 ? all.slice(-n) : all;
+      for (const e of items) console.log(`#${e.id} ${e.date} ${e.time} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log('(empty)');
+      return 0;
+    }
+    case 'remove': {
+      const key = rest.join(' ').trim();
+      if (!key) {
+        console.error('usage: excerpt remove <id|substring>');
+        return 1;
+      }
+      const e = removeExcerpt(guard, excerptFile, key);
+      if (!e) {
+        console.log('NOT_FOUND');
+        return 1;
+      }
+      console.log(`REMOVED #${e.id}`);
+      return 0;
+    }
+    case 'open': {
+      const f = excerptFile;
+      if (!fs.existsSync(f)) {
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, EXCERPT_HEADER, 'utf8');
+      }
+      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown excerpt subcommand: ${sub}`);
       return 1;
   }
 }
@@ -716,6 +780,7 @@ const VERBS: Record<string, Verb> = {
   status: verbStatus,
   seeds: verbSeeds,
   ledger: verbLedger,
+  excerpt: verbExcerpt,
   weekly: verbWeekly,
   logs: verbLogs,
   browse: verbBrowse,
@@ -760,6 +825,7 @@ export async function main(argv: string[]): Promise<number> {
     argv,
     seedsFile: seedsFilePath(paths.dataDir),
     ledgerFile: ledgerFilePath(paths.dataDir),
+    excerptFile: excerptFilePath(paths.dataDir),
     decisionLog,
     seedAudit,
   });

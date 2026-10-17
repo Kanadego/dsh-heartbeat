@@ -82,6 +82,38 @@ export function materialLines(materials: MaterialInput[]): string[] {
   return materials.map((m) => `- [${m.id}] ${m.text.trim()}`);
 }
 
+export interface NotepadDigest {
+  text: string;
+  beatsAgo: number;
+  wakesAgo: number;
+  sinceMinutes: number;
+}
+
+/** A duration the way a person would say it. */
+function fmtAgo(minutes: number): string {
+  if (minutes < 1) return '不到 1 分钟';
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
+/**
+ * 心事匣 (2026-10-17): the one-slot note she left for the NEXT beat. It rides in
+ * the delivery package — that is the only place the next beat reads it — and the
+ * wording carries the whole lifecycle, because the mechanism is "keep it by
+ * rewriting it": a note she simply does not touch is gone next beat.
+ */
+export function notepadLines(n: NotepadDigest): string[] {
+  const when = n.beatsAgo === 0 ? '本跳' : `${n.beatsAgo} 跳前`;
+  const wakes = n.wakesAgo === 0 ? '期间还没被叫醒过' : `期间被叫醒过 ${n.wakesAgo} 次`;
+  return [
+    `(你上跳留下的心事:${n.text})`,
+    `(留于${when},已搁 ${fmtAgo(n.sinceMinutes)},${wakes};还惦记就调 notepad 照原样再写一遍,想换新的直接写,什么都不做它下一跳就没了)`,
+    '(照原样再写一遍算保留,它的年龄不会重算)',
+  ];
+}
+
 /** ③ conditional "heartfelt" option: true only when 2+ of the given materials
  *  have been used (used >= 1) before. threshold = 2 by default. */
 export function wantHonestOption(materials: MaterialInput[], threshold = 2): boolean {
@@ -97,13 +129,16 @@ export function wantHonestOption(materials: MaterialInput[], threshold = 2): boo
  */
 export function buildMaterialPrompt(
   materials: MaterialInput[],
-  opts: { threshold?: number; doing?: string; deliveryId?: string } = {},
+  opts: { threshold?: number; doing?: string; deliveryId?: string; notepad?: NotepadDigest } = {},
 ): string {
   const lines: string[] = [];
   if (opts.doing && opts.doing.trim()) {
     lines.push(`(他此刻大概在:${opts.doing.trim()})`);
   }
   lines.push(PACKAGE_DECLARE);
+  // 心事匣: right after the declaration and before the materials — the note is
+  // about the previous beat's self, so it is read before "what shall I say".
+  if (opts.notepad) lines.push(...notepadLines(opts.notepad));
   const items = materialLines(materials);
   for (const it of items) lines.push(it);
   if (wantHonestOption(materials, opts.threshold ?? 2)) {

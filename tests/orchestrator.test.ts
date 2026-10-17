@@ -23,6 +23,8 @@ import {
   looksPermanentResumeFailure,
   parseJsonBlock,
   pickSpokenLine,
+  pinEngineRoomTools,
+  selectedPresetId,
   resetHomeSession,
   sessionEventCount,
   sessionEvents,
@@ -136,6 +138,48 @@ test('buildEngineRoomAllowList: web_search first, extras only when present, dedu
     buildEngineRoomAllowList(['web_search', 'compress', 'modlens'], [' modlens ', '', 'compress', '  ']),
     ['web_search', 'compress', 'modlens'],
   );
+});
+
+// ── 2026-10-17: the allow-list must be re-pinnable on a reused agent ─────
+
+test('pinEngineRoomTools: restricts the scope and writes the proof line', () => {
+  const calls: { allow: string[] }[] = [];
+  const agentCtx = {
+    get(name: string) {
+      if (name !== 'tools') return undefined;
+      return {
+        schemas: () => [{ name: 'web_search' }, { name: 'compress' }, { name: 'ledger' }],
+        restrict: (filter: { allow: string[] }) => { calls.push(filter); return undefined; },
+      };
+    },
+  };
+  const notes: string[] = [];
+  const deps = { extraTools: undefined } as unknown as Parameters<typeof pinEngineRoomTools>[0];
+  pinEngineRoomTools(deps, agentCtx, notes);
+  assert.deepEqual(calls, [{ allow: ['web_search', 'compress'] }]);
+  assert.ok(notes.includes('restrict=ok allow=web_search|compress'), 'notes: ' + notes.join(' | '));
+  assert.ok(notes.some((n) => n.startsWith('visibleGlobal=')), 'notes: ' + notes.join(' | '));
+});
+
+test('pinEngineRoomTools: a host without the tools service degrades to a note', () => {
+  const notes: string[] = [];
+  const deps = { extraTools: undefined } as unknown as Parameters<typeof pinEngineRoomTools>[0];
+  pinEngineRoomTools(deps, { get: () => undefined }, notes);
+  assert.deepEqual(notes, ['restrict=no-api']);
+});
+
+// ── 2026-10-17: a delivery target gets its own preset back ───────────────
+
+test('selectedPresetId: reads the session own selection, last one wins', () => {
+  const ev = (type: string, agentPreset?: unknown) => ({ type, data: { agentPreset } });
+  assert.equal(selectedPresetId([]), undefined);
+  assert.equal(selectedPresetId([ev('user/message'), ev('turn/start', 'ptc')]), undefined);
+  assert.equal(selectedPresetId([ev('agent-preset/selected', 'ptc')]), 'ptc');
+  assert.equal(selectedPresetId([ev('agent-preset/selected', 'standard'), ev('agent-preset/selected', 'ptc')]), 'ptc');
+  assert.equal(selectedPresetId([ev('agent-preset/selected', '  standard  ')]), 'standard');
+  assert.equal(selectedPresetId([ev('agent-preset/selected', '   ')]), undefined);
+  assert.equal(selectedPresetId([ev('agent-preset/selected', 42)]), undefined);
+  assert.equal(selectedPresetId([{ type: 'agent-preset/selected' }]), undefined);
 });
 
 // ── H-02: the cached agent handle must not outlive its session ───────────
