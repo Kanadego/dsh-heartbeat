@@ -38,7 +38,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-ZLX4UUNI.js";
+} from "./chunk-6MVKWICX.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -47,7 +47,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-UCWLBKQE.js";
+} from "./chunk-6XM6KY7M.js";
 import {
   getRuntime,
   setRuntime
@@ -662,7 +662,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-EDCFIIRA.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-TQ5PB2DI.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
@@ -674,7 +674,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-EDCFIIRA.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-TQ5PB2DI.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");
