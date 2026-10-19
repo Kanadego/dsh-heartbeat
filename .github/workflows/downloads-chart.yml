@@ -31,8 +31,9 @@ jobs:
             echo "chart unchanged today"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 谁在维护这个仓库就让谁署名：这条曲线是琥珀在盯着，不是那个机器人。
+          git config user.name "琥珀"
+          git config user.email "amber@users.noreply.github.com"
           git add docs/assets/npm-downloads.svg
           git commit -m "chore(chart): refresh npm downloads"
           git push
