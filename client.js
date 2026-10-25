@@ -19,6 +19,25 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		const React = require("react");
 
+		// Locale namespace and dictionary. zh is the source of truth: a host
+		// without @deepseek-ai/dsh-client-locale falls back to it unchanged.
+		const LOCALE_NS = "heartbeat";
+		const DICT = {
+			zh: {
+				"settings.row.label": "心跳",
+			},
+			en: {
+				"settings.row.label": "Heartbeat",
+			},
+		};
+		const fill = (text, params) => String(text).replace(/\{(\w+)\}/g, (match, key) => (params && key in params ? String(params[key]) : match));
+		let localeSvc = null;
+		const t = (key, params) => {
+			if (localeSvc) return localeSvc.bind(LOCALE_NS)(key, params);
+			const text = DICT.zh[key];
+			return text === undefined ? key : fill(text, params);
+		};
+
 		const rowStyle = { display: "flex", alignItems: "center", gap: 8, margin: "6px 0" };
 		const labelStyle = { minWidth: 140, fontSize: 13, color: "var(--dsw-alias-label-secondary)", flex: "none" };
 		const inputStyle = { width: 90, height: 28, borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-specific-input-bg, transparent)", color: "var(--dsw-alias-label-primary)", padding: "0 8px", fontSize: 13 };
@@ -34,6 +53,11 @@ window.__ModuleLoader__.load({
 			// settingsScope was removed in DSH 0.1.7 — never bound here again.
 			// The rhythm editor rides the RPC channel (data/settings/ui.json on
 			// the host), so the card works identically on every host generation.
+			const locale = ctx.get("locale");
+			if (locale && typeof locale.register === "function" && typeof locale.bind === "function") {
+				localeSvc = locale;
+				ctx.effect(() => locale.register(LOCALE_NS, { zh: DICT.zh, en: DICT.en }));
+			}
 			const getConnection = () => {
 				try { return ctx.get("connection"); } catch { return undefined; }
 			};
@@ -622,7 +646,7 @@ window.__ModuleLoader__.load({
 			try {
 				ctx.slots.inject("settings.section", function* () {
 					yield ctx.slots.register(
-						{ name: "settings.section", id: "dsh-heartbeat", order: 20, label: () => "心跳" },
+						{ name: "settings.section", id: "dsh-heartbeat", order: 20, locale: LOCALE_NS, label: () => t("settings.row.label") },
 						HeartbeatSection,
 					);
 				});
@@ -634,7 +658,7 @@ window.__ModuleLoader__.load({
 		// settingsScope deliberately absent: removed in DSH 0.1.7 (its client
 		// service no longer exists; declaring it stalls the whole client bundle
 		// on a "waiting for service" and blocks the web UI from booting).
-		exports.inject = ["slots", "sessions"];
+		exports.inject = ["slots", "sessions", "locale"];
 		exports.apply = apply;
 		return module.exports;
 	},
