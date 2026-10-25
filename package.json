@@ -78,6 +78,7 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
+      "inject": ["@deepseek-ai/dsh-client-locale"],
       "platform": "web"
     }
   }
