@@ -879,7 +879,7 @@ async function verbFocus(c) {
   if (sub === void 0 && rest.length === 0) {
     const state = readFocusState(c.guard, c.paths);
     if (state) {
-      console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)}), set via ${state.via})`);
+      console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)}), set via ${state.via}`);
     } else {
       console.log("FOCUS_OFF (beats run on the normal rhythm; use `focus <minutes>` to pause)");
     }
