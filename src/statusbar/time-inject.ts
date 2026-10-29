@@ -60,6 +60,28 @@ export function turnOriginIsInboxSplice(session: HostSession): boolean {
   return splicedIdx > turnEndIdx; // no turn/end at all (-1) → splice wins
 }
 
+/** `SessionHeader` fields we care about (dsh-session ≥ v4 headers). HostSession
+ * deliberately declares only the minimal surface, so `header` is read through a
+ * local assertion instead of widening the interface. */
+interface SessionHeaderProbe {
+  header?: {
+    origin?: string;
+    delegationDepth?: number;
+  };
+}
+
+/** Subagent sessions must not receive time injections (their context has no
+ * use for "now" and every hop pollutes it). Verdict order: header fields
+ * first (cheap, exact), then a bounded scan of the first 8 events for the
+ * `subagent/descriptor` marker every subagent session logs at seq 0. */
+export function isSubagentSession(session: HostSession | undefined): boolean {
+  if (!session) return false;
+  const header = (session as HostSession & SessionHeaderProbe).header;
+  if (header?.origin === 'subagent') return true;
+  if (typeof header?.delegationDepth === 'number' && header.delegationDepth > 0) return true;
+  return sessionEvents(session).slice(0, 8).some((e) => e?.type === 'subagent/descriptor');
+}
+
 function formatElapsed(ms: number): string {
   const minutes = Math.max(1, Math.round(ms / 60_000));
   if (minutes < 60) return `${minutes} 分钟`;
@@ -193,6 +215,15 @@ export function registerTimeInjection(
       now,
       intervalMs,
     })) return decision;
+    // Subagent sessions never get the clock (review 2026-10-29): checked after
+    // the pure gate so the event-stream scan only runs on otherwise-eligible
+    // steps, and the audit line only fires on a would-have-injected hop.
+    if (isSubagentSession(payload.agent.session)) {
+      appendAuditLine(opts.paths.logsDir + '/heartbeat.jsonl', {
+        event: 'time_inject_skipped', sessionId, reason: 'subagent',
+      });
+      return decision;
+    }
     try {
       const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
       let text = renderTimeText({

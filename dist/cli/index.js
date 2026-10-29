@@ -17,7 +17,7 @@ import {
   presetStatus,
   readExcerpts,
   removeExcerpt
-} from "../chunk-IFRMKVIC.js";
+} from "../chunk-LZAUJN35.js";
 import {
   adviseWander,
   appendEntry,
@@ -27,13 +27,14 @@ import {
   ledgerFilePath,
   listWeeklyReports,
   loadInterests,
+  localDayKey,
   markDone,
   readLedger,
   readWeeklyReport,
   scanPending,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-6XM6KY7M.js";
+} from "../chunk-W6HQI33C.js";
 import {
   activeSeeds,
   addSeed,
@@ -43,7 +44,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-TVX4HV4Y.js";
+} from "../chunk-WNYIYEJR.js";
 import {
   appendAuditLine,
   loadProfile,
@@ -244,6 +245,9 @@ function usage() {
     "  browse status                     browse state summary (wander)",
     "  browse dry                        wander adjudication with forced noon window",
     "  browse done <focus>               CODE-side registration after a wander visit",
+    "  focus                             focus-mode status (paused until HH:MM or not)",
+    "  focus <minutes>                   pause the heartbeat for N minutes (1-1440)",
+    "  focus off                         lift the pause now",
     "  bind list                         list session bindings (D13)",
     "  bind add <sessionId> [--observe]  bind a session (deliver by default)",
     "  bind remove <sessionId>           unbind a session",
@@ -665,7 +669,7 @@ async function verbBurn(c) {
 async function verbMigrate(c) {
   const { guard, paths, sub, rest } = c;
   if (sub === "export") {
-    const defaultOut = path2.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+    const defaultOut = path2.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
     const outfile = rest[0] ?? defaultOut;
     let outCanon;
     try {
@@ -731,7 +735,7 @@ async function verbSessions(c) {
   const root = path2.join(dshHomeDir(), "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-P7AEWVYR.js");
+    const { homeSessionId } = await import("../orchestrator-WBCB7U2W.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -750,7 +754,7 @@ async function verbBind(c) {
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-P7AEWVYR.js");
+      const { homeSessionId } = await import("../orchestrator-WBCB7U2W.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -778,7 +782,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-P7AEWVYR.js");
+      const { resetHomeSession } = await import("../orchestrator-WBCB7U2W.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }
@@ -849,6 +853,41 @@ async function verbVault(c) {
   console.error("usage: vault status | upgrade");
   return 1;
 }
+async function verbFocus(c) {
+  const { sub, rest, decisionLog } = c;
+  const { readFocusState, writeFocusState, clearFocusState } = await import("../focus-store-RNHBAFYS.js");
+  const { formatFocusClock } = await import("../orchestrator-WBCB7U2W.js");
+  const audit = (entry) => {
+    try {
+      appendAuditLine(decisionLog, entry);
+    } catch {
+    }
+  };
+  const minutes = Number(sub);
+  if (sub === "off") {
+    clearFocusState(c.guard, c.paths);
+    audit({ event: "focus_resumed", via: "cli" });
+    console.log("FOCUS_OFF");
+    return 0;
+  }
+  if ((sub ?? "").trim() !== "" && Number.isFinite(minutes) && minutes > 0) {
+    const state = writeFocusState(c.guard, c.paths, minutes, Date.now(), "cli");
+    audit({ event: "focus_paused", via: "cli", minutes: state.minutes, until: new Date(state.until).toISOString() });
+    console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)})`);
+    return 0;
+  }
+  if (sub === void 0 && rest.length === 0) {
+    const state = readFocusState(c.guard, c.paths);
+    if (state) {
+      console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)}), set via ${state.via})`);
+    } else {
+      console.log("FOCUS_OFF (beats run on the normal rhythm; use `focus <minutes>` to pause)");
+    }
+    return 0;
+  }
+  console.error("usage: heartbeat focus <minutes> | focus off | focus");
+  return 1;
+}
 var VERBS = {
   status: verbStatus,
   seeds: verbSeeds,
@@ -857,6 +896,7 @@ var VERBS = {
   weekly: verbWeekly,
   logs: verbLogs,
   browse: verbBrowse,
+  focus: verbFocus,
   notify: verbNotify,
   profile: verbProfile,
   vault: verbVault,

@@ -32,3 +32,17 @@ export function inHhMmWindow(start: string, end: string, mins: number): boolean 
   if (s === e) return false; // zero-length window matches nothing
   return s > e ? mins >= s || mins < e : mins >= s && mins < e;
 }
+
+/** LOCAL calendar day key "YYYY-MM-DD" (H-88, 2026-10-29).
+ *
+ *  "Today" is a human day, not a UTC day: a user at 07:00 local in UTC+8 is
+ *  still on the previous UTC date, so a UTC key rolls the day over mid-morning
+ *  and every daily budget resets at the wrong hour. Browsing's refill quota
+ *  already worked this way (it kept a private copy); the ledger's aging
+ *  window, the rhythm ring and the export filenames now share this one. */
+export function localDayKey(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}

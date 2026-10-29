@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteJsonSync } from '../core/atomic-fs.js';
+import { localDayKey } from '../core/time-window.js';
 import type { EnvSnapshot } from '../env/envpulse.js';
 
 export interface RhythmFile {
@@ -67,7 +68,7 @@ export function recordPresence(paths: { dataDir: string }, env: EnvSnapshot, now
   else if (env.presence === 'away') cell.away += 1;
   else cell.present += 1;
 
-  const dayKey = new Date(now).toISOString().slice(0, 10);
+  const dayKey = localDayKey(new Date(now));
   if (!state.days.includes(dayKey)) state.days.push(dayKey);
   if (state.days.length > 30) state.days.shift(); // 30-day rolling window
   saveRhythm(paths, state);

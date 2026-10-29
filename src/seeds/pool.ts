@@ -61,12 +61,79 @@ export interface AddSeedInput {
   /** Loop role (spec ⑤); defaults from source: chat->chat, everything else->topic. */
   category?: SeedCategory;
   confidence?: number;
+  /** Skip the §4.3 same-topic merge: callers registering several items under
+   *  one focus in a single pass (wander) set this so each item survives as
+   *  its own seed instead of collapsing into the first. */
+  noMerge?: boolean;
 }
+
+export type DuplicateReason = 'exact' | 'normalized' | 'similar';
 
 export interface AddSeedResult {
   kind: 'added' | 'merged' | 'duplicate';
   seed: Seed;
   evicted?: Seed;
+  /** Why a 'duplicate' was judged; absent on other kinds. */
+  reason?: DuplicateReason;
+}
+
+// ── dedup (2026-10-29): wander keeps re-seeding the same material, so the add
+// path compares against actives AND recently archived seeds on three levels —
+// raw text, NFKC-normalized text, and character-bigram Dice similarity.
+export const SEED_SIMILARITY_THRESHOLD = 0.85;
+const DEDUP_ARCHIVE_WINDOW_MS = 30 * DAY_MS;
+const DEDUP_ARCHIVE_MAX = 50;
+/** Short strings are all shared bigrams: "话题素材 1" vs "话题素材 11" scores
+ *  0.889 and "没有新证据的话题" vs "有新证据的话题" 0.923, i.e. the similarity
+ *  layer would kill genuinely distinct short headlines. Below this normalized
+ *  length only the exact and normalized layers run (2026-10-30 review; the
+ *  old seeds.test.ts cap cases caught it as a real regression). */
+const DEDUP_SIMILAR_MIN_CHARS = 12;
+
+/** Full-width -> half-width (NFKC), lowercase, strip all whitespace and
+ *  punctuation: only the surviving characters may make two seeds collide. */
+export function normalizeSeedText(s: string): string {
+  return s
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+/** Dice coefficient over character bigrams of the NORMALIZED texts:
+ *  2*|A∩B| / (|A|+|B|). Identical normalizations are 1; either side short
+ *  enough to have no bigrams only matches when they are identical. */
+export function seedSimilarity(a: string, b: string): number {
+  const na = normalizeSeedText(a);
+  const nb = normalizeSeedText(b);
+  if (na === nb) return 1;
+  if (na.length < 2 || nb.length < 2) return 0;
+  const gramCount = (t: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < t.length - 1; i++) {
+      const g = t.slice(i, i + 2);
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+  };
+  const A = gramCount(na);
+  const B = gramCount(nb);
+  let inter = 0;
+  let sizeA = 0;
+  let sizeB = 0;
+  for (const c of A.values()) sizeA += c;
+  for (const c of B.values()) sizeB += c;
+  for (const [g, c] of A) inter += Math.min(c, B.get(g) ?? 0);
+  return (2 * inter) / (sizeA + sizeB);
+}
+
+/** Archive side of the dedup scope: recently retired only (within 30 days,
+ *  newest first, at most 50) — the archive is a forensic trail, not a corpus
+ *  to scan on every add. */
+function recentArchived(db: SeedDb, now: number): Seed[] {
+  return archivedSeeds(db)
+    .filter((s) => now - parseIso(s.retiredAt ?? '') <= DEDUP_ARCHIVE_WINDOW_MS)
+    .sort((a, b) => parseIso(b.retiredAt ?? '') - parseIso(a.retiredAt ?? ''))
+    .slice(0, DEDUP_ARCHIVE_MAX);
 }
 
 export interface GcReport {
@@ -236,17 +303,37 @@ function addSeedLocked(
   const category = normalizeCategory(input.category ?? (source === 'chat' ? 'chat' : 'topic'));
   const confidence = input.confidence ?? SEED_SOURCE_DEFAULT_CONFIDENCE[source];
 
-  // Exact-text dedup against actives.
-  const dup = activeSeeds(db).find((s) => s.text === text);
-  if (dup) return { kind: 'duplicate', seed: dup };
+  // Three-layer dedup against actives + recently archived. Exact hits audit
+  // without a score; normalized hits score 1 by definition. The similarity
+  // layer is skipped for short texts (see DEDUP_SIMILAR_MIN_CHARS): distinct
+  // short headlines share too many bigrams to be told apart by Dice alone.
+  const textNorm = normalizeSeedText(text);
+  for (const cand of [...activeSeeds(db), ...recentArchived(db, now)]) {
+    if (cand.text === text) {
+      emit(audit, { event: 'seed_duplicate', id: cand.id, reason: 'exact' });
+      return { kind: 'duplicate', seed: cand, reason: 'exact' };
+    }
+    const candNorm = normalizeSeedText(cand.text);
+    if (candNorm === textNorm) {
+      emit(audit, { event: 'seed_duplicate', id: cand.id, reason: 'normalized', similarity: 1 });
+      return { kind: 'duplicate', seed: cand, reason: 'normalized' };
+    }
+    if (textNorm.length < DEDUP_SIMILAR_MIN_CHARS || candNorm.length < DEDUP_SIMILAR_MIN_CHARS) continue;
+    const sim = seedSimilarity(cand.text, text);
+    if (sim <= SEED_SIMILARITY_THRESHOLD) continue;
+    emit(audit, { event: 'seed_duplicate', id: cand.id, reason: 'similar', similarity: Number(sim.toFixed(3)) });
+    return { kind: 'duplicate', seed: cand, reason: 'similar' };
+  }
 
   const nowIso = new Date(now).toISOString();
   const ttlMs = (policy.seeds.ttlDays[tag] || 14) * DAY_MS;
 
   // Same-topic merge (§4.3): collapse all same-topic actives + the new item.
+  // `noMerge` opts out — wander registers several items under one focus per
+  // pass and each must land as its own seed.
   const sameTopic = activeSeeds(db).filter((s) => s.topic === (input.topic ?? text.slice(0, 24)));
   let seed: Seed;
-  if (sameTopic.length > 0) {
+  if (sameTopic.length > 0 && !input.noMerge) {
     const kept = sameTopic[0]!;
     kept.text = text; // brief takes the latest
     kept.tag = tag;

@@ -3,7 +3,7 @@ import {
   loadPool,
   normalizeCategory,
   seedsFilePath
-} from "./chunk-TVX4HV4Y.js";
+} from "./chunk-WNYIYEJR.js";
 import {
   appendAuditLine
 } from "./chunk-544QOJN5.js";
@@ -20,6 +20,33 @@ import {
   atomicWriteJsonSync
 } from "./chunk-IBBAISSW.js";
 
+// src/core/time-window.ts
+var HH_MM = /^(\d{1,2}):(\d{2})$/;
+function parseHhMm(text) {
+  const m = HH_MM.exec(String(text).trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min) || h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+function minutesOfDay(now) {
+  return now.getHours() * 60 + now.getMinutes();
+}
+function inHhMmWindow(start, end, mins) {
+  const s = parseHhMm(start);
+  const e = parseHhMm(end);
+  if (s === null || e === null) return false;
+  if (s === e) return false;
+  return s > e ? mins >= s || mins < e : mins >= s && mins < e;
+}
+function localDayKey(d = /* @__PURE__ */ new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // src/ledger/ledger.ts
 import path from "path";
 import { randomUUID } from "crypto";
@@ -27,7 +54,7 @@ var DAY_MS = 864e5;
 function ledgerFilePath(dataDir) {
   return path.join(dataDir, "ledger.md");
 }
-var LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([0-9a-f]{6})\] (.*)$/;
+var LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([^\]\s]+)\] (.*)$/;
 function renderEntry(e) {
   return `- [${e.date} ${e.time}][${e.status}][#${e.id}] ${e.text}`;
 }
@@ -83,7 +110,7 @@ function scanPending(guard, file, now = Date.now()) {
   return entries.filter((e) => e.status === "open").sort((a, b) => a.date < b.date ? -1 : 1);
 }
 function pendingOlderThan(guard, file, days, now = Date.now()) {
-  const cutoff = new Date(now - days * DAY_MS).toISOString().slice(0, 10);
+  const cutoff = localDayKey(new Date(now - days * DAY_MS));
   return scanPending(guard, file, now).filter((e) => e.date <= cutoff);
 }
 
@@ -167,29 +194,6 @@ function preferenceWeight(state, topic, now) {
 // src/browse/browse.ts
 import fs from "fs";
 import path3 from "path";
-
-// src/core/time-window.ts
-var HH_MM = /^(\d{1,2}):(\d{2})$/;
-function parseHhMm(text) {
-  const m = HH_MM.exec(String(text).trim());
-  if (!m) return null;
-  const h = Number(m[1]);
-  const min = Number(m[2]);
-  if (!Number.isFinite(h) || !Number.isFinite(min) || h > 23 || min > 59) return null;
-  return h * 60 + min;
-}
-function minutesOfDay(now) {
-  return now.getHours() * 60 + now.getMinutes();
-}
-function inHhMmWindow(start, end, mins) {
-  const s = parseHhMm(start);
-  const e = parseHhMm(end);
-  if (s === null || e === null) return false;
-  if (s === e) return false;
-  return s > e ? mins >= s || mins < e : mins >= s && mins < e;
-}
-
-// src/browse/browse.ts
 function emptyBrowseState() {
   return { wander: { focusHistory: {}, focusCount: {}, last_wander_at: 0, refillCount: {}, sessionCount: {} } };
 }
@@ -325,12 +329,6 @@ function completeWander(guard, paths, focus, now = Date.now(), opts = {}) {
   }
   saveJson(guard, browseStatePath(paths), state);
   return { focus, count: state.wander.focusCount[focus], ...refillsToday === void 0 ? {} : { refillsToday } };
-}
-function localDayKey(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
 }
 var REFILL_TOPIC_THRESHOLD = 4;
 var REFILL_MAX_PER_DAY = 2;
@@ -567,6 +565,9 @@ function renderTemplateReport(facts) {
 }
 
 export {
+  minutesOfDay,
+  inHhMmWindow,
+  localDayKey,
   ledgerFilePath,
   readLedger,
   appendEntry,
@@ -575,8 +576,6 @@ export {
   pendingOlderThan,
   runPowerShell,
   runPowerShellFile,
-  minutesOfDay,
-  inHhMmWindow,
   preferenceFilePath,
   recordDelivery,
   loadInterests,
@@ -597,4 +596,4 @@ export {
   buildWeeklyPrompt,
   renderTemplateReport
 };
-//# sourceMappingURL=chunk-6XM6KY7M.js.map
+//# sourceMappingURL=chunk-W6HQI33C.js.map

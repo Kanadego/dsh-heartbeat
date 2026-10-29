@@ -332,7 +332,7 @@ function collector(): { events: Record<string, unknown>[]; sink: SeedAuditFn } {
 
 const eventsNamed = (events: Record<string, unknown>[], name: string) => events.filter((e) => e.event === name);
 
-test('audit: add reports the new seed, duplicate reports nothing, cap eviction is named', () => {
+test('audit: add reports the new seed, duplicate reports id+reason, cap eviction is named', () => {
   const { events, sink } = collector();
   const r = addSeed(guard, file, policy, { text: '审计一条', tag: 'promise', source: 'chat' }, now, sink);
   const added = eventsNamed(events, 'seed_added');
@@ -347,7 +347,14 @@ test('audit: add reports the new seed, duplicate reports nothing, cap eviction i
 
   const dup = addSeed(guard, file, policy, { text: '审计一条', tag: 'promise', source: 'chat' }, now + 1, sink);
   assert.equal(dup.kind, 'duplicate');
-  assert.equal(events.length, 1);
+  // v2.1.0 ⑤: duplicates are audited now (id + reason only, never the text) so
+  // one wander visit's drop count is visible; v2.0.x kept this silent.
+  const dupes = eventsNamed(events, 'seed_duplicate');
+  assert.equal(dupes.length, 1);
+  assert.equal(dupes[0]!.reason, 'exact');
+  assert.equal('similarity' in dupes[0]!, false);
+  assert.equal(events.length, 2);
+  assert.equal(JSON.stringify(events).includes('审计一条'), false);
 
   const small: Policy = { ...policy, seeds: { ...policy.seeds, maxActive: 1 } };
   const { events: ev2, sink: sink2 } = collector();

@@ -13,6 +13,11 @@ interface Policy {
         intervalMin: number;
         idleMode: boolean;
         archiveRotatedHome: boolean;
+        /** v2.1.0 interval jitter: each hop draws interval × (1 + u), u uniform in
+         *  [-p, +p] with p = this/100. Range [0, 50]. OPTIONAL in the type so
+         *  pre-existing policy layers still validate; when absent the runtime
+         *  applies the factory default ±20 (clampJitterPct in the orchestrator). */
+        intervalJitterPct?: number;
     };
     gate: {
         maxDailySend: number;

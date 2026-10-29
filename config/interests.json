@@ -19,7 +19,7 @@
   "_schedule": {
     "daily_sessions": 2,
     "focus_per_session": 1,
-    "max_seeds_per_focus": 2,
+    "max_seeds_per_focus": 4,
     "focus_cooldown_days": 3,
     "min_interval_hours": 4,
     "windows": [

@@ -79,7 +79,7 @@ export function heartbeatPresetDefinition(id: string = 'heartbeat'): HeartbeatPr
 }
 
 /** Registration result, for the audit line and the log. */
-export type PresetRegisterAction = 'registered' | 'skipped-disabled' | 'skipped-no-api' | 'error';
+export type PresetRegisterAction = 'registered' | 'skipped-disabled' | 'skipped-no-api' | 'already-registered' | 'error';
 
 export interface PresetRegisterResult {
   action: PresetRegisterAction;
@@ -91,6 +91,14 @@ export interface PresetRegisterResult {
    * (and the next registration double-mounts it).
    */
   disposer?: () => Promise<void>;
+}
+
+const DUPLICATE_RE = /Duplicate agent preset/i;
+/** Backoff for a duplicate id: long enough for the previous instance's dispose. */
+const DUPLICATE_RETRY_MS = [80, 160, 320] as const;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
 /** Minimal shape of the registry we call (`AgentPresetRegistry.register`). */
@@ -121,12 +129,27 @@ export async function registerHeartbeatPreset(
   if (registrar === undefined || registrar === null || typeof registrar.register !== 'function') {
     return { action: 'skipped-no-api', id };
   }
-  try {
-    const disposer = await registrar.register(heartbeatPresetDefinition(id));
-    return typeof disposer === 'function'
-      ? { action: 'registered', id, disposer }
-      : { action: 'registered', id };
-  } catch (e) {
-    return { action: 'error', id, detail: String(e).slice(0, 200) };
+  // HB-31 (2026-10-29): a hot reload used to log "Duplicate agent preset".
+  // The registry rejects a second registration for an id it already holds, and
+  // the holder is the PREVIOUS plugin instance, whose unregister only runs from
+  // its own dispose — which can land after the new instance has started (or,
+  // when the old fiber was dropped without disposal, never at all). Waiting a
+  // few hundred ms covers the ordinary case; when the id is still held the
+  // existing preset is the same definition, so reusing it is correct, not a
+  // failure. A full restart always registers cleanly.
+  let detail = '';
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const disposer = await registrar.register(heartbeatPresetDefinition(id));
+      return typeof disposer === 'function'
+        ? { action: 'registered', id, disposer }
+        : { action: 'registered', id };
+    } catch (e) {
+      detail = String(e).slice(0, 200);
+      if (!DUPLICATE_RE.test(detail)) return { action: 'error', id, detail };
+      const wait = DUPLICATE_RETRY_MS[attempt];
+      if (wait === undefined) return { action: 'already-registered', id, detail };
+      await delay(wait);
+    }
   }
 }

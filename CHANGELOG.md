@@ -9,6 +9,21 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 
 ---
 
+<details open>
+<summary><b>v2.1.x</b></summary>
+
+### v2.1.0 · 未发布（专注模式 · 节律随机化 · 子代理不注入 · 闲逛去重）
+
+节律、暂停与闲逛三处的实际体验修整，外加一条只在子代理身上才看得到的注入泄漏。
+
+- **专注模式**：模块态 + `data/focus.json` 双写。设置卡与 CLI 认同一份状态——CLI 是独立进程，只改内存变量宿主看不见（审查时发现的严重缺陷），所以暂停状态同时落盘；宿主侧 `beat()` 入口取「内存有效值 / 文件 until」的较大者，两个客户端任一设置都能立刻生效，重启后文件那半仍有效（调试中的暂停就该跨重启存活）。暂停期间：不跳、不发消息、不计每日额度、不耗 token，状态栏显示「专注模式 · 至 HH:MM」，审计记一条 `silent / focus-mode`。CLI：`focus <分钟>` / `focus off` / 不带参数查状态。
+- **节律随机化**：`setInterval` 改递归 `setTimeout`，每跳在基准值上抖动 ±`policy.heartbeat.intervalJitterPct`%（0–50，默认 20，设 0 关闭）；启动那一跳固定 15 秒、不参与抖动；reschedule 时重排；下限 1 分钟；`interval_scheduled` 只在计划变化时记审计。
+- **时间注入跳过子代理**：`shouldInjectTime` 之后加 `isSubagentSession`——`header.origin === 'subagent'`、`header.delegationDepth > 0`，header 缺失时回退扫 `sessionEvents` 前 8 条找 `subagent/descriptor`；命中则跳过并记 `time_inject_skipped`。判据来自实测的子代理会话首行（`origin`+`parentSession`+`delegationDepth:1`+`agentPreset`）。
+- **闲逛去重**：`addSeed` 入库前查重，范围含近 30 天归档——完全相同网址 / 归一化后同名 / 相似度 >0.85 三条规则；`DEDUP_SIMILAR_MIN_CHARS = 12` 门槛，短标题只走精确与归一化判定（防止「话题素材 1」vs「话题素材 11」= 0.889、「没有新证据的话题」vs「有新证据的话题」= 0.923 被误杀）。判重命中记 `seed_duplicate` 审计（id + reason + similarity，不含正文）。
+- **种子上限 2 → 4**：`config/interests.json` 的 `max_seeds_per_focus` 提到 4，`wanderPrompt` 原先硬编码「至多 2 条」改为按实际配置生成；`runWanderTurn` 的 `addSeed` 加 `noMerge: true`，一次闲逛的多条不再被同 topic 合并规则吃掉。
+
+</details>
+
 <details>
 <summary><b>v2.0.x</b></summary>
 

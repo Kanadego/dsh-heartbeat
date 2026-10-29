@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PathGuard } from '../core/path-guard.js';
 import { readText, writeText } from '../vault/vault.js';
+import { localDayKey } from '../core/time-window.js';
 
 const DAY_MS = 86_400_000;
 
@@ -21,7 +22,12 @@ export function ledgerFilePath(dataDir: string): string {
   return path.join(dataDir, 'ledger.md');
 }
 
-const LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([0-9a-f]{6})\] (.*)$/;
+// The id is written by hand sometimes (`#net-backup-20260914`), and a
+// `{6}` hex rule silently dropped such rows: they stayed in rawLines but never
+// became entries, so scanPending failed to see them and markDone could not
+// find them. Any run of non-] non-space characters parses now; ids this plugin
+// generates itself are still 6 hex chars of a UUID.
+const LINE_RE = /^- \[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\]\[(open|done)\]\[#([^\]\s]+)\] (.*)$/;
 
 function renderEntry(e: LedgerEntry): string {
   return `- [${e.date} ${e.time}][${e.status}][#${e.id}] ${e.text}`;
@@ -89,6 +95,6 @@ export function scanPending(guard: PathGuard, file: string, now = Date.now()): L
 
 /** Open entries older than N days (跟进时机的"自然到期"参考，§3.1 四问之一). */
 export function pendingOlderThan(guard: PathGuard, file: string, days: number, now = Date.now()): LedgerEntry[] {
-  const cutoff = new Date(now - days * DAY_MS).toISOString().slice(0, 10);
+  const cutoff = localDayKey(new Date(now - days * DAY_MS));
   return scanPending(guard, file, now).filter((e) => e.date <= cutoff);
 }

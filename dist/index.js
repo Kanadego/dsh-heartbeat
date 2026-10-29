@@ -1,4 +1,29 @@
 import {
+  StatusReader,
+  applyHeartbeatInterval,
+  buildDigest,
+  buildSeedReportTool,
+  clearNote,
+  formatFocusClock,
+  getFocusUntil,
+  getLastBeat,
+  homeSessionId,
+  inQuietHours,
+  notepadFilePath,
+  notepadView,
+  pauseFocus,
+  readNotepad,
+  readSentState,
+  readStatus,
+  reportFilePath,
+  resetHomeSession,
+  resumeFocus,
+  sessionEventCount,
+  sessionEvents,
+  startOrchestrator,
+  writeNote
+} from "./chunk-OZB6RZZC.js";
+import {
   EXCERPT_HEADER,
   appendExcerpt,
   createPathGuard,
@@ -12,42 +37,17 @@ import {
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-IFRMKVIC.js";
-import {
-  addBinding,
-  loadBindings,
-  removeBinding
-} from "./chunk-3DNGY4DS.js";
-import {
-  StatusReader,
-  applyHeartbeatInterval,
-  buildDigest,
-  buildSeedReportTool,
-  clearNote,
-  getLastBeat,
-  homeSessionId,
-  inQuietHours,
-  notepadFilePath,
-  notepadView,
-  readNotepad,
-  readSentState,
-  readStatus,
-  reportFilePath,
-  resetHomeSession,
-  sessionEventCount,
-  sessionEvents,
-  startOrchestrator,
-  writeNote
-} from "./chunk-6MVKWICX.js";
+} from "./chunk-LZAUJN35.js";
 import {
   appendEntry,
   ledgerFilePath,
   listWeeklyReports,
+  localDayKey,
   markDone,
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-6XM6KY7M.js";
+} from "./chunk-W6HQI33C.js";
 import {
   getRuntime,
   setRuntime
@@ -60,7 +60,12 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-TVX4HV4Y.js";
+} from "./chunk-WNYIYEJR.js";
+import {
+  clearFocusState,
+  readFocusState,
+  writeFocusState
+} from "./chunk-LQKOYTRL.js";
 import "./chunk-DZ7YCFGX.js";
 import "./chunk-DC5HMCJC.js";
 import {
@@ -73,6 +78,11 @@ import {
   initWorkspace,
   writeText
 } from "./chunk-AKIJ4LS2.js";
+import {
+  addBinding,
+  loadBindings,
+  removeBinding
+} from "./chunk-3DNGY4DS.js";
 import {
   atomicWriteFileSync,
   atomicWriteJsonSync
@@ -249,6 +259,13 @@ function turnOriginIsInboxSplice(session) {
   if (splicedIdx < 0) return false;
   return splicedIdx > turnEndIdx;
 }
+function isSubagentSession(session) {
+  if (!session) return false;
+  const header = session.header;
+  if (header?.origin === "subagent") return true;
+  if (typeof header?.delegationDepth === "number" && header.delegationDepth > 0) return true;
+  return sessionEvents(session).slice(0, 8).some((e) => e?.type === "subagent/descriptor");
+}
 function formatElapsed(ms) {
   const minutes = Math.max(1, Math.round(ms / 6e4));
   if (minutes < 60) return `${minutes} \u5206\u949F`;
@@ -321,6 +338,14 @@ function registerTimeInjection(ctx, guard, dataDir, opts) {
       now,
       intervalMs
     })) return decision;
+    if (isSubagentSession(payload.agent.session)) {
+      appendAuditLine(opts.paths.logsDir + "/heartbeat.jsonl", {
+        event: "time_inject_skipped",
+        sessionId,
+        reason: "subagent"
+      });
+      return decision;
+    }
     try {
       const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
       let text = renderTimeText({
@@ -519,6 +544,42 @@ function buildEndpoints(deps, isLive) {
       return ok({ sessions: out });
     },
     "bindings.get": () => ok(loadBindings(guard, paths.settingsDir)),
+    // Focus mode (v2.1.0 ①). The card and the CLI are two clients of the same
+    // pause: module state gives the host an immediate answer, data/focus.json
+    // carries it across processes (and survives a restart). `status` merges
+    // both so the card shows a pause the CLI set and vice versa.
+    "focus.status"() {
+      const now = Date.now();
+      const file = readFocusState(guard, paths, now);
+      const mem = getFocusUntil();
+      const until = Math.max(mem > now ? mem : 0, file?.until ?? 0);
+      return ok({
+        paused: until > now,
+        until: until > now ? new Date(until).toISOString() : null,
+        clock: until > now ? formatFocusClock(until) : null,
+        minutes: file?.minutes ?? null,
+        via: file?.via ?? (mem > now ? "rpc" : null)
+      });
+    },
+    "focus.pause"(p) {
+      const raw = Number(p.minutes ?? 30);
+      if (!Number.isFinite(raw) || raw <= 0) return err("bad-request", "minutes must be a positive number (1-1440)");
+      const now = Date.now();
+      const mem = pauseFocus(raw);
+      const file = writeFocusState(guard, paths, raw, now, "settings-card");
+      const until = Math.max(mem, file.until);
+      return ok({
+        paused: true,
+        until: new Date(until).toISOString(),
+        clock: formatFocusClock(until),
+        minutes: file.minutes
+      });
+    },
+    "focus.resume"() {
+      resumeFocus();
+      const removed = clearFocusState(guard, paths);
+      return ok({ paused: false, removed });
+    },
     "bindings.add"(p) {
       const id = String(p.sessionId ?? "");
       if (!id.startsWith("session-")) return err("bad-request", "sessionId must look like session-...");
@@ -665,7 +726,7 @@ function buildEndpoints(deps, isLive) {
       const { collectMigrationEntries, encryptContainer } = await import("./migrate-TQ5PB2DI.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
-      const out = path4.join(paths.exportsDir, `heartbeat-memory-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.hbmig`);
+      const out = path4.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
       writeText(guard, out, encryptContainer(entries, passphrase));
       appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), { event: "migrate_export", files: entries.length });
       return ok({ path: out, count: entries.length });
@@ -887,17 +948,31 @@ function heartbeatPresetDefinition(id = "heartbeat") {
     ]
   };
 }
+var DUPLICATE_RE = /Duplicate agent preset/i;
+var DUPLICATE_RETRY_MS = [80, 160, 320];
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 async function registerHeartbeatPreset(service, id = "heartbeat", enabled = true) {
   if (!enabled) return { action: "skipped-disabled", id };
   const registrar = service;
   if (registrar === void 0 || registrar === null || typeof registrar.register !== "function") {
     return { action: "skipped-no-api", id };
   }
-  try {
-    const disposer = await registrar.register(heartbeatPresetDefinition(id));
-    return typeof disposer === "function" ? { action: "registered", id, disposer } : { action: "registered", id };
-  } catch (e) {
-    return { action: "error", id, detail: String(e).slice(0, 200) };
+  let detail = "";
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const disposer = await registrar.register(heartbeatPresetDefinition(id));
+      return typeof disposer === "function" ? { action: "registered", id, disposer } : { action: "registered", id };
+    } catch (e) {
+      detail = String(e).slice(0, 200);
+      if (!DUPLICATE_RE.test(detail)) return { action: "error", id, detail };
+      const wait = DUPLICATE_RETRY_MS[attempt];
+      if (wait === void 0) return { action: "already-registered", id, detail };
+      await delay(wait);
+    }
   }
 }
 
@@ -1236,6 +1311,8 @@ function apply(ctx, config = {}) {
         ctx.logger.warn("heartbeat: preset register failed (%s) \u2014 the engine room runs without it", result2.detail ?? "");
       } else if (result2.action === "registered") {
         ctx.logger.info("heartbeat: preset %s registered at runtime", result2.id);
+      } else if (result2.action === "already-registered") {
+        ctx.logger.info("heartbeat: preset %s already registered \u2014 reusing it", result2.id);
       } else {
         ctx.logger.info("heartbeat: preset registration skipped (%s)", result2.action);
       }

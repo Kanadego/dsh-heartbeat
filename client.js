@@ -146,6 +146,13 @@ window.__ModuleLoader__.load({
 				"config.psy": "psy 分区",
 				"config.psyHint": "允许画像记录 psy 分区（警告，开启后模型会主动猜测用户心理并计入用户画像，关闭时画像内容计入内容较少）",
 				"config.saveHint": "全部参数保存后即时生效，无需重启",
+				"config.focus": "专注模式",
+				"config.focusHint": "暂停期间不心跳、不计每日条数、不耗 token，到点自动恢复",
+				"config.focusPause": "暂停",
+				"config.focusResume": "恢复",
+				"config.focusPaused": "已暂停至 {clock}",
+				"config.focusMinutes": "分钟",
+				"config.focusFailed": "操作失败：{error}",
 				"weekly.intro": "每 7 天生成一份：本周表达与静默、新认识、账本、素材池与活跃高峰。报告只陈述事实，由后台「心跳」署名。",
 				"weekly.empty": "（还没有周报——装好一周后自动出第一期）",
 				"migrate.processing": "处理中…",
@@ -305,6 +312,13 @@ window.__ModuleLoader__.load({
 				"config.psy": "Psychology partition",
 				"config.psyHint": "Allow the profile to record the psychology partition (warning: when enabled, the model will guess your psychology and add it to your profile; when disabled, the profile contains less content)",
 				"config.saveHint": "All settings take effect immediately after saving, no restart needed",
+				"config.focus": "Focus mode",
+				"config.focusHint": "While paused: no beats, no daily count, no tokens; resumes automatically at the lift time",
+				"config.focusPause": "Pause",
+				"config.focusResume": "Resume",
+				"config.focusPaused": "Paused until {clock}",
+				"config.focusMinutes": "min",
+				"config.focusFailed": "Failed: {error}",
 				"weekly.intro": "Generated every 7 days: this week's expressions and silences, new acquaintances, ledger, material pool, and activity peaks. The report states facts only and is signed by the background Heartbeat.",
 				"weekly.empty": "(No weekly report yet — the first one appears a week after installation)",
 				"migrate.processing": "Working…",
@@ -772,6 +786,31 @@ window.__ModuleLoader__.load({
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [status, setStatus] = React.useState("");
 				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled]);
+				// 专注模式（v2.1.0 ①）：即时动作，不走「保存」，和上面那堆参数分开。
+				// 状态取 rpc 合并值（内存 + data/focus.json），所以 CLI 设的暂停这里也看得见。
+				const [focus, setFocus] = React.useState(null);
+				const [draftFocusMin, setDraftFocusMin] = React.useState(30);
+				const [focusBusy, setFocusBusy] = React.useState(false);
+				React.useEffect(() => {
+					rpc("focus.status").then(setFocus, () => { /* 旧宿主无此端点：不显示状态，按钮仍可试 */ });
+				}, []);
+				const toggleFocus = async (pause) => {
+					if (focusBusy) return;
+					setFocusBusy(true);
+					try {
+						if (pause) {
+							const minutes = Math.max(1, Math.min(1440, Math.floor(Number(draftFocusMin) || 30)));
+							setFocus(await rpc("focus.pause", { minutes }));
+						} else {
+							await rpc("focus.resume");
+							setFocus({ paused: false });
+						}
+					} catch (e) {
+						setStatus(L("config.focusFailed", { error: String(e).slice(0, 80) }));
+					} finally {
+						setFocusBusy(false);
+					}
+				};
 				const save = async () => {
 					try {
 						const di = Math.max(1, Math.min(1440, Math.floor(Number(draftInterval) || 0)));
@@ -823,6 +862,14 @@ window.__ModuleLoader__.load({
 						React.createElement("span", { style: labelStyle }, t("config.psy")),
 						React.createElement("button", { style: draftPsy ? buttonStyle : buttonGhost, onClick: () => setDraftPsy(!draftPsy) }, draftPsy ? "☑ " + t("common.on") : "☐ " + t("common.off")),
 						React.createElement("span", { style: hintStyle }, t("config.psyHint"))),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, t("config.focus")),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftFocusMin, onChange: (e) => setDraftFocusMin(e.target.value) }),
+						React.createElement("span", { style: hintStyle }, t("config.focusMinutes")),
+						focus && focus.paused
+							? React.createElement("button", { style: buttonStyle, disabled: focusBusy, onClick: () => { void toggleFocus(false); } }, t("config.focusResume"))
+							: React.createElement("button", { style: buttonGhost, disabled: focusBusy, onClick: () => { void toggleFocus(true); } }, t("config.focusPause")),
+						React.createElement("span", { style: hintStyle }, focus && focus.paused ? L("config.focusPaused", { clock: focus.clock || "" }) : t("config.focusHint"))),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, t("common.save")),
 						React.createElement("span", { style: hintStyle }, status || t("config.saveHint"))),

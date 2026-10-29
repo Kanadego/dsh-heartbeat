@@ -18,7 +18,7 @@ import path from 'node:path';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
-import { inHhMmWindow, minutesOfDay } from '../core/time-window.js';
+import { inHhMmWindow, localDayKey, minutesOfDay } from '../core/time-window.js';
 import { loadJson, saveJson } from '../vault/vault.js';
 import { activeSeeds, loadPool, normalizeCategory, seedsFilePath } from '../seeds/pool.js';
 import { loadPreference, preferenceFilePath, preferenceWeight, type PrefState } from './preference.js';
@@ -278,14 +278,6 @@ export function completeWander(
   }
   saveJson(guard, browseStatePath(paths), state);
   return { focus, count: state.wander.focusCount[focus]!, ...(refillsToday === undefined ? {} : { refillsToday }) };
-}
-
-/** LOCAL day key (refill quota is a daily human-day budget, not a UTC day). */
-function localDayKey(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 // ── C. refill wander (spec ⑥, 2026-09-18): top up topic stock when it runs

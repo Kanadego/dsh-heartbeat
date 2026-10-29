@@ -215,6 +215,9 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
         ctx.logger.warn('heartbeat: preset register failed (%s) — the engine room runs without it', result.detail ?? '');
       } else if (result.action === 'registered') {
         ctx.logger.info('heartbeat: preset %s registered at runtime', result.id);
+      } else if (result.action === 'already-registered') {
+        // HB-31: the previous instance still owns the id (same definition).
+        ctx.logger.info('heartbeat: preset %s already registered — reusing it', result.id);
       } else {
         ctx.logger.info('heartbeat: preset registration skipped (%s)', result.action);
       }

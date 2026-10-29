@@ -13,7 +13,16 @@ export interface BrowseWindow {
 }
 
 export interface Policy {
-  heartbeat: { intervalMin: number; idleMode: boolean; archiveRotatedHome: boolean };
+  heartbeat: {
+    intervalMin: number;
+    idleMode: boolean;
+    archiveRotatedHome: boolean;
+    /** v2.1.0 interval jitter: each hop draws interval × (1 + u), u uniform in
+     *  [-p, +p] with p = this/100. Range [0, 50]. OPTIONAL in the type so
+     *  pre-existing policy layers still validate; when absent the runtime
+     *  applies the factory default ±20 (clampJitterPct in the orchestrator). */
+    intervalJitterPct?: number;
+  };
   gate: {
     maxDailySend: number;
     cooldownMinutes: number;
@@ -72,6 +81,12 @@ export function assertPolicy(input: unknown): asserts input is Policy {
   }
   if (typeof hb.idleMode !== 'boolean') fail('heartbeat.idleMode must be boolean');
   if (typeof hb.archiveRotatedHome !== 'boolean') fail('heartbeat.archiveRotatedHome must be boolean');
+  // v2.1.0: optional — pre-existing policy layers (and hand-built literals in
+  // tests) predate it; the runtime default lives in the orchestrator.
+  if (hb.intervalJitterPct !== undefined
+    && (typeof hb.intervalJitterPct !== 'number' || hb.intervalJitterPct < 0 || hb.intervalJitterPct > 50)) {
+    fail('heartbeat.intervalJitterPct must be a number in [0, 50]');
+  }
   const g = p.gate;
   if (!isPlainObject(g)) fail('gate missing');
   if (typeof g.maxDailySend !== 'number' || g.maxDailySend < 0) fail('gate.maxDailySend must be >= 0');

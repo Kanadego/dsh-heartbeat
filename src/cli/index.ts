@@ -15,6 +15,7 @@ import { createPathGuard } from '../core/path-guard.js';
 import type { PathGuard } from '../core/path-guard.js';
 import { appendAuditLine, pruneAuditFile } from '../core/audit-log.js';
 import { atomicWriteFileSync } from '../core/atomic-fs.js';
+import { localDayKey } from '../core/time-window.js';
 import { loadPolicy } from '../config/load.js';
 import type { Policy } from '../config/schema.js';
 import {
@@ -103,6 +104,9 @@ function usage(): string {
     '  browse status                     browse state summary (wander)',
     '  browse dry                        wander adjudication with forced noon window',
     '  browse done <focus>               CODE-side registration after a wander visit',
+    '  focus                             focus-mode status (paused until HH:MM or not)',
+    '  focus <minutes>                   pause the heartbeat for N minutes (1-1440)',
+    '  focus off                         lift the pause now',
     '  bind list                         list session bindings (D13)',
     '  bind add <sessionId> [--observe]  bind a session (deliver by default)',
     '  bind remove <sessionId>           unbind a session',
@@ -574,7 +578,7 @@ async function verbBurn(c: CliCtx): Promise<number> {
 async function verbMigrate(c: CliCtx): Promise<number> {
   const { guard, paths, sub, rest } = c;
   if (sub === 'export') {
-    const defaultOut = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+    const defaultOut = path.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
     const outfile = rest[0] ?? defaultOut;
     let outCanon: string;
     try {
@@ -775,6 +779,50 @@ async function verbVault(c: CliCtx): Promise<number> {
   return 1;
 }
 
+/**
+ * Focus mode (v2.1.0): runtime pause of the beat, no policy file involved.
+ *
+ * CROSS-PROCESS BOUNDARY: this CLI is its own process (`node dist/cli/index.js`),
+ * so `pauseFocus()` here only ever touched the CLI's own module variable — the
+ * host kept beating. The pause therefore lives in data/focus.json: this command
+ * writes it, the host's beat() reads it at the top of every tick. The RPC path
+ * (settings card) keeps module state AND the file in sync.
+ */
+async function verbFocus(c: CliCtx): Promise<number> {
+  const { sub, rest, decisionLog } = c;
+  const { readFocusState, writeFocusState, clearFocusState } = await import('../core/focus-store.js');
+  const { formatFocusClock } = await import('../core/orchestrator.js');
+  const audit = (entry: Record<string, unknown>): void => {
+    try {
+      appendAuditLine(decisionLog, entry);
+    } catch { /* audit must never break the command */ }
+  };
+  const minutes = Number(sub);
+  if (sub === 'off') {
+    clearFocusState(c.guard, c.paths);
+    audit({ event: 'focus_resumed', via: 'cli' });
+    console.log('FOCUS_OFF');
+    return 0;
+  }
+  if ((sub ?? '').trim() !== '' && Number.isFinite(minutes) && minutes > 0) {
+    const state = writeFocusState(c.guard, c.paths, minutes, Date.now(), 'cli');
+    audit({ event: 'focus_paused', via: 'cli', minutes: state.minutes, until: new Date(state.until).toISOString() });
+    console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)})`);
+    return 0;
+  }
+  if (sub === undefined && rest.length === 0) {
+    const state = readFocusState(c.guard, c.paths);
+    if (state) {
+      console.log(`FOCUSED until ${new Date(state.until).toISOString()} (${formatFocusClock(state.until)}), set via ${state.via})`);
+    } else {
+      console.log('FOCUS_OFF (beats run on the normal rhythm; use `focus <minutes>` to pause)');
+    }
+    return 0;
+  }
+  console.error('usage: heartbeat focus <minutes> | focus off | focus');
+  return 1;
+}
+
 /** Command table. Adding a verb = one function above plus one line here. */
 const VERBS: Record<string, Verb> = {
   status: verbStatus,
@@ -784,6 +832,7 @@ const VERBS: Record<string, Verb> = {
   weekly: verbWeekly,
   logs: verbLogs,
   browse: verbBrowse,
+  focus: verbFocus,
   notify: verbNotify,
   profile: verbProfile,
   vault: verbVault,

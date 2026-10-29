@@ -1,5 +1,6 @@
 import {
   SEED_CATEGORY_CAPS,
+  SEED_SIMILARITY_THRESHOLD,
   TTL_KEYS,
   activeSeeds,
   addSeed,
@@ -10,17 +11,20 @@ import {
   gcPool,
   loadPool,
   normalizeCategory,
+  normalizeSeedText,
   normalizeTag,
   pickEvictionVictim,
   restoreSeed,
   savePool,
+  seedSimilarity,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-TVX4HV4Y.js";
+} from "./chunk-WNYIYEJR.js";
 import "./chunk-AKIJ4LS2.js";
 import "./chunk-IBBAISSW.js";
 export {
   SEED_CATEGORY_CAPS,
+  SEED_SIMILARITY_THRESHOLD,
   TTL_KEYS,
   activeSeeds,
   addSeed,
@@ -31,11 +35,13 @@ export {
   gcPool,
   loadPool,
   normalizeCategory,
+  normalizeSeedText,
   normalizeTag,
   pickEvictionVictim,
   restoreSeed,
   savePool,
+  seedSimilarity,
   seedsFilePath,
   surfaceSeed
 };
-//# sourceMappingURL=pool-2T6TVS2L.js.map
+//# sourceMappingURL=pool-YFX3DV5C.js.map

@@ -79,6 +79,20 @@ test('hand-edited garbage lines are preserved verbatim on rewrite', () => {
   assert.ok(after.includes(e.id));
 });
 
+test('a hand-written id parses like a generated one', () => {
+  // 2026-10-29 (#26e96b): the id rule demanded exactly 6 hex chars, so a row
+  // the user typed by hand (e.g. #net-backup-20260914) never became an entry —
+  // invisible to the digest and un-markable with 'ledger done'.
+  fs.writeFileSync(file, '# 账本\n- [2026-09-01 09:00][open][#net-backup-20260914] 手写 id 的事项\n', 'utf8');
+  const { entries } = readLedger(guard, file);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.id, 'net-backup-20260914');
+  assert.equal(scanPending(guard, file).length, 1);
+  assert.ok(markDone(guard, file, 'net-backup-20260914'));
+  assert.equal(scanPending(guard, file).length, 0);
+  assert.ok(fs.readFileSync(file, 'utf8').includes('[done][#net-backup-20260914]'));
+});
+
 test('pendingOlderThan flags stale open items (跟进时机)', () => {
   appendEntry(guard, file, '很久之前的托付', Date.parse('2026-08-01T10:00:00'));
   appendEntry(guard, file, '今天的托付', Date.parse('2026-09-06T09:00:00'));

@@ -15,7 +15,7 @@ import { createPathGuard } from '../src/core/path-guard.js';
 import { loadPolicy } from '../src/config/load.js';
 import type { Policy } from '../src/config/schema.js';
 import { saveEncryptedText } from '../src/vault/vault.js';
-import { gateFilePath } from '../src/core/orchestrator.js';
+import { gateFilePath, resumeFocus } from '../src/core/orchestrator.js';
 import { bindingsFilePath } from '../src/core/bindings.js';
 import { installHeartbeatRpc, RPC_ROUTE_PATH } from '../src/rpc.js';
 
@@ -96,6 +96,9 @@ beforeEach(() => {
   );
   assert.ok(captured, 'the route must be registered during install');
   route = captured;
+  // Focus mode is module-level state: a case that pauses must not leak into
+  // the next one (file state lives in each case's own sandbox).
+  resumeFocus();
 });
 
 after(() => {
@@ -327,4 +330,79 @@ test('H-41/⑦A: without the host gate only the low-sensitivity read-only verbs 
 
   const audit = fs.readFileSync(path.join(workspace().logsDir, 'heartbeat.jsonl'), 'utf8');
   assert.match(audit, /rpc_host_gate_missing/);
+});
+
+// ── focus mode (v2.1.0 ①) ────────────────────────────────────────────────
+//
+// The settings card drives the pause through these three verbs. The review
+// found the operational CLI wrote only a module variable in its OWN process,
+// so the file half is what actually carries a CLI pause to the host; these
+// cases pin both halves and the merge in focus.status.
+
+test('focus: status starts off, pause writes both halves, resume clears the file', async () => {
+  const off = await result({ endpoint: 'focus.status' });
+  assert.equal(off.ok, true);
+  const offValue = off.value as { paused: boolean; until: string | null };
+  assert.equal(offValue.paused, false);
+  assert.equal(offValue.until, null);
+
+  const paused = await result({ endpoint: 'focus.pause', minutes: 45 });
+  assert.equal(paused.ok, true);
+  const state = paused.value as { paused: boolean; minutes: number; clock: string; until: string };
+  assert.equal(state.paused, true);
+  assert.equal(state.minutes, 45);
+  assert.match(state.clock, /^\d{2}:\d{2}$/);
+  assert.ok(Date.parse(state.until) > Date.now());
+
+  // The cross-process half is on disk under the sandbox data dir.
+  const filePath = path.join(workspace().dataDir, 'focus.json');
+  const file = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { until: number; minutes: number; via: string };
+  assert.equal(file.minutes, 45);
+  assert.equal(file.via, 'settings-card');
+  assert.ok(file.until > Date.now());
+
+  const status = await result({ endpoint: 'focus.status' });
+  assert.equal((status.value as { paused: boolean }).paused, true);
+
+  const resumed = await result({ endpoint: 'focus.resume' });
+  assert.equal(resumed.ok, true);
+  assert.deepEqual(resumed.value, { paused: false, removed: true });
+  assert.equal(fs.existsSync(filePath), false);
+
+  const after = await result({ endpoint: 'focus.status' });
+  assert.equal((after.value as { paused: boolean }).paused, false);
+});
+
+test('focus.pause refuses a non-positive or non-numeric span and writes nothing', async () => {
+  for (const minutes of [0, -5, 'abc']) {
+    const r = await result({ endpoint: 'focus.pause', minutes });
+    assert.equal(r.ok, false, `minutes=${String(minutes)} must be refused`);
+    assert.equal(r.error!.code, 'bad-request');
+  }
+  assert.equal(fs.existsSync(path.join(workspace().dataDir, 'focus.json')), false);
+
+  // An omitted/null span is not an error: the card may post the field empty,
+  // and 30 minutes is the documented default.
+  const dflt = await result({ endpoint: 'focus.pause', minutes: null });
+  assert.equal(dflt.ok, true);
+  assert.equal((dflt.value as { minutes: number }).minutes, 30);
+  await result({ endpoint: 'focus.resume' });
+});
+
+test('a file-only pause (the CLI path) is visible to focus.status', async () => {
+  // Exactly what `heartbeat focus 15` leaves behind: no module state at all.
+  resumeFocus();
+  const { writeFocusState } = await import('../src/core/focus-store.js');
+  writeFocusState(guard, workspace(), 15, Date.now(), 'cli');
+
+  const status = await result({ endpoint: 'focus.status' });
+  assert.equal(status.ok, true);
+  const value = status.value as { paused: boolean; minutes: number; via: string };
+  assert.equal(value.paused, true);
+  assert.equal(value.minutes, 15);
+  assert.equal(value.via, 'cli');
+
+  const resumed = await result({ endpoint: 'focus.resume' });
+  assert.equal(resumed.ok, true);
+  assert.deepEqual(resumed.value, { paused: false, removed: true });
 });

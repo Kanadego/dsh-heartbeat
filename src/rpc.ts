@@ -17,11 +17,13 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { OrchestratorDeps } from './core/orchestrator.js';
-import { getLastBeat, homeSessionId, resetHomeSession } from './core/orchestrator.js';
+import { getLastBeat, homeSessionId, resetHomeSession, pauseFocus, resumeFocus, getFocusUntil, formatFocusClock } from './core/orchestrator.js';
+import { readFocusState, writeFocusState, clearFocusState } from './core/focus-store.js';
 import { appendAuditLine } from './core/audit-log.js';
 import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
 import { dshHomeDir } from './core/paths.js';
+import { localDayKey } from './core/time-window.js';
 import type { WorkspacePaths } from './core/paths.js';
 import { inQuietHours, readSentState } from './gate/gate.js';
 import {
@@ -303,6 +305,45 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
 
     'bindings.get': () => ok(loadBindings(guard, paths.settingsDir)),
 
+    // Focus mode (v2.1.0 ①). The card and the CLI are two clients of the same
+    // pause: module state gives the host an immediate answer, data/focus.json
+    // carries it across processes (and survives a restart). `status` merges
+    // both so the card shows a pause the CLI set and vice versa.
+    'focus.status'() {
+      const now = Date.now();
+      const file = readFocusState(guard, paths, now);
+      const mem = getFocusUntil();
+      const until = Math.max(mem > now ? mem : 0, file?.until ?? 0);
+      return ok({
+        paused: until > now,
+        until: until > now ? new Date(until).toISOString() : null,
+        clock: until > now ? formatFocusClock(until) : null,
+        minutes: file?.minutes ?? null,
+        via: file?.via ?? (mem > now ? 'rpc' : null),
+      });
+    },
+
+    'focus.pause'(p) {
+      const raw = Number(p.minutes ?? 30);
+      if (!Number.isFinite(raw) || raw <= 0) return err('bad-request', 'minutes must be a positive number (1-1440)');
+      const now = Date.now();
+      const mem = pauseFocus(raw); // this process answers immediately
+      const file = writeFocusState(guard, paths, raw, now, 'settings-card');
+      const until = Math.max(mem, file.until);
+      return ok({
+        paused: true,
+        until: new Date(until).toISOString(),
+        clock: formatFocusClock(until),
+        minutes: file.minutes,
+      });
+    },
+
+    'focus.resume'() {
+      resumeFocus();
+      const removed = clearFocusState(guard, paths);
+      return ok({ paused: false, removed });
+    },
+
     'bindings.add'(p) {
       const id = String(p.sessionId ?? '');
       if (!id.startsWith('session-')) return err('bad-request', 'sessionId must look like session-...');
@@ -481,7 +522,7 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
       const { collectMigrationEntries, encryptContainer } = await import('./vault/migrate.js');
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err('bad-request', '没有可打包的记忆文件（data/ 是空的）');
-      const out = path.join(paths.exportsDir, `heartbeat-memory-${new Date().toISOString().slice(0, 10)}.hbmig`);
+      const out = path.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
       writeText(guard, out, encryptContainer(entries, passphrase));
       appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), { event: 'migrate_export', files: entries.length });
       return ok({ path: out, count: entries.length });

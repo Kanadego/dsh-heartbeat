@@ -84,6 +84,9 @@ function assertPolicy(input) {
   }
   if (typeof hb.idleMode !== "boolean") fail("heartbeat.idleMode must be boolean");
   if (typeof hb.archiveRotatedHome !== "boolean") fail("heartbeat.archiveRotatedHome must be boolean");
+  if (hb.intervalJitterPct !== void 0 && (typeof hb.intervalJitterPct !== "number" || hb.intervalJitterPct < 0 || hb.intervalJitterPct > 50)) {
+    fail("heartbeat.intervalJitterPct must be a number in [0, 50]");
+  }
   const g = p.gate;
   if (!isPlainObject(g)) fail("gate missing");
   if (typeof g.maxDailySend !== "number" || g.maxDailySend < 0) fail("gate.maxDailySend must be >= 0");
@@ -394,4 +397,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-IFRMKVIC.js.map
+//# sourceMappingURL=chunk-LZAUJN35.js.map

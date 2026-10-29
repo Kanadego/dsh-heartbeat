@@ -34,6 +34,39 @@ var CATEGORY_VALUES = ["topic", "chat"];
 function normalizeCategory(v) {
   return typeof v === "string" && CATEGORY_VALUES.includes(v) ? v : "topic";
 }
+var SEED_SIMILARITY_THRESHOLD = 0.85;
+var DEDUP_ARCHIVE_WINDOW_MS = 30 * DAY_MS;
+var DEDUP_ARCHIVE_MAX = 50;
+var DEDUP_SIMILAR_MIN_CHARS = 12;
+function normalizeSeedText(s) {
+  return s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+function seedSimilarity(a, b) {
+  const na = normalizeSeedText(a);
+  const nb = normalizeSeedText(b);
+  if (na === nb) return 1;
+  if (na.length < 2 || nb.length < 2) return 0;
+  const gramCount = (t) => {
+    const m = /* @__PURE__ */ new Map();
+    for (let i = 0; i < t.length - 1; i++) {
+      const g = t.slice(i, i + 2);
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+  };
+  const A = gramCount(na);
+  const B = gramCount(nb);
+  let inter = 0;
+  let sizeA = 0;
+  let sizeB = 0;
+  for (const c of A.values()) sizeA += c;
+  for (const c of B.values()) sizeB += c;
+  for (const [g, c] of A) inter += Math.min(c, B.get(g) ?? 0);
+  return 2 * inter / (sizeA + sizeB);
+}
+function recentArchived(db, now) {
+  return archivedSeeds(db).filter((s) => now - parseIso(s.retiredAt ?? "") <= DEDUP_ARCHIVE_WINDOW_MS).sort((a, b) => parseIso(b.retiredAt ?? "") - parseIso(a.retiredAt ?? "")).slice(0, DEDUP_ARCHIVE_MAX);
+}
 var TTL_KEYS = ["news", "fandom", "scene", "promise"];
 function normalizeTag(tag) {
   if (tag && TTL_KEYS.includes(tag)) return tag;
@@ -122,13 +155,28 @@ function addSeedLocked(guard, file, policy, input, now, audit) {
   const source = input.source ?? "chat";
   const category = normalizeCategory(input.category ?? (source === "chat" ? "chat" : "topic"));
   const confidence = input.confidence ?? SEED_SOURCE_DEFAULT_CONFIDENCE[source];
-  const dup = activeSeeds(db).find((s) => s.text === text);
-  if (dup) return { kind: "duplicate", seed: dup };
+  const textNorm = normalizeSeedText(text);
+  for (const cand of [...activeSeeds(db), ...recentArchived(db, now)]) {
+    if (cand.text === text) {
+      emit(audit, { event: "seed_duplicate", id: cand.id, reason: "exact" });
+      return { kind: "duplicate", seed: cand, reason: "exact" };
+    }
+    const candNorm = normalizeSeedText(cand.text);
+    if (candNorm === textNorm) {
+      emit(audit, { event: "seed_duplicate", id: cand.id, reason: "normalized", similarity: 1 });
+      return { kind: "duplicate", seed: cand, reason: "normalized" };
+    }
+    if (textNorm.length < DEDUP_SIMILAR_MIN_CHARS || candNorm.length < DEDUP_SIMILAR_MIN_CHARS) continue;
+    const sim = seedSimilarity(cand.text, text);
+    if (sim <= SEED_SIMILARITY_THRESHOLD) continue;
+    emit(audit, { event: "seed_duplicate", id: cand.id, reason: "similar", similarity: Number(sim.toFixed(3)) });
+    return { kind: "duplicate", seed: cand, reason: "similar" };
+  }
   const nowIso = new Date(now).toISOString();
   const ttlMs = (policy.seeds.ttlDays[tag] || 14) * DAY_MS;
   const sameTopic = activeSeeds(db).filter((s) => s.topic === (input.topic ?? text.slice(0, 24)));
   let seed;
-  if (sameTopic.length > 0) {
+  if (sameTopic.length > 0 && !input.noMerge) {
     const kept = sameTopic[0];
     kept.text = text;
     kept.tag = tag;
@@ -296,6 +344,9 @@ function deleteSeed(guard, file, id, audit = NO_AUDIT) {
 export {
   SEED_CATEGORY_CAPS,
   normalizeCategory,
+  SEED_SIMILARITY_THRESHOLD,
+  normalizeSeedText,
+  seedSimilarity,
   TTL_KEYS,
   normalizeTag,
   seedsFilePath,
@@ -312,4 +363,4 @@ export {
   restoreSeed,
   deleteSeed
 };
-//# sourceMappingURL=chunk-TVX4HV4Y.js.map
+//# sourceMappingURL=chunk-WNYIYEJR.js.map

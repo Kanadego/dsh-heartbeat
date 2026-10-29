@@ -2,7 +2,8 @@
   "heartbeat": {
     "intervalMin": 60,
     "idleMode": false,
-    "archiveRotatedHome": true
+    "archiveRotatedHome": true,
+    "intervalJitterPct": 20
   },
   "gate": {
     "maxDailySend": 10,
@@ -24,7 +25,7 @@
       }
     ],
     "minIntervalHours": 4,
-    "maxSeedsPerVisit": 2
+    "maxSeedsPerVisit": 4
   },
   "seeds": {
     "maxActive": 30,

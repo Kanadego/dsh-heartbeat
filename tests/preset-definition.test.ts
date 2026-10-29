@@ -85,6 +85,28 @@ test('installPreset:false turns registration off too', async () => {
   assert.equal(called, false);
 });
 
+test('a duplicate id that clears on retry registers normally (HB-31)', async () => {
+  let calls = 0;
+  const flaky = {
+    register: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('Duplicate agent preset: heartbeat');
+      return async () => {};
+    },
+  };
+  const result = await registerHeartbeatPreset(flaky, 'heartbeat', true);
+  assert.equal(result.action, 'registered');
+  assert.equal(calls, 2);
+});
+
+test('an id a previous instance still holds is reused, not reported as an error', async () => {
+  let calls = 0;
+  const busy = { register: async () => { calls += 1; throw new Error('Duplicate agent preset: heartbeat'); } };
+  const result = await registerHeartbeatPreset(busy, 'heartbeat', true);
+  assert.equal(result.action, 'already-registered');
+  assert.equal(calls, 4); // first attempt + three backoff retries
+});
+
 test('a rejecting registry is reported, not rethrown', async () => {
   const result = await registerHeartbeatPreset({ register: async () => { throw new Error('registry exploded'); } }, 'heartbeat', true);
   assert.equal(result.action, 'error');
