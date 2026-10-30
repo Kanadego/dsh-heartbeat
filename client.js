@@ -21,7 +21,82 @@ window.__ModuleLoader__.load({
 
 		// Locale namespace and dictionary. zh is the source of truth: a host
 		// without @deepseek-ai/dsh-client-locale falls back to it unchanged.
-		const LOCALE_NS = "heartbeat";
+		// ── 原生面板样式（一次注入，类名统一 hb- 前缀）──────────────────
+// 只依赖宿主主题变量 + 半透明叠色，深浅色主题下都不会糊成一团。
+const PANEL_CSS = [
+	".hb-panel{display:flex;flex-direction:column;gap:14px}",
+	".hb-hero{position:relative;overflow:hidden;border-radius:16px;padding:16px 18px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));background:linear-gradient(120deg,rgba(51,156,255,.20),rgba(124,92,255,.14) 46%,rgba(51,156,255,0) 82%)}",
+	".hb-hero::after{content:\"\";position:absolute;right:-40px;top:-70px;width:220px;height:220px;border-radius:50%;background:radial-gradient(circle,rgba(51,156,255,.34),transparent 68%);filter:blur(6px);pointer-events:none}",
+	".hb-heroTop{position:relative;display:flex;align-items:center;gap:12px}",
+	".hb-logo{flex:none;width:40px;height:40px;border-radius:13px;display:grid;place-items:center;font-size:19px;line-height:1;background:linear-gradient(135deg,#339CFF,#7C5CFF);box-shadow:0 8px 20px rgba(51,156,255,.38)}",
+	".hb-heroText{display:flex;flex-direction:column;gap:3px;min-width:0}",
+	".hb-heroTitle{font-size:16px;font-weight:700;letter-spacing:.3px;color:var(--dsw-alias-label-primary)}",
+	".hb-heroSub{font-size:11.5px;letter-spacing:.6px;color:var(--dsw-alias-label-tertiary)}",
+	".hb-heroRight{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}",
+	// hero 在蓝色渐变上，普通 hb-badgeInfo 的深蓝字对比不足，这里覆盖成白字半透明底
+	".hb-heroRight .hb-badge{background:rgba(255,255,255,.22);color:#fff;border:1px solid rgba(255,255,255,.46)}",
+	".hb-badge{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}",
+	".hb-badgeOk{background:rgba(61,220,151,.16);color:#2fbf7f}",
+	".hb-badgeInfo{background:rgba(51,156,255,.16);color:#2b8fe8}",
+	".hb-badgeWarn{background:rgba(245,184,61,.20);color:#c98b12}",
+	".hb-badgeOff{background:rgba(140,150,170,.18);color:var(--dsw-alias-label-tertiary)}",
+	".hb-dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}",
+	".hb-tabs{display:flex;flex-wrap:wrap;gap:5px;padding:5px;border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.08))}",
+	".hb-tab{height:30px;padding:0 14px;border-radius:10px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s}",
+	".hb-tab:hover{background:rgba(51,156,255,.12);color:var(--dsw-alias-label-primary)}",
+	".hb-tabOn,.hb-tabOn:hover{background:linear-gradient(135deg,#339CFF,#6b8bff);color:#fff;font-weight:600;box-shadow:0 5px 16px rgba(51,156,255,.34)}",
+	".hb-body{display:flex;flex-direction:column;gap:12px}",
+	".hb-card{border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06));padding:14px 16px;display:flex;flex-direction:column;gap:10px}",
+	".hb-cardHead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}",
+	".hb-cardTitle{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;color:var(--dsw-alias-label-primary)}",
+	".hb-cardTitle::before{content:\"\";flex:none;width:3px;height:15px;border-radius:2px;background:linear-gradient(180deg,#339CFF,#7C5CFF)}",
+	".hb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px}",
+	".hb-tile{border-radius:13px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.22));background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.04));padding:11px 13px;display:flex;flex-direction:column;gap:5px;transition:transform .16s,border-color .16s,box-shadow .16s}",
+	".hb-tile:hover{transform:translateY(-2px);border-color:rgba(51,156,255,.55);box-shadow:0 8px 22px rgba(0,0,0,.16)}",
+	".hb-tileWide{grid-column:span 2}",
+	".hb-tileLabel{font-size:11px;letter-spacing:.5px;color:var(--dsw-alias-label-tertiary)}",
+	".hb-tileValue{font-size:14.5px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary);word-break:break-word}",
+	".hb-tileMono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;letter-spacing:-.2px}",
+	".hb-tileHint{font-size:11.5px;color:var(--dsw-alias-label-tertiary);word-break:break-word}",
+	".hb-tileAccent{background:linear-gradient(135deg,rgba(51,156,255,.16),rgba(124,92,255,.10))}",
+	".hb-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
+	".hb-hint{font-size:12px;color:var(--dsw-alias-label-tertiary)}",
+	".hb-mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;word-break:break-all}",
+	".hb-btn{height:28px;padding:0 13px;border-radius:9px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));background:transparent;color:var(--dsw-alias-label-primary);font-size:12px;cursor:pointer;flex:none;transition:background .15s,border-color .15s,transform .1s}",
+	".hb-btn:hover{border-color:rgba(51,156,255,.6);background:rgba(51,156,255,.10)}",
+	".hb-btn:active{transform:translateY(1px)}",
+	".hb-btnOn{border-color:rgba(51,156,255,.65);background:rgba(51,156,255,.18);color:#2b8fe8;font-weight:600}",
+	".hb-btnPrimary{border:none;background:linear-gradient(135deg,#339CFF,#6b8bff);color:#fff;font-weight:600;box-shadow:0 5px 16px rgba(51,156,255,.32)}",
+	".hb-btnPrimary:hover{background:linear-gradient(135deg,#2f8fe8,#5f7ff0)}",
+	".hb-btnDanger{border:none;background:#e5484d;color:#fff;font-weight:600}",
+	".hb-input{height:28px;border-radius:9px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));background:var(--dsw-alias-bg-layer-1,transparent);color:var(--dsw-alias-label-primary);padding:0 9px;font-size:12.5px;outline:none;transition:border-color .15s,box-shadow .15s}",
+	".hb-input:focus{border-color:rgba(51,156,255,.7);box-shadow:0 0 0 3px rgba(51,156,255,.18)}",
+	".hb-chip{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:6px;font-size:11px;background:rgba(127,127,127,.16);color:var(--dsw-alias-label-secondary)}",
+	".hb-divider{height:1px;background:var(--dsw-alias-border-l2,rgba(127,127,127,.2));margin:2px 0}",
+	".hb-list{display:flex;flex-direction:column;gap:7px}",
+	".hb-item{border-radius:10px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.2));padding:8px 10px;display:flex;flex-direction:column;gap:5px;font-size:12px;transition:border-color .15s}",
+	".hb-item:hover{border-color:rgba(51,156,255,.45)}",
+	".hb-itemHead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
+	".hb-bar{height:8px;border-radius:999px;overflow:hidden;background:rgba(127,127,127,.22)}",
+	".hb-barFill{height:100%;border-radius:999px;background:linear-gradient(90deg,#339CFF,#7C5CFF);transition:width .3s}",
+	".hb-barFillWarn{background:linear-gradient(90deg,#f5b83d,#e5484d)}",
+	".hb-err{font-size:12px;color:#e5484d;border:1px solid rgba(229,72,77,.5);border-radius:9px;padding:6px 10px;word-break:break-all;background:rgba(229,72,77,.08)}",
+	".hb-ok{font-size:12px;color:#2fbf7f;border:1px solid rgba(61,220,151,.5);border-radius:9px;padding:6px 10px;word-break:break-all;background:rgba(61,220,151,.08)}",
+	".hb-scroll{max-height:340px;overflow-y:auto;padding:2px}",
+	".hb-pre{margin:0;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;border-radius:9px;padding:8px 10px;background:rgba(127,127,127,.10)}",
+].join("");
+function ensurePanelStyle() {
+	try {
+		if (typeof document === "undefined" || !document.head) return;
+		if (document.getElementById("dsh-heartbeat-style")) return;
+		const tag = document.createElement("style");
+		tag.id = "dsh-heartbeat-style";
+		tag.textContent = PANEL_CSS;
+		document.head.appendChild(tag);
+	} catch { /* 非 DOM 环境（冒烟测试）忽略 */ }
+}
+
+const LOCALE_NS = "heartbeat";
 		const DICT = {
 			zh: {
 				"settings.row.label": "心跳",
@@ -58,6 +133,12 @@ window.__ModuleLoader__.load({
 				"status.statusbarOff": "{status}（状态栏已关闭）",
 				"status.timeInject": "时间注入：",
 				"status.timeInjectOff": "已关闭",
+				"status.lastBeatShort": "上次心跳",
+				"status.resultShort": "上次结果",
+				"status.versionShort": "插件版本",
+				"status.todaySimple": "今日表达",
+				"status.timeInjectShort": "时间注入",
+				"status.currentShort": "此刻动态",
 				"status.timeInjectEvery": "每 {interval} 分钟，最近 {last}",
 				"status.never": "未发生过",
 				"scene.quietHours": "静默时段，世界睡了",
@@ -190,6 +271,7 @@ window.__ModuleLoader__.load({
 				"excerpt.hint": "留句子和小事的地方：只增不减，直接手编也不会被覆盖",
 				"panel.title": "心跳",
 				"panel.subtitle": "dsh-heartbeat",
+				"panel.badgeNative": "原生面板",
 				"panel.tab.status": "状态",
 				"panel.tab.sessions": "会话",
 				"panel.tab.seeds": "素材",
@@ -233,6 +315,12 @@ window.__ModuleLoader__.load({
 				"status.statusbarOff": "{status} (status bar off)",
 				"status.timeInject": "Time injection:",
 				"status.timeInjectOff": "Off",
+				"status.lastBeatShort": "Last beat",
+				"status.resultShort": "Last result",
+				"status.versionShort": "Version",
+				"status.todaySimple": "Spoken today",
+				"status.timeInjectShort": "Time injection",
+				"status.currentShort": "Right now",
 				"status.timeInjectEvery": "Every {interval} min, last {last}",
 				"status.never": "never",
 				"scene.quietHours": "Quiet hours — the world is asleep",
@@ -365,6 +453,7 @@ window.__ModuleLoader__.load({
 				"excerpt.hint": "A place for sentences and small things: it only grows, and hand edits are never overwritten",
 				"panel.title": "Heartbeat",
 				"panel.subtitle": "dsh-heartbeat",
+				"panel.badgeNative": "Native panel",
 				"panel.tab.status": "Status",
 				"panel.tab.sessions": "Sessions",
 				"panel.tab.seeds": "Material",
@@ -385,22 +474,22 @@ window.__ModuleLoader__.load({
 
 		const rowStyle = { display: "flex", alignItems: "center", gap: 8, margin: "6px 0" };
 		const labelStyle = { minWidth: 140, fontSize: 13, color: "var(--dsw-alias-label-secondary)", flex: "none" };
-		const inputStyle = { width: 90, height: 28, borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-specific-input-bg, transparent)", color: "var(--dsw-alias-label-primary)", padding: "0 8px", fontSize: 13 };
-		const buttonStyle = { height: 26, padding: "0 12px", borderRadius: 8, border: "none", background: "#339CFF", color: "#fff", fontSize: 12, cursor: "pointer", flex: "none" };
-		const buttonGhost = { ...buttonStyle, background: "var(--dsw-alias-interactive-bg-hover, #444)", color: "var(--dsw-alias-label-primary)" };
-		const hintStyle = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", margin: "4px 0" };
+		const inputStyle = { width: 90, height: 30, borderRadius: 9, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-specific-input-bg, rgba(127,127,127,.08))", color: "var(--dsw-alias-label-primary)", padding: "0 10px", fontSize: 12.5, outline: "none" };
+		const buttonStyle = { height: 28, padding: "0 14px", borderRadius: 9, border: "none", background: "linear-gradient(135deg, #339CFF, #5b8cff)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", flex: "none", boxShadow: "0 4px 14px rgba(51,156,255,.26)" };
+		const buttonGhost = { ...buttonStyle, background: "rgba(127,127,127,.14)", color: "var(--dsw-alias-label-primary)", border: "1px solid var(--dsw-alias-border-l2)", boxShadow: "none" };
+		const hintStyle = { fontSize: 12, lineHeight: 1.6, color: "var(--dsw-alias-label-tertiary)", margin: "5px 0" };
 
-		const summaryStyle = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", cursor: "pointer" };
-		const listStyle = { listStyle: "none", margin: "4px 0", padding: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)" };
-		const rowList = { display: "flex", alignItems: "center", gap: 8, padding: "3px 0" };
+		const summaryStyle = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", cursor: "pointer", padding: "6px 0" };
+		const listStyle = { listStyle: "none", margin: "4px 0", padding: 0, fontSize: 12.5, color: "var(--dsw-alias-label-secondary)", display: "flex", flexDirection: "column", gap: 6 };
+		const rowList = { display: "flex", alignItems: "center", gap: 10, padding: "5px 0" };
 		const panelBox = { padding: "2px 0" };
 		const panelHead = { display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "2px 0 8px" };
 		const panelTitle = { fontSize: 15, fontWeight: 600, color: "var(--dsw-alias-label-primary)" };
 		const panelSub = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)" };
 		const panelTabs = { display: "flex", flexWrap: "wrap", gap: 6, margin: "0 0 8px", borderBottom: "1px solid var(--dsw-alias-border-l2)", paddingBottom: 8 };
-		const panelTab = { height: 26, padding: "0 12px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", fontSize: 12, cursor: "pointer" };
+		const panelTab = { height: 27, padding: "0 13px", borderRadius: 9, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", fontSize: 12, cursor: "pointer" };
 		const panelTabOn = { ...panelTab, background: "#339CFF", borderColor: "#339CFF", color: "#fff" };
-		const blockHead = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", margin: "12px 0 4px" };
+		const blockHead = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", margin: "14px 0 6px", paddingLeft: 9, borderLeft: "3px solid #339CFF" };
 
 		function apply(ctx) {
 			// settingsScope was removed in DSH 0.1.7 — never bound here again.
@@ -480,22 +569,47 @@ window.__ModuleLoader__.load({
 						? L("status.currentWithNote", { scene: sceneLabel, note: sb.lastStatus.note })
 						: L("status.current", { scene: sceneLabel }))
 					: t("status.currentEmpty");
+				const usedNum = (view.cap && Number(view.cap.used)) || 0;
+				const maxNum = (view.cap && Number(view.cap.max)) || 0;
+				const ratio = maxNum > 0 ? Math.min(1, usedNum / maxNum) : 0;
+				const tile = (label, value, hint, extra) => React.createElement(
+					"div",
+					{ className: "hb-tile" + (extra ? " " + extra : "") },
+					React.createElement("span", { className: "hb-tileLabel" }, label),
+					React.createElement("span", { className: "hb-tileValue" }, value),
+					hint ? React.createElement("span", { className: "hb-tileHint" }, hint) : null,
+				);
+				const mood = view.quiet
+					? { cls: "hb-badgeOff", text: t("status.quiet") }
+					: { cls: "hb-badgeOk", text: L("status.rhythm", { interval: view.intervalMin }) };
+				const timeInjectText = sb.timeInjectMin === 0 ? t("status.timeInjectOff")
+					: L("status.timeInjectEvery", { interval: sb.timeInjectMin, last: sb.lastTimeInjectAt ? fmtTime(sb.lastTimeInjectAt) : t("status.never") });
+				const barClass = ratio >= 1 ? "hb-barFill hb-barFillWarn" : "hb-barFill";
 				return React.createElement(
 					"div",
-					null,
-					React.createElement("div", { style: blockHead }, t("section.status")),
+					{ className: "hb-body" },
 					React.createElement(
 						"div",
-						{ style: listStyle },
-						React.createElement("div", null, L("status.version", { version: view.version || t("common.unknown") })),
-						React.createElement("div", null, t("status.lastBeat"), fmtTime(lb.at)),
-						React.createElement("div", null, t("status.result"), verdictText),
-						React.createElement("div", null, L("status.today", { used: view.cap.used, max: view.cap.max })),
-						React.createElement("div", null, view.quiet ? t("status.quiet") : L("status.rhythm", { interval: view.intervalMin })),
-						React.createElement("div", null, sb.enabled === false ? L("status.statusbarOff", { status: statusText }) : statusText),
-						React.createElement("div", { style: hintStyle },
-							t("status.timeInject"), sb.timeInjectMin === 0 ? t("status.timeInjectOff")
-								: L("status.timeInjectEvery", { interval: sb.timeInjectMin, last: sb.lastTimeInjectAt ? fmtTime(sb.lastTimeInjectAt) : t("status.never") })),
+						{ className: "hb-card" },
+						React.createElement("div", { className: "hb-cardHead" },
+							React.createElement("span", { className: "hb-cardTitle" }, t("section.status")),
+							React.createElement("span", { className: "hb-badge " + mood.cls },
+								React.createElement("i", { className: "hb-dot" }),
+								mood.text)),
+						React.createElement("div", { className: "hb-grid" },
+							tile(t("status.lastBeatShort"), lb.at ? fmtTime(lb.at) : t("common.unknown")),
+							tile(t("status.versionShort"), "v" + (view.version || t("common.unknown"))),
+							React.createElement("div", { className: "hb-tile" },
+								React.createElement("span", { className: "hb-tileLabel" }, t("status.todaySimple")),
+								React.createElement("span", { className: "hb-tileValue" }, usedNum + " / " + maxNum),
+								React.createElement("div", { className: "hb-bar" },
+									React.createElement("div", { className: barClass, style: { width: Math.round(ratio * 100) + "%" } }))),
+							tile(t("status.timeInjectShort"), timeInjectText),
+							tile(t("status.resultShort"), verdictText, null, "hb-tileWide"),
+							tile(t("status.currentShort"),
+								sb.enabled === false ? L("status.statusbarOff", { status: statusText }) : statusText,
+								null, "hb-tileWide hb-tileAccent"),
+						),
 					),
 				);
 			}
@@ -1137,44 +1251,66 @@ window.__ModuleLoader__.load({
 				);
 			}
 			function HeartbeatSection(props) {
+				ensurePanelStyle();
 				const [tab, setTab] = React.useState("status");
 				// 槽位契约（PluginConfigViewProps.view）：'page' 是主视图；'summary' 只回
 				// 一行标题。shiori 参考实现完全忽略 view 且生产可用（契约也标注 page
 				// only），这里防御性处理，不影响 page 路径。
 				if (props && props.view === "summary") {
-					return React.createElement("div", { style: listStyle },
-						React.createElement("span", { style: panelTitle }, t("panel.title")));
+					return React.createElement("div", { className: "hb-row" },
+						React.createElement("span", { className: "hb-badge hb-badgeInfo" }, t("panel.title")));
 				}
+				// 非状态页统一套一张卡（带卡头标题），视觉上和其他卡对齐
+				const card = (title, node) => React.createElement("div", { className: "hb-card" },
+					React.createElement("div", { className: "hb-cardHead" },
+						React.createElement("span", { className: "hb-cardTitle" }, title)),
+					node);
 				return React.createElement(
 					"div",
-					{ style: panelBox },
-					// 顶部标题行：左「心跳」，右小字 dsh-heartbeat
-					React.createElement("div", { style: panelHead },
-						React.createElement("span", { style: panelTitle }, t("panel.title")),
-						React.createElement("span", { style: panelSub }, t("panel.subtitle"))),
+					{ className: "hb-panel" },
+					React.createElement("div", { className: "hb-hero" },
+						React.createElement("div", { className: "hb-heroTop" },
+							React.createElement("div", { className: "hb-logo" },
+								React.createElement("svg", { width: 21, height: 21, viewBox: "0 0 24 24", fill: "none" },
+									React.createElement("path", {
+										d: "M2 12h4l2.2-5.2 3.2 10.4 2.6-5.2H22",
+										stroke: "#fff", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round",
+									}))),
+							React.createElement("div", { className: "hb-heroText" },
+								React.createElement("span", { className: "hb-heroTitle" }, t("panel.title")),
+								React.createElement("span", { className: "hb-heroSub" }, t("panel.subtitle"))),
+							React.createElement("div", { className: "hb-heroRight" },
+								React.createElement("span", { className: "hb-badge hb-badgeInfo" }, t("panel.badgeNative"))))),
 					// tab 栏：状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置，状态默认选中
-					React.createElement("div", { style: panelTabs }, PANEL_TABS.map((entry) =>
+					React.createElement("div", { className: "hb-tabs" }, PANEL_TABS.map((entry) =>
 						React.createElement("button", {
 							key: entry.id,
-							style: tab === entry.id ? panelTabOn : panelTab,
+							className: tab === entry.id ? "hb-tab hb-tabOn" : "hb-tab",
 							onClick: () => setTab(entry.id),
 						}, t(entry.labelKey)))),
 					// 内容区：容器只切换，不装业务逻辑
-					tab === "status" ? React.createElement(StatusCard, null) : null,
-					tab === "sessions" ? React.createElement(SessionsSection, null) : null,
-					tab === "seeds" ? React.createElement(SeedsSection, null) : null,
-					tab === "interests" ? React.createElement(InterestsSection, null) : null,
-					tab === "profile" ? React.createElement(ProfileSection, null) : null,
-					tab === "weekly" ? React.createElement(WeeklySection, null) : null,
-					tab === "config" ? React.createElement(
-						"div",
-						null,
-						React.createElement("div", { style: blockHead }, t("section.config")),
-						React.createElement(ConfigSection, null),
-						React.createElement("div", { style: blockHead }, t("section.migrate")),
-						React.createElement(MigrateSection, null),
-						React.createElement(LedgerExcerptBlocks, null),
-					) : null,
+					React.createElement("div", { className: "hb-body" },
+						tab === "status" ? React.createElement(StatusCard, null) : null,
+						tab === "sessions" ? card(t("panel.tab.sessions"), React.createElement(SessionsSection, null)) : null,
+						tab === "seeds" ? card(t("panel.tab.seeds"), React.createElement(SeedsSection, null)) : null,
+						tab === "interests" ? card(t("panel.tab.interests"), React.createElement(InterestsSection, null)) : null,
+						tab === "profile" ? card(t("panel.tab.profile"), React.createElement(ProfileSection, null)) : null,
+						tab === "weekly" ? card(t("panel.tab.weekly"), React.createElement(WeeklySection, null)) : null,
+						tab === "config" ? React.createElement(
+							"div",
+							{ className: "hb-body" },
+							React.createElement("div", { className: "hb-card" },
+								React.createElement("div", { className: "hb-cardHead" },
+									React.createElement("span", { className: "hb-cardTitle" }, t("section.config"))),
+								React.createElement(ConfigSection, null)),
+							React.createElement("div", { className: "hb-card" },
+								React.createElement("div", { className: "hb-cardHead" },
+									React.createElement("span", { className: "hb-cardTitle" }, t("section.migrate"))),
+								React.createElement(MigrateSection, null)),
+							React.createElement("div", { className: "hb-card" },
+								React.createElement(LedgerExcerptBlocks, null)),
+						) : null,
+					),
 				);
 			}
 

@@ -21,7 +21,9 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 - **时间注入跳过子代理**：`shouldInjectTime` 之后加 `isSubagentSession`——`header.origin === 'subagent'`、`header.delegationDepth > 0`，header 缺失时回退扫 `sessionEvents` 前 8 条找 `subagent/descriptor`；命中则跳过并记 `time_inject_skipped`。判据来自实测的子代理会话首行（`origin`+`parentSession`+`delegationDepth:1`+`agentPreset`）。
 - **闲逛去重**：`addSeed` 入库前查重，范围含近 30 天归档——完全相同网址 / 归一化后同名 / 相似度 >0.85 三条规则；`DEDUP_SIMILAR_MIN_CHARS = 12` 门槛，短标题只走精确与归一化判定（防止「话题素材 1」vs「话题素材 11」= 0.889、「没有新证据的话题」vs「有新证据的话题」= 0.923 被误杀）。判重命中记 `seed_duplicate` 审计（id + reason + similarity，不含正文）。
 - **种子上限 2 → 4**：`config/interests.json` 的 `max_seeds_per_focus` 提到 4，`wanderPrompt` 原先硬编码「至多 2 条」改为按实际配置生成；`runWanderTurn` 的 `addSeed` 加 `noMerge: true`，一次闲逛的多条不再被同 topic 合并规则吃掉。
-- **原生面板**：设置页里一串折叠区改成一个面板，注册到 `plugins.bundle.config`（key = `@kanadego/dsh-heartbeat`），七个 tab：状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置。设置按「节律 / 时间与状态栏 / 表达 / 专注模式」分组，每个参数标生效时机；迁移导入加二次确认；周报正文默认收起。原 `settings.section` 插槽保留为降级通道——宿主侧没有该插槽时自动退回，界面不会整体消失。
+- **原生面板**：设置页里一串折叠区改成一个面板，注册到 `plugins.bundle.config`，七个 tab：状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置。设置按「节律 / 时间与状态栏 / 表达 / 专注模式」分组，每个参数标生效时机；迁移导入加二次确认；周报正文默认收起。原 `settings.section` 插槽保留为降级通道——宿主侧没有该插槽时自动退回，界面不会整体消失。
+- **槽位 key 必须用 bundle 短名**（`dsh-heartbeat`，不是 `@kanadego/dsh-heartbeat`）：宿主插件详情页用 `ledger.bundles.has(openPkg.name)` 判断要不要渲染配置区，`openPkg.name` 是去掉 scope 的短名。首版写成 npm 全名，结果详情页整块配置区不渲染（连 renderSlot 都不调用），面板「装了但看不见」——`scripts/panel-smoke.mjs` 现在直接对短名做断言。
+- **面板外观重做**：顶部渐变 hero（logo + 标题 + 徽章）、胶囊式 tab 栏、内容卡片化（卡头带渐变竖条），状态页改成六格指标网格（上次心跳 / 版本 / 今日表达带进度条 / 时间注入 / 上次结果 / 此刻动态）。样式走 `hb-` 前缀的一套 CSS（`ensurePanelStyle()` 幂等注入），颜色全取 `--dsw-alias-*` 变量，深浅主题都跟手。
 
 </details>
 
