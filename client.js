@@ -188,6 +188,15 @@ window.__ModuleLoader__.load({
 				"excerpt.failed": "失败：{error}",
 				"excerpt.open": "一键打开摘抄本",
 				"excerpt.hint": "留句子和小事的地方：只增不减，直接手编也不会被覆盖",
+				"panel.title": "心跳",
+				"panel.subtitle": "dsh-heartbeat",
+				"panel.tab.status": "状态",
+				"panel.tab.sessions": "会话",
+				"panel.tab.seeds": "素材",
+				"panel.tab.interests": "兴趣",
+				"panel.tab.profile": "画像",
+				"panel.tab.weekly": "周报",
+				"panel.tab.config": "设置",
 			},
 			en: {
 				"settings.row.label": "Heartbeat",
@@ -354,6 +363,15 @@ window.__ModuleLoader__.load({
 				"excerpt.failed": "Failed: {error}",
 				"excerpt.open": "Open the excerpt book",
 				"excerpt.hint": "A place for sentences and small things: it only grows, and hand edits are never overwritten",
+				"panel.title": "Heartbeat",
+				"panel.subtitle": "dsh-heartbeat",
+				"panel.tab.status": "Status",
+				"panel.tab.sessions": "Sessions",
+				"panel.tab.seeds": "Material",
+				"panel.tab.interests": "Interests",
+				"panel.tab.profile": "Profile",
+				"panel.tab.weekly": "Weekly",
+				"panel.tab.config": "Settings",
 			},
 		};
 		const fill = (text, params) => String(text).replace(/\{(\w+)\}/g, (match, key) => (params && key in params ? String(params[key]) : match));
@@ -371,10 +389,18 @@ window.__ModuleLoader__.load({
 		const buttonStyle = { height: 26, padding: "0 12px", borderRadius: 8, border: "none", background: "#339CFF", color: "#fff", fontSize: 12, cursor: "pointer", flex: "none" };
 		const buttonGhost = { ...buttonStyle, background: "var(--dsw-alias-interactive-bg-hover, #444)", color: "var(--dsw-alias-label-primary)" };
 		const hintStyle = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", margin: "4px 0" };
-		const sectionStyle = { borderTop: "1px solid var(--dsw-alias-border-l2)", marginTop: 10, paddingTop: 6 };
+
 		const summaryStyle = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", cursor: "pointer" };
 		const listStyle = { listStyle: "none", margin: "4px 0", padding: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)" };
 		const rowList = { display: "flex", alignItems: "center", gap: 8, padding: "3px 0" };
+		const panelBox = { padding: "2px 0" };
+		const panelHead = { display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "2px 0 8px" };
+		const panelTitle = { fontSize: 15, fontWeight: 600, color: "var(--dsw-alias-label-primary)" };
+		const panelSub = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)" };
+		const panelTabs = { display: "flex", flexWrap: "wrap", gap: 6, margin: "0 0 8px", borderBottom: "1px solid var(--dsw-alias-border-l2)", paddingBottom: 8 };
+		const panelTab = { height: 26, padding: "0 12px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-label-secondary)", fontSize: 12, cursor: "pointer" };
+		const panelTabOn = { ...panelTab, background: "#339CFF", borderColor: "#339CFF", color: "#fff" };
+		const blockHead = { fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-label-primary)", margin: "12px 0 4px" };
 
 		function apply(ctx) {
 			// settingsScope was removed in DSH 0.1.7 — never bound here again.
@@ -401,26 +427,9 @@ window.__ModuleLoader__.load({
 				}
 				return result.value;
 			};
-			// 会话名来自 client 自己的会话存储（侧边栏同名数据源）；拿不到则回退 id。
-			const sessionName = (id) => {
-				try {
-					const list = typeof ctx.sessions?.list === "function" ? ctx.sessions.list() : undefined;
-					const hit = Array.isArray(list) ? list.find((s) => s && (s.id === id || s.sessionId === id)) : undefined;
-					const name = hit && (hit.title || hit.name || hit.displayName);
-					return name ? String(name) : null;
-				} catch { return null; }
-			};
 
 			// ── 通用小组件 ────────────────────────────────────────────────
-			function Section(props) {
-				const [open, setOpen] = React.useState(props.open === true);
-				return React.createElement(
-					"details",
-					{ open, style: sectionStyle, onToggle: (e) => setOpen(e.target.open) },
-					React.createElement("summary", { style: summaryStyle }, props.title),
-					open ? React.createElement("div", { style: { paddingTop: 4 } }, props.children) : null,
-				);
-			}
+
 			function useAsync(fetcher, deps) {
 				const [state, setState] = React.useState({ loading: true, error: null, value: null });
 				React.useEffect(() => {
@@ -473,16 +482,21 @@ window.__ModuleLoader__.load({
 					: t("status.currentEmpty");
 				return React.createElement(
 					"div",
-					{ style: listStyle },
-					React.createElement("div", null, L("status.version", { version: view.version || t("common.unknown") })),
-					React.createElement("div", null, t("status.lastBeat"), fmtTime(lb.at)),
-					React.createElement("div", null, t("status.result"), verdictText),
-					React.createElement("div", null, L("status.today", { used: view.cap.used, max: view.cap.max })),
-					React.createElement("div", null, view.quiet ? t("status.quiet") : L("status.rhythm", { interval: view.intervalMin })),
-					React.createElement("div", null, sb.enabled === false ? L("status.statusbarOff", { status: statusText }) : statusText),
-					React.createElement("div", { style: hintStyle },
-						t("status.timeInject"), sb.timeInjectMin === 0 ? t("status.timeInjectOff")
-							: L("status.timeInjectEvery", { interval: sb.timeInjectMin, last: sb.lastTimeInjectAt ? fmtTime(sb.lastTimeInjectAt) : t("status.never") })),
+					null,
+					React.createElement("div", { style: blockHead }, t("section.status")),
+					React.createElement(
+						"div",
+						{ style: listStyle },
+						React.createElement("div", null, L("status.version", { version: view.version || t("common.unknown") })),
+						React.createElement("div", null, t("status.lastBeat"), fmtTime(lb.at)),
+						React.createElement("div", null, t("status.result"), verdictText),
+						React.createElement("div", null, L("status.today", { used: view.cap.used, max: view.cap.max })),
+						React.createElement("div", null, view.quiet ? t("status.quiet") : L("status.rhythm", { interval: view.intervalMin })),
+						React.createElement("div", null, sb.enabled === false ? L("status.statusbarOff", { status: statusText }) : statusText),
+						React.createElement("div", { style: hintStyle },
+							t("status.timeInject"), sb.timeInjectMin === 0 ? t("status.timeInjectOff")
+								: L("status.timeInjectEvery", { interval: sb.timeInjectMin, last: sb.lastTimeInjectAt ? fmtTime(sb.lastTimeInjectAt) : t("status.never") })),
+					),
 				);
 			}
 
@@ -522,6 +536,7 @@ window.__ModuleLoader__.load({
 				return React.createElement(
 					"div",
 					null,
+					React.createElement("div", { style: blockHead }, t("section.sessions")),
 					React.createElement("div", { style: hintStyle }, t("sessions.hint")),
 					bound.map((s) => React.createElement("div", { key: s.id, style: rowList },
 						React.createElement("span", { style: { flex: 1, fontSize: 12 } },
@@ -557,10 +572,19 @@ window.__ModuleLoader__.load({
 			// ── 素材池（v1.9.3 三版）：话题 / 聊天 × 活跃 / 归档，四个按钮各看一类 ──
 			// 和画像分区同一套 tab 交互，风格统一；一次只看一类。
 			function SeedsSection() {
+				// 面板版新增文案（不改 DICT，仅本函数使用）
+				const TXT = {
+					filterPlaceholder: "关键字过滤（匹配 文本 / 标签 / 来源）",
+					filterClear: "清除",
+					filterNoMatch: "没有匹配关键字的条目，换个词试试",
+					filterHint: (n) => "过滤后剩 " + n + " 条",
+					used: (n) => "已用 " + n + " 次",
+				};
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
 				const [tab, setTab] = React.useState("topic");
 				const [confirmId, setConfirmId] = React.useState(null);
+				const [filter, setFilter] = React.useState("");
 				const reload = React.useCallback(() => {
 					rpc("seeds.list").then(setData, (e) => setError(String(e).slice(0, 100)));
 				}, []);
@@ -568,15 +592,28 @@ window.__ModuleLoader__.load({
 				if (error) return React.createElement("div", { style: hintStyle }, L("common.loadFailed", { error }));
 				if (!data) return React.createElement("div", { style: hintStyle }, t("common.loading"));
 				const act = (endpoint, id) => rpc(endpoint, { id }).then(reload, (e) => setError(String(e).slice(0, 100)));
-				const row = (s, archived) => React.createElement("div", { key: s.id, style: rowList },
-					React.createElement("span", { style: { flex: 1, fontSize: 12, wordBreak: "break-word" } },
-						"[", s.tag, "/", s.source, "] ", s.text.slice(0, 60), L("seeds.used", { used: s.used })),
-					archived
-						? React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.restore", s.id) }, t("seeds.restore"))
-						: React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.archive", s.id) }, t("seeds.archive")),
-					confirmId === s.id
-						? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: () => { setConfirmId(null); act("seeds.delete", s.id); } }, t("common.confirmDelete"))
-						: React.createElement("button", { style: buttonGhost, onClick: () => setConfirmId(s.id) }, t("common.delete")),
+				// 两栏行：左侧标签行（tag/source 徽标 + 使用次数）+ 截断正文，
+				// 右侧操作按钮组；鼠标悬停正文可通过 title 看全文。
+				const seedRow = { ...rowList, alignItems: "flex-start", padding: "5px 0", borderBottom: "1px solid var(--dsw-alias-border-l2)" };
+				const chip = { flex: "none", fontSize: 11, lineHeight: "18px", padding: "0 6px", borderRadius: 6, background: "var(--dsw-alias-interactive-bg-hover, #444)", color: "var(--dsw-alias-label-secondary)" };
+				const row = (s, archived) => React.createElement("div", { key: s.id, style: seedRow },
+					React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+						React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 2 } },
+							React.createElement("span", { style: chip }, String(s.tag)),
+							React.createElement("span", { style: chip }, String(s.source)),
+							React.createElement("span", { style: hintStyle }, TXT.used(s.used || 0)),
+						),
+						React.createElement("div", { style: { fontSize: 12.5, wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)" }, title: s.text },
+							String(s.text || "").length > 80 ? String(s.text).slice(0, 80) + "…" : String(s.text || "")),
+					),
+					React.createElement("span", { style: { display: "flex", gap: 4, flex: "none", paddingTop: 2 } },
+						archived
+							? React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.restore", s.id) }, t("seeds.restore"))
+							: React.createElement("button", { style: buttonGhost, onClick: () => act("seeds.archive", s.id) }, t("seeds.archive")),
+						confirmId === s.id
+							? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: () => { setConfirmId(null); act("seeds.delete", s.id); } }, t("common.confirmDelete"))
+							: React.createElement("button", { style: buttonGhost, onClick: () => setConfirmId(s.id) }, t("common.delete")),
+					),
 				);
 				const isChat = (s) => (s.category || "topic") === "chat";
 				const topics = data.active.filter((s) => !isChat(s));
@@ -585,16 +622,29 @@ window.__ModuleLoader__.load({
 				const arcChats = data.archived.filter(isChat);
 				const archived = tab.indexOf("arc") === 0;
 				const chat = tab.indexOf("chat") >= 0;
-				const list = archived ? (chat ? arcChats : arcTopics) : (chat ? chats : topics);
+				const fullList = archived ? (chat ? arcChats : arcTopics) : (chat ? chats : topics);
+				// 本地关键字过滤：匹配 text / tag / source，大小写不敏感，不发请求
+				const kw = filter.trim().toLowerCase();
+				const hit = (s) => !kw
+					|| String(s.text || "").toLowerCase().indexOf(kw) >= 0
+					|| String(s.tag || "").toLowerCase().indexOf(kw) >= 0
+					|| String(s.source || "").toLowerCase().indexOf(kw) >= 0;
+				const list = fullList.filter(hit);
 				const tabButton = (key, label, count) => React.createElement("button", {
 					key,
 					style: tab === key ? buttonStyle : buttonGhost,
 					onClick: () => setTab(key),
 				}, L("common.labelWithCount", { label, count }));
+				// 空态二分：分类本身为空 vs 有关键字过滤后无结果，文案分开
+				const categoryEmpty = fullList.length === 0;
 				return React.createElement(
 					"div",
 					null,
 					React.createElement("div", { style: hintStyle }, L("seeds.activeSummary", { active: data.active.length, cap: data.cap, archived: data.archived.length })),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("input", { style: { ...inputStyle, width: "100%", boxSizing: "border-box" }, placeholder: TXT.filterPlaceholder, value: filter, onChange: (e) => setFilter(e.target.value) }),
+						kw ? React.createElement("button", { style: buttonGhost, onClick: () => setFilter("") }, TXT.filterClear) : null,
+					),
 					React.createElement("div", { style: tabRow },
 						tabButton("topic", t("seeds.tabTopic"), topics.length),
 						tabButton("chat", t("seeds.tabChat"), chats.length),
@@ -604,8 +654,13 @@ window.__ModuleLoader__.load({
 						? (chat ? t("seeds.hintArchivedChat") : t("seeds.hintArchivedTopic"))
 						: (chat ? t("seeds.hintChat") : t("seeds.hintTopic"))),
 					list.length === 0
-						? React.createElement("div", { style: hintStyle }, archived ? t("seeds.emptyArchived") : t("seeds.empty"))
-						: React.createElement("div", { style: scrollBox }, list.map((s) => row(s, archived))),
+						? React.createElement("div", { style: hintStyle },
+							categoryEmpty
+								? (archived ? t("seeds.emptyArchived") : t("seeds.empty"))
+								: TXT.filterNoMatch)
+						: React.createElement("div", { style: scrollBox },
+							kw ? React.createElement("div", { style: { ...hintStyle, padding: "2px 0" } }, TXT.filterHint(list.length)) : null,
+							list.map((s) => row(s, archived))),
 				);
 			}
 
@@ -613,6 +668,12 @@ window.__ModuleLoader__.load({
 			// 首编继承出厂：第一次增删/存时段时，插件自动把出厂 interests.json
 			// 完整复制进 data/settings/interests.json，之后卡片就是唯一入口。
 			function InterestsSection() {
+				// 面板版新增文案（不改 DICT，仅本函数使用）
+				const TXT = {
+					stats: (n, m) => "当前兴趣 " + n + " 条 · 浏览时段 " + m + " 个",
+					// 如实说明：rpc 没有返回「出厂默认 / 已改过」标记字段，只能显示当前生效条数
+					statsNote: "面板暂无法区分出厂默认与已改过（接口未返回该标记），以上为当前生效条数",
+				};
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
 				const [status, setStatus] = React.useState("");
@@ -629,6 +690,7 @@ window.__ModuleLoader__.load({
 				if (error) return React.createElement("div", { style: hintStyle }, L("common.loadFailed", { error }));
 				if (!data) return React.createElement("div", { style: hintStyle }, t("common.loading"));
 				const interests = data.interests || [];
+				const windowsCount = (data._schedule?.windows || []).length;
 				const doAdd = () => {
 					const text = draft.trim();
 					if (!text) return;
@@ -651,6 +713,9 @@ window.__ModuleLoader__.load({
 				return React.createElement(
 					"div",
 					null,
+					React.createElement("div", { style: { ...hintStyle, fontWeight: 600, color: "var(--dsw-alias-label-secondary)" } },
+						TXT.stats(interests.length, windowsCount)),
+					React.createElement("div", { style: hintStyle }, TXT.statsNote),
 					React.createElement("div", { style: hintStyle }, t("interests.hint")),
 					interests.map((item) => React.createElement("div", { key: item, style: rowList },
 						React.createElement("span", { style: { flex: 1, fontSize: 12 } }, item),
@@ -678,9 +743,7 @@ window.__ModuleLoader__.load({
 				);
 			}
 
-			// ── 画像入口（v2.0）：四个分区 + 引擎室输入 ─────────────────────
-			// 一次只看一个分区，条目一条一块、正文自动换行；另给一个只读的
-			// 「引擎室输入」视图，直接回答「截断后引擎室到底看到了什么」。
+			// ── 画像入口共享常量（仅 ProfileSection 使用）────────────────────
 			const PARTITIONS = [
 				{ key: "interest", labelKey: "profile.tabInterest" },
 				{ key: "projects", labelKey: "profile.tabProjects" },
@@ -690,16 +753,24 @@ window.__ModuleLoader__.load({
 			const entryBox = { borderLeft: "2px solid var(--dsw-alias-border-l2)", paddingLeft: 8, margin: "6px 0" };
 			// v1.9.3：分区条目一多就顶到屏幕外，给个固定高度的滚动区。
 			const scrollBox = { maxHeight: 320, overflowY: "auto", padding: "4px 6px", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 6 };
-			const groupHead = { fontSize: 12.5, fontWeight: 600, margin: "10px 0 2px" };
+
 			const entryHead = { fontSize: 12, color: "var(--dsw-alias-label-tertiary)", marginBottom: 2, wordBreak: "break-word" };
 			const entryBody = { fontSize: 12.5, lineHeight: 1.65, whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)", margin: "2px 0" };
 			const tabRow = { display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0" };
+
+			// ── 画像入口（v2.0 → v2.1.0 面板版）：四个分区 + 引擎室输入 ─────
+			// 一次只看一个分区，条目一条一块、正文自动换行；另给一个只读的
+			// 「引擎室输入」视图。新增：单条正文过长（约超 4 行）时默认收起，
+			// 点「展开全文」看全文；刷新 / 导出按钮保留。
 			function ProfileSection() {
+				// 面板版新增文案（不改 DICT，仅本函数使用）
+				const TXT = { expand: "展开全文", collapse: "收起" };
 				const [data, setData] = React.useState(null);
 				const [digest, setDigest] = React.useState(null);
 				const [tab, setTab] = React.useState("interest");
 				const [error, setError] = React.useState(null);
 				const [status, setStatus] = React.useState("");
+				const [expanded, setExpanded] = React.useState({});
 				const load = React.useCallback(() => {
 					rpc("profile.partitions").then(setData, (e) => setError(String(e).slice(0, 120)));
 					rpc("profile.digest").then(setDigest, () => { /* 引擎室输入是附加视图，失败不挡分区 */ });
@@ -719,6 +790,30 @@ window.__ModuleLoader__.load({
 					style: tab === key ? buttonStyle : buttonGhost,
 					onClick: () => setTab(key),
 				}, count === undefined ? label : L("common.labelWithCount", { label, count }));
+				// 单条折叠：超过约 4 行（>160 字符或 >4 个换行）才给折叠按钮；
+				// 展开状态按条目 key 记在组件 state，切换 tab / 刷新后回到收起态。
+				const isLong = (str) => { const s = String(str || ""); return s.length > 160 || s.split("\n").length > 4; };
+				const bodyStyle = (open) => open ? entryBody : {
+					...entryBody, display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden",
+				};
+				const entryKey = (e) => e.id || (String(e.topic) + String(e.content).slice(0, 12));
+				const entryView = (e) => {
+					const key = entryKey(e);
+					const open = expanded[key] === true;
+					return React.createElement("div", { key, style: entryBox },
+						React.createElement("div", { style: entryHead },
+							(e.topic || "") + "/" + (e.subTopic || "")
+							+ L("profile.conf", { value: Number(e.confidence || 0).toFixed(2) })
+							+ (e.temporal ? L("profile.temporal", { value: e.temporal }) : "")
+							+ (e.lowActivity ? t("profile.stale") : "")
+							+ (e.updatedAt ? L("profile.updated", { date: String(e.updatedAt).slice(0, 10) }) : "")),
+						React.createElement("div", { style: bodyStyle(open) }, e.content || ""),
+						isLong(e.content) ? React.createElement("button", {
+							style: { ...buttonGhost, height: 20, fontSize: 11, padding: "0 8px", marginTop: 2 },
+							onClick: () => setExpanded((m) => ({ ...m, [key]: !open })),
+						}, open ? TXT.collapse : TXT.expand) : null,
+					);
+				};
 				const om = (digest && digest.omitted) || { tact: 0, topic: 0, wander: 0 };
 				return React.createElement(
 					"div",
@@ -745,14 +840,7 @@ window.__ModuleLoader__.load({
 							React.createElement("div", { style: hintStyle }, L("profile.valid", { valid: group.valid, historical: group.total - group.valid })),
 							entries.length === 0
 								? React.createElement("div", { style: hintStyle }, t("profile.emptyPartition"))
-								: React.createElement("div", { style: scrollBox }, entries.map((e) => React.createElement("div", { key: e.id || (String(e.topic) + String(e.content).slice(0, 12)), style: entryBox },
-									React.createElement("div", { style: entryHead },
-										(e.topic || "") + "/" + (e.subTopic || "")
-										+ L("profile.conf", { value: Number(e.confidence || 0).toFixed(2) })
-										+ (e.temporal ? L("profile.temporal", { value: e.temporal }) : "")
-										+ (e.lowActivity ? t("profile.stale") : "")
-										+ (e.updatedAt ? L("profile.updated", { date: String(e.updatedAt).slice(0, 10) }) : "")),
-									React.createElement("div", { style: entryBody }, e.content || ""))))),
+								: React.createElement("div", { style: scrollBox }, entries.map((e) => entryView(e)))),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonGhost, onClick: () => { load(); } }, t("common.refresh")),
 						React.createElement("button", { style: buttonGhost, onClick: () => { void doExport(); } }, t("profile.exportMarkdown"))),
@@ -786,6 +874,20 @@ window.__ModuleLoader__.load({
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [status, setStatus] = React.useState("");
 				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled]);
+				// v2.1.0 面板改造：分组小节文案（局部常量，不进 DICT，暂只做中文）。
+				const GROUP_RHYTHM = "节律";
+				const GROUP_RHYTHM_DESC = "心跳多久跳一次、一天最多说几条。";
+				const GROUP_TIME = "时间与状态栏";
+				const GROUP_TIME_DESC = "给日常会话注入精确时间、在会话里挂一条心跳状态。";
+				const GROUP_EXPRESS = "表达";
+				const GROUP_EXPRESS_DESC = "心跳说话的方式与开销。";
+				const GROUP_FOCUS = "专注模式";
+				const GROUP_FOCUS_DESC = "需要安静时手动暂停心跳，到点自动恢复。它是即时生效的独立开关：点按钮立刻暂停/恢复，不走下面的「保存」。";
+				// 「多久生效」依据 src/rpc.ts 的 config.set 实现判定：
+				//   intervalMin → applyHeartbeatInterval 立即重排定时器（保存后立刻生效）；
+				//   其余字段写入活引用/运行时 policy，每跳判定时读取（下一跳生效）。详见 manifest.md。
+				const EFFECT_NOW = "多久生效：保存后定时器立刻按新间隔重排，下一次心跳就按新间隔走（无需重启）。";
+				const EFFECT_NEXT = "多久生效：保存后从下一跳开始生效（无需重启）。";
 				// 专注模式（v2.1.0 ①）：即时动作，不走「保存」，和上面那堆参数分开。
 				// 状态取 rpc 合并值（内存 + data/focus.json），所以 CLI 设的暂停这里也看得见。
 				const [focus, setFocus] = React.useState(null);
@@ -833,46 +935,57 @@ window.__ModuleLoader__.load({
 				};
 				if (loadErr && !value) return React.createElement("div", { style: hintStyle }, L("common.loadFailed", { error: loadErr }));
 				if (!value) return React.createElement("div", { style: hintStyle }, t("common.loading"));
+				// 分组小节的标题 + 一句人话说明；生效说明按 label 宽度（140 + gap 8）缩进对齐。
+				const groupTitle = (title, desc) => React.createElement(
+					"div",
+					null,
+					React.createElement("div", { style: { fontSize: 13, fontWeight: 600, margin: "10px 0 0" } }, title),
+					React.createElement("div", { style: { ...hintStyle, margin: "2px 0" } }, desc));
+				const paramRow = (label, control, hint, effect) => React.createElement(
+					"div",
+					{ style: { margin: "4px 0" } },
+					React.createElement("div", { style: rowStyle },
+						React.createElement("span", { style: labelStyle }, label),
+						control,
+						hint ? React.createElement("span", { style: hintStyle }, hint) : null),
+					effect ? React.createElement("div", { style: { ...hintStyle, marginLeft: 148 } }, effect) : null);
+				const toggleBtn = (on, set) => React.createElement("button", { style: on ? buttonStyle : buttonGhost, onClick: () => set(!on) }, on ? "☑ " + t("common.on") : "☐ " + t("common.off"));
 				return React.createElement(
 					"div",
 					null,
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.interval")),
-						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftInterval, onChange: (e) => setDraftInterval(e.target.value) })),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.cap")),
-						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, value: draftCap, onChange: (e) => setDraftCap(e.target.value) })),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.timeInject")),
+					// ── 节律 ──
+					groupTitle(GROUP_RHYTHM, GROUP_RHYTHM_DESC),
+					paramRow(t("config.interval"),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftInterval, onChange: (e) => setDraftInterval(e.target.value) }),
+						null, EFFECT_NOW),
+					paramRow(t("config.cap"),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, value: draftCap, onChange: (e) => setDraftCap(e.target.value) }),
+						null, EFFECT_NEXT),
+					// ── 时间与状态栏 ──
+					groupTitle(GROUP_TIME, GROUP_TIME_DESC),
+					paramRow(t("config.timeInject"),
 						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, value: draftTimeInject, onChange: (e) => setDraftTimeInject(e.target.value) }),
-						React.createElement("span", { style: hintStyle }, t("config.timeInjectOff"))),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.statusbar")),
-						React.createElement("button", { style: draftStatusbar ? buttonStyle : buttonGhost, onClick: () => setDraftStatusbar(!draftStatusbar) }, draftStatusbar ? "☑ " + t("common.on") : "☐ " + t("common.off")),
-						React.createElement("span", { style: hintStyle }, t("config.statusbarHint"))),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.idle")),
-						React.createElement("button", { style: draftIdle ? buttonStyle : buttonGhost, onClick: () => setDraftIdle(!draftIdle) }, draftIdle ? "☑ " + t("common.on") : "☐ " + t("common.off")),
-						React.createElement("span", { style: hintStyle }, t("config.idleHint"))),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.tokenSaver")),
-						React.createElement("button", { style: draftTokenSaver ? buttonStyle : buttonGhost, onClick: () => setDraftTokenSaver(!draftTokenSaver) }, draftTokenSaver ? "☑ " + t("common.on") : "☐ " + t("common.off")),
-						React.createElement("span", { style: hintStyle }, t("config.tokenSaverHint"))),
-					React.createElement("div", { style: rowStyle },
-						React.createElement("span", { style: labelStyle }, t("config.psy")),
-						React.createElement("button", { style: draftPsy ? buttonStyle : buttonGhost, onClick: () => setDraftPsy(!draftPsy) }, draftPsy ? "☑ " + t("common.on") : "☐ " + t("common.off")),
-						React.createElement("span", { style: hintStyle }, t("config.psyHint"))),
+						t("config.timeInjectOff"), EFFECT_NEXT),
+					paramRow(t("config.statusbar"), toggleBtn(draftStatusbar, setDraftStatusbar), t("config.statusbarHint"), EFFECT_NEXT),
+					// ── 表达 ──
+					groupTitle(GROUP_EXPRESS, GROUP_EXPRESS_DESC),
+					paramRow(t("config.tokenSaver"), toggleBtn(draftTokenSaver, setDraftTokenSaver), t("config.tokenSaverHint"), EFFECT_NEXT),
+					paramRow(t("config.psy"), toggleBtn(draftPsy, setDraftPsy), t("config.psyHint"), EFFECT_NEXT),
+					paramRow(t("config.idle"), toggleBtn(draftIdle, setDraftIdle), t("config.idleHint"), EFFECT_NEXT),
+					// ── 专注模式：即时动作，不进 draft 体系 ──
+					groupTitle(GROUP_FOCUS, GROUP_FOCUS_DESC),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, t("config.focus")),
 						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftFocusMin, onChange: (e) => setDraftFocusMin(e.target.value) }),
 						React.createElement("span", { style: hintStyle }, t("config.focusMinutes")),
 						focus && focus.paused
 							? React.createElement("button", { style: buttonStyle, disabled: focusBusy, onClick: () => { void toggleFocus(false); } }, t("config.focusResume"))
-							: React.createElement("button", { style: buttonGhost, disabled: focusBusy, onClick: () => { void toggleFocus(true); } }, t("config.focusPause")),
-						React.createElement("span", { style: hintStyle }, focus && focus.paused ? L("config.focusPaused", { clock: focus.clock || "" }) : t("config.focusHint"))),
+							: React.createElement("button", { style: buttonGhost, disabled: focusBusy, onClick: () => { void toggleFocus(true); } }, t("config.focusPause"))),
+					React.createElement("div", { style: { ...hintStyle, marginLeft: 148 } }, focus && focus.paused ? L("config.focusPaused", { clock: focus.clock || "" }) : t("config.focusHint")),
+					// ── 保存固定在分组最后；成功/失败提示沿用现有 status 逻辑 ──
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, t("common.save")),
-						React.createElement("span", { style: hintStyle }, status || t("config.saveHint"))),
+						React.createElement("span", { style: status ? { ...hintStyle, fontWeight: 600 } : hintStyle }, status || t("config.saveHint"))),
 				);
 			}
 
@@ -884,6 +997,8 @@ window.__ModuleLoader__.load({
 				const [error, setError] = React.useState(null);
 				const [selected, setSelected] = React.useState("");
 				const [text, setText] = React.useState(null);
+				// v2.1.0 面板改造：正文收进「展开查看」折叠块，默认收起；列表与加载逻辑原样保留。
+				const WEEKLY_SHOW = "展开查看报告正文";
 				const loadReport = React.useCallback((file) => {
 					setSelected(file);
 					rpc("weekly.get", { file }).then((r) => setText(r.text), (e) => setError(String(e).slice(0, 100)));
@@ -913,7 +1028,10 @@ window.__ModuleLoader__.load({
 							onClick: () => loadReport(r.file),
 						}, r.end.slice(0, 10))),
 					) : null,
-					text ? React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 12 } }, text) : null,
+					text ? React.createElement("details", { style: { margin: "4px 0" } },
+						React.createElement("summary", { style: summaryStyle }, WEEKLY_SHOW),
+						React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 12 } }, text),
+					) : null,
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonGhost, onClick: () => { void reload(); } }, t("common.refresh"))),
 				);
@@ -929,6 +1047,11 @@ window.__ModuleLoader__.load({
 				const [importPw, setImportPw] = React.useState("");
 				const [status, setStatus] = React.useState("");
 				const busy = React.useRef(false);
+				// v2.1.0 面板改造：导入是危险操作（会用迁移包覆盖本机数据），加二次确认——
+				// 第一次点只亮红色确认态并提示，再点一次才真正执行。
+				const IMPORT_CONFIRM_LABEL = "确认导入（覆盖本机数据）";
+				const IMPORT_CONFIRM_HINT = "⚠ 危险操作：导入会用迁移包覆盖本机的心跳数据（被替换的文件会自动备份）。确认路径和口令无误后，再点一次「确认导入」才会执行。";
+				const [confirmImport, setConfirmImport] = React.useState(false);
 				const run = (fn) => {
 					if (busy.current) return;
 					busy.current = true;
@@ -947,6 +1070,15 @@ window.__ModuleLoader__.load({
 					setImportPw("");
 					setStatus(L("migrate.imported", { restored: v.restored.length, backedUp: v.backedUp.length, skipped: v.skipped.length }));
 				});
+				const onImportClick = () => {
+					if (!confirmImport) {
+						setConfirmImport(true);
+						setStatus(IMPORT_CONFIRM_HINT);
+						return;
+					}
+					setConfirmImport(false);
+					void doImport();
+				};
 				return React.createElement(
 					"div",
 					null,
@@ -959,16 +1091,28 @@ window.__ModuleLoader__.load({
 					),
 					React.createElement("div", { style: { ...hintStyle, marginTop: 6, fontWeight: 600 } }, t("migrate.importHeading")),
 					React.createElement("div", { style: rowStyle },
-						React.createElement("input", { style: { ...inputStyle, width: 220 }, placeholder: t("migrate.filePlaceholder"), value: importFile, onChange: (e) => setImportFile(e.target.value) }),
-						React.createElement("input", { style: inputStyle, type: "password", placeholder: t("migrate.pwPlaceholderShort"), value: importPw, onChange: (e) => setImportPw(e.target.value) }),
-						React.createElement("button", { style: buttonStyle, onClick: () => { void doImport(); } }, t("migrate.importButton")),
+						React.createElement("input", { style: { ...inputStyle, width: 220 }, placeholder: t("migrate.filePlaceholder"), value: importFile, onChange: (e) => { setImportFile(e.target.value); setConfirmImport(false); } }),
+						React.createElement("input", { style: inputStyle, type: "password", placeholder: t("migrate.pwPlaceholderShort"), value: importPw, onChange: (e) => { setImportPw(e.target.value); setConfirmImport(false); } }),
+						confirmImport
+							? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: onImportClick }, IMPORT_CONFIRM_LABEL)
+							: React.createElement("button", { style: buttonStyle, onClick: onImportClick }, t("migrate.importButton")),
 					),
 					status ? React.createElement("div", { style: hintStyle }, status) : null,
 				);
 			}
 
 			// ── 主卡片 ────────────────────────────────────────────────────
-			function HeartbeatSection() {
+			const PANEL_TABS = [
+				{ id: "status", labelKey: "panel.tab.status" },
+				{ id: "sessions", labelKey: "panel.tab.sessions" },
+				{ id: "seeds", labelKey: "panel.tab.seeds" },
+				{ id: "interests", labelKey: "panel.tab.interests" },
+				{ id: "profile", labelKey: "panel.tab.profile" },
+				{ id: "weekly", labelKey: "panel.tab.weekly" },
+				{ id: "config", labelKey: "panel.tab.config" },
+			];
+			// 账本 + 摘抄本：原 HeartbeatSection 内联块原样迁出（含两条 rpc 调用）。
+			function LedgerExcerptBlocks() {
 				const [ledgerMsg, setLedgerMsg] = React.useState("");
 				const openLedger = () => rpc("ledger.open").then(
 					(v) => setLedgerMsg(L("ledger.opened", { path: v.path })),
@@ -981,41 +1125,78 @@ window.__ModuleLoader__.load({
 				);
 				return React.createElement(
 					"div",
-					{ style: { padding: "2px 0" } },
-					React.createElement(Section, { title: t("section.status"), open: true }, React.createElement(StatusCard, null)),
-					React.createElement(Section, { title: t("section.sessions") }, React.createElement(SessionsSection, null)),
-					React.createElement(Section, { title: t("section.seeds") }, React.createElement(SeedsSection, null)),
-					React.createElement(Section, { title: t("section.interests") }, React.createElement(InterestsSection, null)),
-					React.createElement(Section, { title: t("section.profile") }, React.createElement(ProfileSection, null)),
-					React.createElement(Section, { title: t("section.ledger") }, React.createElement(
+					null,
+					React.createElement("div", { style: blockHead }, t("section.ledger")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, t("ledger.open")),
+						React.createElement("span", { style: hintStyle }, ledgerMsg || t("ledger.hint"))),
+					React.createElement("div", { style: blockHead }, t("section.excerpt")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("button", { style: buttonStyle, onClick: () => { void openExcerpt(); } }, t("excerpt.open")),
+						React.createElement("span", { style: hintStyle }, excerptMsg || t("excerpt.hint"))),
+				);
+			}
+			function HeartbeatSection(props) {
+				const [tab, setTab] = React.useState("status");
+				// 槽位契约（PluginConfigViewProps.view）：'page' 是主视图；'summary' 只回
+				// 一行标题。shiori 参考实现完全忽略 view 且生产可用（契约也标注 page
+				// only），这里防御性处理，不影响 page 路径。
+				if (props && props.view === "summary") {
+					return React.createElement("div", { style: listStyle },
+						React.createElement("span", { style: panelTitle }, t("panel.title")));
+				}
+				return React.createElement(
+					"div",
+					{ style: panelBox },
+					// 顶部标题行：左「心跳」，右小字 dsh-heartbeat
+					React.createElement("div", { style: panelHead },
+						React.createElement("span", { style: panelTitle }, t("panel.title")),
+						React.createElement("span", { style: panelSub }, t("panel.subtitle"))),
+					// tab 栏：状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置，状态默认选中
+					React.createElement("div", { style: panelTabs }, PANEL_TABS.map((entry) =>
+						React.createElement("button", {
+							key: entry.id,
+							style: tab === entry.id ? panelTabOn : panelTab,
+							onClick: () => setTab(entry.id),
+						}, t(entry.labelKey)))),
+					// 内容区：容器只切换，不装业务逻辑
+					tab === "status" ? React.createElement(StatusCard, null) : null,
+					tab === "sessions" ? React.createElement(SessionsSection, null) : null,
+					tab === "seeds" ? React.createElement(SeedsSection, null) : null,
+					tab === "interests" ? React.createElement(InterestsSection, null) : null,
+					tab === "profile" ? React.createElement(ProfileSection, null) : null,
+					tab === "weekly" ? React.createElement(WeeklySection, null) : null,
+					tab === "config" ? React.createElement(
 						"div",
 						null,
-						React.createElement("div", { style: rowStyle },
-							React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, t("ledger.open")),
-							React.createElement("span", { style: hintStyle }, ledgerMsg || t("ledger.hint"))),
-					)),
-					React.createElement(Section, { title: t("section.excerpt") }, React.createElement(
-						"div",
-						null,
-						React.createElement("div", { style: rowStyle },
-							React.createElement("button", { style: buttonStyle, onClick: () => { void openExcerpt(); } }, t("excerpt.open")),
-							React.createElement("span", { style: hintStyle }, excerptMsg || t("excerpt.hint"))),
-						)),
-					React.createElement(Section, { title: t("section.weekly") }, React.createElement(WeeklySection, null)),
-					React.createElement(Section, { title: t("section.migrate") }, React.createElement(MigrateSection, null)),
-					React.createElement(Section, { title: t("section.config") }, React.createElement(ConfigSection, null)),
+						React.createElement("div", { style: blockHead }, t("section.config")),
+						React.createElement(ConfigSection, null),
+						React.createElement("div", { style: blockHead }, t("section.migrate")),
+						React.createElement(MigrateSection, null),
+						React.createElement(LedgerExcerptBlocks, null),
+					) : null,
 				);
 			}
 
 			try {
-				ctx.slots.inject("settings.section", function* () {
-					yield ctx.slots.register(
-						{ name: "settings.section", id: "dsh-heartbeat", order: 20, locale: LOCALE_NS, label: () => t("settings.row.label") },
+				ctx.slots.inject("plugins.bundle.config", function () {
+					return ctx.slots.register(
+						{ name: "plugins.bundle.config", key: "@kanadego/dsh-heartbeat" },
 						HeartbeatSection,
 					);
 				});
 			} catch (e) {
-				console.warn("[dsh-heartbeat] settings.section slot unavailable", e);
+				console.warn("[dsh-heartbeat] plugins.bundle.config 注册失败，降级到 settings.section：" + ((e && e.message) || e));
+				try {
+					ctx.slots.inject("settings.section", function* () {
+						yield ctx.slots.register(
+							{ name: "settings.section", id: "dsh-heartbeat", order: 20, locale: LOCALE_NS, label: () => t("settings.row.label") },
+							HeartbeatSection,
+						);
+					});
+				} catch (e2) {
+					console.warn("[dsh-heartbeat] settings.section 兜底注册也失败", e2);
+				}
 			}
 		}
 

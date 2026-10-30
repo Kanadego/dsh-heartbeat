@@ -71,6 +71,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "check:client": "node --check client.js",
+    "check:panel": "node scripts/panel-smoke.mjs",
     "test": "node --import tsx --test \"tests/*.test.ts\""
   },
   "dsh": {
