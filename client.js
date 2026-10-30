@@ -1,12 +1,11 @@
-// dsh-heartbeat client half (M6): settings-page card.
+// dsh-heartbeat client half: native bundle panel (v2.1.0+).
 //
 // Contract notes (verified against dsh-vision-router + dsh-client-ui-settings
 // types on 0.1.1-rc.2; reworked for 0.1.7-rc.2 in v1.7.0):
 //   - the client module is applied as a CLIENT-SIDE cordis plugin; the
 //     ModuleLoader factory must return an object with an "apply" method;
-//   - the settings page renders entries contributed to the 'settings.section'
-//     slot; each entry = {name, id, order, label} + a React component (the
-//     slot survives 0.1.7; the per-namespace settingsScope service does not);
+//   - the panel is an entry on 'plugins.bundle.config' (keyed by the bundle
+//     short name); the old settings.section card was retired in v2.1.0;
 //   - the rhythm editor rides the /api RPC channel (host persists to
 //     data/settings/ui.json and applies live) — no host settings API needed;
 //   - custom host data flows through an exact Fetch route under /api:
@@ -99,7 +98,6 @@ function ensurePanelStyle() {
 const LOCALE_NS = "heartbeat";
 		const DICT = {
 			zh: {
-				"settings.row.label": "心跳",
 				"common.loading": "加载中…",
 				"common.loadFailed": "加载失败：{error}",
 				"common.confirmDelete": "确认删除",
@@ -281,7 +279,6 @@ const LOCALE_NS = "heartbeat";
 				"panel.tab.config": "设置",
 			},
 			en: {
-				"settings.row.label": "Heartbeat",
 				"common.loading": "Loading…",
 				"common.loadFailed": "Failed to load: {error}",
 				"common.confirmDelete": "Confirm delete",
@@ -532,8 +529,23 @@ const LOCALE_NS = "heartbeat";
 				}, deps || []);
 				return state;
 			}
+			// 时间格式跟随界面语言：宿主 locale 服务的快照带 active（'zh' | 'en'），
+			// zh 映射成 zh-CN，其余直接当 BCP 47 用。取不到就退回 zh-CN——和旧行为一致，
+			// 不会因为宿主版本差异把时间显示成空。
+			const localeTag = () => {
+				try {
+					const snap = localeSvc && typeof localeSvc.getLocale === "function" ? localeSvc.getLocale() : null;
+					const active = snap && snap.active;
+					if (!active) return "zh-CN";
+					return active === "zh" ? "zh-CN" : String(active);
+				} catch { return "zh-CN"; }
+			};
 			const fmtTime = (iso) => {
-				try { return new Date(iso).toLocaleString("zh-CN", { hour12: false }); } catch { return String(iso); }
+				try {
+					const d = new Date(iso);
+					if (Number.isNaN(d.getTime())) return String(iso);
+					return d.toLocaleString(localeTag(), { hour12: false });
+				} catch { return String(iso); }
 			};
 
 			// ── 心跳状态卡片 ──────────────────────────────────────────────
@@ -1326,17 +1338,10 @@ const LOCALE_NS = "heartbeat";
 					return disposer;
 				});
 			} catch (e) {
-				console.warn("[dsh-heartbeat] plugins.bundle.config 注册失败，降级到 settings.section：" + ((e && e.message) || e));
-				try {
-					ctx.slots.inject("settings.section", function* () {
-						yield ctx.slots.register(
-							{ name: "settings.section", id: "dsh-heartbeat", order: 20, locale: LOCALE_NS, label: () => t("settings.row.label") },
-							HeartbeatSection,
-						);
-					});
-				} catch (e2) {
-					console.warn("[dsh-heartbeat] settings.section 兜底注册也失败", e2);
-				}
+				// v2.1.0 起旧设置页面板退役：不再往 settings.section 挂第二份 UI。
+				// 宿主 0.2.1 起就有 plugins.bundle.config，宿主过旧时面板不可用，
+				// 这里只留下一条明确提示，不再造一个观感落后的降级副本。
+				console.warn("[dsh-heartbeat] plugins.bundle.config 注册失败，面板不可用（需要 DSH 0.2.1 及以上）：" + ((e && e.message) || e));
 			}
 		}
 
