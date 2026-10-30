@@ -1180,10 +1180,14 @@ window.__ModuleLoader__.load({
 
 			try {
 				ctx.slots.inject("plugins.bundle.config", function () {
-					return ctx.slots.register(
-						{ name: "plugins.bundle.config", key: "@kanadego/dsh-heartbeat" },
+					const disposer = ctx.slots.register(
+						// key 必须等于宿主报的 bundle 名（pkg.name），不是 npm 包名：
+						// package.json 是 @kanadego/dsh-heartbeat，但 plugin-manager 的
+						// packageView 取的是 bundle.name = "dsh-heartbeat"（详情页 data-plugin-name）。
+						{ name: "plugins.bundle.config", key: "dsh-heartbeat" },
 						HeartbeatSection,
 					);
+					return disposer;
 				});
 			} catch (e) {
 				console.warn("[dsh-heartbeat] plugins.bundle.config 注册失败，降级到 settings.section：" + ((e && e.message) || e));

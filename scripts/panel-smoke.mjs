@@ -105,7 +105,10 @@ const failures = [];
 const check = (ok, label) => { if (!ok) failures.push(label); };
 
 check(slotName === "plugins.bundle.config", "槽位名应为 plugins.bundle.config，实际 " + slotName);
-check(regOpts && regOpts.key === PKG.name, "注册 key 应为包名 " + PKG.name + "，实际 " + (regOpts && regOpts.key));
+// 槽位 key 必须等于宿主报的 bundle 名（去掉 npm scope 的短名），不是完整包名：
+// plugin-manager 用 ledger.bundles.has(pkg.name) 判定，而 pkg.name 来自 Host 的 bundle.name。
+const BUNDLE_NAME = PKG.name.includes("/") ? PKG.name.slice(PKG.name.indexOf("/") + 1) : PKG.name;
+check(regOpts && regOpts.key === BUNDLE_NAME, "注册 key 应为 bundle 名 " + BUNDLE_NAME + "，实际 " + (regOpts && regOpts.key));
 check(!injectErr, "槽位注入抛错：" + (injectErr && (injectErr.message || injectErr)));
 if (injectErr) { console.log(JSON.stringify({ ok: false, failures }, null, 2)); process.exit(1); }
 
