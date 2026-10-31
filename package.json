@@ -22,6 +22,7 @@
     "registry": "https://registry.npmjs.org"
   },
   "type": "module",
+  "icon": "./icon.svg",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -35,7 +36,8 @@
     },
     "./client": "./client.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "dist",
@@ -43,6 +45,8 @@
     "assets",
     "client.js",
     "cordis.patch.yml",
+    "icon.svg",
+    "locale",
     "README.md",
     "LICENSE"
   ],
@@ -50,18 +54,18 @@
     "node": ">=22.19.0"
   },
   "os": [
-    "win32"
+    "win32",
+    "linux",
+    "darwin"
   ],
   "dependencies": {
-    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2 || ^0.1.5-rc.2 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.1-rc.1 || ^0.2.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2 || ^0.1.5-rc.2 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.1-rc.1 || ^0.2.1-rc.2"
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2 || ^0.1.5-rc.2 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.1-rc.1 || ^0.2.1-rc.2 || ^0.2.1-rc.3 || ^0.2.1-rc.4 || ^0.2.1-rc.5"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@types/node": "^24.0.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",

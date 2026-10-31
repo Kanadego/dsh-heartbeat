@@ -22,7 +22,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-W6HQI33C.js";
+} from "./chunk-LPPRI53J.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -33,7 +33,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-WNYIYEJR.js";
+} from "./chunk-63E5OYSI.js";
 import {
   resolveFocusUntil
 } from "./chunk-LQKOYTRL.js";
@@ -43,10 +43,10 @@ import {
   inboxDrain,
   inboxFilePath,
   inboxRemoveIds
-} from "./chunk-DZ7YCFGX.js";
+} from "./chunk-KZLVR4J7.js";
 import {
   snapshotIfDue
-} from "./chunk-DC5HMCJC.js";
+} from "./chunk-DLOYERAK.js";
 import {
   appendAuditLine,
   applyOpsToDoc,
@@ -60,7 +60,7 @@ import {
   readAuditLines,
   readJournalTexts,
   runDeterministicAging
-} from "./chunk-544QOJN5.js";
+} from "./chunk-ECXYNTEV.js";
 import {
   decryptFile,
   encryptFile,
@@ -71,7 +71,7 @@ import {
   saveJson,
   upgradeOneLegacyVaultFile,
   writeText
-} from "./chunk-AKIJ4LS2.js";
+} from "./chunk-M72T5MZU.js";
 import {
   atomicWriteJsonSync,
   burnFileSync
@@ -1218,7 +1218,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
       rejected,
       entries: [...report.entries ?? [], ...aged.entries]
     });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-YFX3DV5C.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-MAABBHC4.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -2167,7 +2167,7 @@ async function observeBoundSessions(bc) {
   const { deps, now } = bc;
   const { guard, paths } = deps;
   const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
-  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-OWBK6PE2.js");
+  const { inboxAppend, inboxFilePath: inboxFilePath2 } = await import("./inbox-ZLX2MH7A.js");
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
@@ -3104,4 +3104,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-OZB6RZZC.js.map
+//# sourceMappingURL=chunk-XCMGPIUQ.js.map

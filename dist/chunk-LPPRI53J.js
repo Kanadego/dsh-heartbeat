@@ -3,10 +3,10 @@ import {
   loadPool,
   normalizeCategory,
   seedsFilePath
-} from "./chunk-WNYIYEJR.js";
+} from "./chunk-63E5OYSI.js";
 import {
   appendAuditLine
-} from "./chunk-544QOJN5.js";
+} from "./chunk-ECXYNTEV.js";
 import {
   loadEncryptedText,
   loadJson,
@@ -15,7 +15,7 @@ import {
   saveJson,
   workspace,
   writeText
-} from "./chunk-AKIJ4LS2.js";
+} from "./chunk-M72T5MZU.js";
 import {
   atomicWriteJsonSync
 } from "./chunk-IBBAISSW.js";
@@ -361,6 +361,9 @@ import path4 from "path";
 import { execFile } from "child_process";
 function runPowerShell(args, timeoutMs, signal) {
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: "", stderr: "aborted" });
+  if (process.platform !== "win32") {
+    return Promise.resolve({ status: 1, stdout: "", stderr: `powershell unavailable on ${process.platform}` });
+  }
   return new Promise((resolve) => {
     let settled = false;
     const done = (r) => {
@@ -596,4 +599,4 @@ export {
   buildWeeklyPrompt,
   renderTemplateReport
 };
-//# sourceMappingURL=chunk-W6HQI33C.js.map
+//# sourceMappingURL=chunk-LPPRI53J.js.map

@@ -381,6 +381,13 @@ var V2_AAD = Buffer.concat([MAGIC_V22, Buffer.from([V2_VERSION])]);
 var KEY_BYTES = 32;
 var KEY_FILE_NAME = "vault.key";
 var VAULT_TIMEOUT_MS = 3e4;
+var platformOverride = null;
+function vaultPlatform() {
+  return platformOverride ?? process.platform;
+}
+function dpapiAvailable() {
+  return vaultPlatform() === "win32";
+}
 var cachedScriptPath = null;
 function vaultScriptPath() {
   if (cachedScriptPath) return cachedScriptPath;
@@ -396,6 +403,11 @@ function tmpEncName(target) {
   return path4.join(workspace().tmpDir, `.${path4.basename(target)}.${randomUUID().slice(0, 8)}.enc`);
 }
 function runVault(guard, args) {
+  if (!dpapiAvailable()) {
+    throw new Error(
+      `vault: ${args[0]} needs Windows DPAPI, which ${vaultPlatform()} does not have \u2014 KHBV1 containers are Windows-only and heartbeat data does not migrate across platforms`
+    );
+  }
   const r = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", vaultScriptPath(), ...args],
@@ -483,6 +495,18 @@ function decodeKeyFile(guard, file) {
       `vault: ${file} is an AES container, but the master key cannot be stored AES-encrypted \u2014 restore it from a backup or re-import the data`
     );
   }
+  if (!dpapiAvailable()) {
+    if (kind === "v1") {
+      throw new Error(
+        `vault: ${file} is a DPAPI (KHBV1) container \u2014 the master key was created on Windows and cannot be unwrapped on ${vaultPlatform()}; heartbeat data does not migrate across platforms, so start a fresh data dir here`
+      );
+    }
+    const key = fs5.readFileSync(file);
+    if (key.length !== KEY_BYTES) {
+      throw new Error(`vault: master key has ${key.length} bytes, expected ${KEY_BYTES}`);
+    }
+    return key;
+  }
   if (kind !== "v1") throw new Error(`vault: ${file} is not a DPAPI container (not a usable master key)`);
   const tmp = tmpPlainName(file);
   try {
@@ -492,6 +516,20 @@ function decodeKeyFile(guard, file) {
       throw new Error(`vault: master key has ${key.length} bytes, expected ${KEY_BYTES}`);
     }
     return key;
+  } finally {
+    burnFileSync(tmp);
+  }
+}
+function publishPlainKeyFile(file, key) {
+  const tmp = tmpPlainName(file);
+  try {
+    fs5.writeFileSync(tmp, key, { mode: 384 });
+    if (!fs5.readFileSync(tmp).equals(key)) throw new Error("vault: master key round-trip mismatch");
+    fs5.renameSync(tmp, file);
+    try {
+      fs5.chmodSync(file, 384);
+    } catch {
+    }
   } finally {
     burnFileSync(tmp);
   }
@@ -509,6 +547,11 @@ function masterKey(guard) {
   try {
     created = withFileLock(file, () => {
       if (fs5.existsSync(file)) return null;
+      if (!dpapiAvailable()) {
+        const key = randomBytes(KEY_BYTES);
+        publishPlainKeyFile(file, key);
+        return key;
+      }
       const plain = tmpPlainName(file);
       const enc = tmpEncName(file);
       try {
@@ -677,4 +720,4 @@ export {
   upgradeVaultTree,
   upgradeOneLegacyVaultFile
 };
-//# sourceMappingURL=chunk-AKIJ4LS2.js.map
+//# sourceMappingURL=chunk-M72T5MZU.js.map

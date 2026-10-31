@@ -8,8 +8,11 @@ on:
 
 jobs:
   check:
-    # Windows-only plugin (`os: ["win32"]`) whose vault uses DPAPI, so the test
-    # suite can only run on a Windows runner.
+    # Windows runner. The plugin now declares `os: ["win32","linux","darwin"]`, but
+    # the suite still creates real KHBV1 containers through vault.ps1, so it can
+    # only run where PowerShell exists. The non-Windows vault path (raw 0600 key,
+    # refusing DPAPI containers) is covered in-process via setVaultPlatformForTest
+    # instead of a separate Linux job.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

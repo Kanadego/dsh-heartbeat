@@ -36,11 +36,19 @@ export const name = 'heartbeat';
 /**
  * Host services required by the orchestrator (verified present in
  * DSH 0.1.1-rc.2 via hb-probe: agents service + agent/created + followup).
- * `settings` = the host SettingsProvider service (0.1.5): the web card's
- * rhythm edits live there. 0.1.5's strict resolution refuses undeclared
- * service access, so the name must be declared here.
+ *
+ * `settings` is deliberately NOT declared here (v2.1.0, from issue #6's follow-up):
+ * a module-level `inject` entry is a HARD dependency — cordis keeps the plugin
+ * at `pending (waiting for service: settings)` for as long as the host does not
+ * provide it, and on DSH desktop 0.2.1-rc.3 that pending plugin was enough to
+ * take the shell down ("Web RPC failed" in openInitialWindow, then a crash dialog
+ * whose three buttons did nothing). The settings form is a convenience, not a
+ * prerequisite: rhythm values come from data/settings/ui.json plus the apply-time
+ * `config` either way. It is attached lazily through `ctx.inject(['settings'], …)`
+ * below, so the heartbeat starts on `agents` alone and picks the form up whenever
+ * the service appears.
  */
-export const inject = ['agents', 'settings'];
+export const inject = ['agents'];
 
 export const Config = z.object({
   /** Override the runtime data dir (workspace guard boundary). Empty = default (<packageRoot>/data). */
@@ -282,63 +290,35 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       ctx.logger.warn('heartbeat: settings override failed (%s)', String(e).slice(0, 120));
     }
   };
-  void (async () => {
+  // M6: settings form (namespace 'heartbeat'). Attached lazily through
+  // `ctx.inject` because the service is no longer in the module-level `inject`
+  // (see above): the callback runs once `settings` exists and its effects are
+  // disposed if the service ever goes away, while the heartbeat itself keeps
+  // running on `agents` alone.
+  //
+  // DSH 0.1.7 and later expose `SettingsForms`: plugin config forms render from
+  // the Config schema on the Plugins page, and an edit RELOADS this plugin (timers
+  // dispose via ctx.effect, so reloads are safe) — nothing to register here, the
+  // apply-time `config` is already the live source. The 0.1.5 `installSection`
+  // generation and the 0.1.1/0.1.2 free-function fallback are gone: they were
+  // reachable only on hosts the package no longer supports (README: DSH 0.2.1+),
+  // and they were the only reason `@deepseek-ai/dsh-settings` was a dependency.
+  ctx.inject(['settings'], (settingsCtx: unknown) => {
     try {
-      // Three settings generations, feature-detected in order:
-      //  - 0.1.5 (dsh-settings 0.1.5-rc.2): the free function moved onto the
-      //    host `settings` service as the `installSection` METHOD.
-      //  - 0.1.7+: the service is `SettingsForms` — plugin config forms render
-      //    from the Config schema on the Plugins page, and an edit RELOADS
-      //    this plugin (timers dispose via ctx.effect, so reloads are safe).
-      //    Nothing to register; the apply-time `config` is the live source.
-      //  - 0.1.1/0.1.2 era hosts: the free function still exists on the
-      //    package. Only consulted when NO settings service is present —
-      //    running it against a 0.1.7 host would poke foreign internals.
-      const settingsService = (ctx as unknown as { get(name: string): unknown }).get('settings') as
-        | {
-            installSection(
-              owner: unknown,
-              ns: string,
-              schema: unknown,
-              entry: unknown,
-              hooks: { setSource(fn: () => unknown): void; onChange(): void },
-            ): void;
-            describe?(options?: unknown): unknown;
-          }
+      const settingsService = (settingsCtx as { get(name: string): unknown }).get('settings') as
+        | { describe?(options?: unknown): unknown }
         | undefined;
-      if (settingsService && typeof settingsService.installSection === 'function') {
-        settingsService.installSection(ctx, 'heartbeat', Config, config, {
-          setSource: (current) => { sectionSource = current as () => HeartbeatConfig; },
-          onChange: () => { applySettingsOverrides(); },
-        });
-        applySettingsOverrides();
-        ctx.logger.info('heartbeat: settings section registered (0.1.5 settings service)');
-        return;
-      }
       if (settingsService && typeof settingsService.describe === 'function') {
         sectionSource = () => config;
         applySettingsOverrides();
-        ctx.logger.info('heartbeat: config served by the 0.1.7 profile form (edits reload the plugin)');
+        ctx.logger.info('heartbeat: config served by the profile settings form (edits reload the plugin)');
         return;
       }
-      const legacy = (await import('@deepseek-ai/dsh-settings')) as {
-        settingsNamespace?(ns: string): string;
-        installSettingsSection?(ctx: unknown, ns: string, schema: unknown, entry: unknown, hooks: object): void;
-      };
-      if (typeof legacy.installSettingsSection === 'function' && typeof legacy.settingsNamespace === 'function') {
-        legacy.installSettingsSection(ctx as never, legacy.settingsNamespace('heartbeat'), Config as never, config as never, {
-          setSource: (current: unknown) => { sectionSource = current as () => HeartbeatConfig; },
-          onChange: () => { applySettingsOverrides(); },
-        });
-        applySettingsOverrides();
-        ctx.logger.info('heartbeat: settings section registered (legacy 0.1.1 settings)');
-        return;
-      }
-      ctx.logger.warn('heartbeat: no settings integration found; policy file values only');
+      ctx.logger.warn('heartbeat: settings service present but not a SettingsForms instance; policy file values only');
     } catch (e) {
-      ctx.logger.warn('heartbeat: settings section unavailable (%s)', String(e).slice(0, 120));
+      ctx.logger.warn('heartbeat: settings form unavailable (%s)', String(e).slice(0, 120));
     }
-  })();
+  });
 
   appendAuditLine(
     guard.assert(paths.logsDir + '/heartbeat.jsonl'),

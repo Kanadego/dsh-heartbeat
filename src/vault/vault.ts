@@ -10,6 +10,13 @@
 //          <dataDir>/vault.key, so the only thing that still needs DPAPI is
 //          unwrapping that one file, and that happens once per process (cached).
 //
+// Platform support (v2.1.0): DPAPI only exists on Windows. Everywhere else the
+// master key file holds the raw 32 key bytes, published 0600 and owned by the
+// account the plugin runs as — the OS keyring is not available to lean on, so
+// filesystem permissions are the whole guard. KHBV1 containers are Windows-only
+// and are NOT portable: opening one off-Windows throws a plain error instead of
+// spawning a PowerShell that does not exist.
+//
 // Migration contract (v2.0): an upgraded plugin keeps opening everything an
 // older version wrote — reads accept BOTH containers, while writes always
 // produce KHBV2. Legacy files are rewritten in place by upgradeVaultTree(),
@@ -46,6 +53,24 @@ const KEY_BYTES = 32;
 const KEY_FILE_NAME = 'vault.key';
 const VAULT_TIMEOUT_MS = 30_000;
 
+/** Test seam: what the vault should pretend to run on (null = the real one). */
+let platformOverride: NodeJS.Platform | null = null;
+
+/** Force a platform for tests (and drop the cached key, which is keyed by it). */
+export function setVaultPlatformForTest(platform: NodeJS.Platform | null): void {
+  platformOverride = platform;
+  cachedMasterKey = null;
+}
+
+function vaultPlatform(): NodeJS.Platform {
+  return platformOverride ?? process.platform;
+}
+
+/** DPAPI — and therefore every KHBV1 container — exists only on Windows. */
+function dpapiAvailable(): boolean {
+  return vaultPlatform() === 'win32';
+}
+
 let cachedScriptPath: string | null = null;
 
 function vaultScriptPath(): string {
@@ -65,6 +90,11 @@ function tmpEncName(target: string): string {
 }
 
 function runVault(guard: PathGuard, args: string[]): void {
+  if (!dpapiAvailable()) {
+    throw new Error(
+      `vault: ${args[0]} needs Windows DPAPI, which ${vaultPlatform()} does not have — KHBV1 containers are Windows-only and heartbeat data does not migrate across platforms`,
+    );
+  }
   const r = spawnSync(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', vaultScriptPath(), ...args],
@@ -184,6 +214,18 @@ function decodeKeyFile(guard: PathGuard, file: string): Buffer {
       `vault: ${file} is an AES container, but the master key cannot be stored AES-encrypted — restore it from a backup or re-import the data`,
     );
   }
+  if (!dpapiAvailable()) {
+    if (kind === 'v1') {
+      throw new Error(
+        `vault: ${file} is a DPAPI (KHBV1) container — the master key was created on Windows and cannot be unwrapped on ${vaultPlatform()}; heartbeat data does not migrate across platforms, so start a fresh data dir here`,
+      );
+    }
+    const key = fs.readFileSync(file);
+    if (key.length !== KEY_BYTES) {
+      throw new Error(`vault: master key has ${key.length} bytes, expected ${KEY_BYTES}`);
+    }
+    return key;
+  }
   if (kind !== 'v1') throw new Error(`vault: ${file} is not a DPAPI container (not a usable master key)`);
   const tmp = tmpPlainName(file);
   try {
@@ -193,6 +235,28 @@ function decodeKeyFile(guard: PathGuard, file: string): Buffer {
       throw new Error(`vault: master key has ${key.length} bytes, expected ${KEY_BYTES}`);
     }
     return key;
+  } finally {
+    burnFileSync(tmp);
+  }
+}
+
+/**
+ * Publish a fresh master key on a host without DPAPI: the 32 raw bytes ARE the
+ * file. Written to scratch first and renamed, so a concurrent reader sees either
+ * no key or a complete one, and 0600 is applied before the bytes land in place.
+ */
+function publishPlainKeyFile(file: string, key: Buffer): void {
+  const tmp = tmpPlainName(file);
+  try {
+    fs.writeFileSync(tmp, key, { mode: 0o600 });
+    // Re-open what we are about to publish: a key nobody can read is dead data.
+    if (!fs.readFileSync(tmp).equals(key)) throw new Error('vault: master key round-trip mismatch');
+    fs.renameSync(tmp, file);
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      /* best effort: the mode was already set at creation time */
+    }
   } finally {
     burnFileSync(tmp);
   }
@@ -223,28 +287,33 @@ export function masterKey(guard: PathGuard): Buffer {
   let created: Buffer | null;
   try {
     created = withFileLock(file, (): Buffer | null => {
-    if (fs.existsSync(file)) return null; // another process created it first
-    const plain = tmpPlainName(file);
-    const enc = tmpEncName(file);
-    try {
-      const key = randomBytes(KEY_BYTES);
-      fs.writeFileSync(plain, key);
-      legacyProtect(guard, plain, enc);
-      // Open the container we are about to publish: a master key nobody can
-      // unwrap is dead data, so verify the round trip before it goes live.
-      const check = tmpPlainName(file);
-      try {
-        legacyUnprotect(guard, enc, check);
-        if (!fs.readFileSync(check).equals(key)) throw new Error('vault: master key round-trip mismatch');
-      } finally {
-        burnFileSync(check);
+      if (fs.existsSync(file)) return null; // another process created it first
+      if (!dpapiAvailable()) {
+        const key = randomBytes(KEY_BYTES);
+        publishPlainKeyFile(file, key);
+        return key;
       }
-      fs.renameSync(enc, file);
-      return key;
-    } finally {
-      burnFileSync(plain);
-      fs.rmSync(enc, { force: true });
-    }
+      const plain = tmpPlainName(file);
+      const enc = tmpEncName(file);
+      try {
+        const key = randomBytes(KEY_BYTES);
+        fs.writeFileSync(plain, key);
+        legacyProtect(guard, plain, enc);
+        // Open the container we are about to publish: a master key nobody can
+        // unwrap is dead data, so verify the round trip before it goes live.
+        const check = tmpPlainName(file);
+        try {
+          legacyUnprotect(guard, enc, check);
+          if (!fs.readFileSync(check).equals(key)) throw new Error('vault: master key round-trip mismatch');
+        } finally {
+          burnFileSync(check);
+        }
+        fs.renameSync(enc, file);
+        return key;
+      } finally {
+        burnFileSync(plain);
+        fs.rmSync(enc, { force: true });
+      }
     });
   } catch (e) {
     if (e instanceof FileLockTimeoutError && fs.existsSync(file)) {

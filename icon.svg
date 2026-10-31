@@ -1,0 +1,11 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M3.5 18H13.4L14.6 21.2L16 8.8L20 26.6L22 18H32.5"
+        stroke="url(#heartbeat-pulse)" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" />
+  <defs>
+    <linearGradient id="heartbeat-pulse" x1="3.5" y1="18" x2="32.5" y2="18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D2454F" />
+      <stop offset="0.52" stop-color="#E2753C" />
+      <stop offset="1" stop-color="#E9B44C" />
+    </linearGradient>
+  </defs>
+</svg>

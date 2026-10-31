@@ -22,7 +22,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-OZB6RZZC.js";
+} from "./chunk-XCMGPIUQ.js";
 import {
   EXCERPT_HEADER,
   appendExcerpt,
@@ -37,7 +37,7 @@ import {
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-LZAUJN35.js";
+} from "./chunk-HE6IF6OU.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -47,7 +47,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-W6HQI33C.js";
+} from "./chunk-LPPRI53J.js";
 import {
   getRuntime,
   setRuntime
@@ -60,24 +60,24 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-WNYIYEJR.js";
+} from "./chunk-63E5OYSI.js";
 import {
   clearFocusState,
   readFocusState,
   writeFocusState
 } from "./chunk-LQKOYTRL.js";
-import "./chunk-DZ7YCFGX.js";
-import "./chunk-DC5HMCJC.js";
+import "./chunk-KZLVR4J7.js";
+import "./chunk-DLOYERAK.js";
 import {
   appendAuditLine,
   loadProfile,
   profileFilePath
-} from "./chunk-544QOJN5.js";
+} from "./chunk-ECXYNTEV.js";
 import {
   dshHomeDir,
   initWorkspace,
   writeText
-} from "./chunk-AKIJ4LS2.js";
+} from "./chunk-M72T5MZU.js";
 import {
   addBinding,
   loadBindings,
@@ -723,7 +723,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-TQ5PB2DI.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-XFZU5EBE.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
@@ -735,7 +735,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-TQ5PB2DI.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-XFZU5EBE.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");
@@ -1200,7 +1200,7 @@ ${items.join("\n")}` };
 
 // src/index.ts
 var name = "heartbeat";
-var inject = ["agents", "settings"];
+var inject = ["agents"];
 var Config = z.object({
   /** Override the runtime data dir (workspace guard boundary). Empty = default (<packageRoot>/data). */
   dataDir: z.string().default(""),
@@ -1358,47 +1358,20 @@ function apply(ctx, config = {}) {
       ctx.logger.warn("heartbeat: settings override failed (%s)", String(e).slice(0, 120));
     }
   };
-  void (async () => {
+  ctx.inject(["settings"], (settingsCtx) => {
     try {
-      const settingsService = ctx.get("settings");
-      if (settingsService && typeof settingsService.installSection === "function") {
-        settingsService.installSection(ctx, "heartbeat", Config, config, {
-          setSource: (current) => {
-            sectionSource = current;
-          },
-          onChange: () => {
-            applySettingsOverrides();
-          }
-        });
-        applySettingsOverrides();
-        ctx.logger.info("heartbeat: settings section registered (0.1.5 settings service)");
-        return;
-      }
+      const settingsService = settingsCtx.get("settings");
       if (settingsService && typeof settingsService.describe === "function") {
         sectionSource = () => config;
         applySettingsOverrides();
-        ctx.logger.info("heartbeat: config served by the 0.1.7 profile form (edits reload the plugin)");
+        ctx.logger.info("heartbeat: config served by the profile settings form (edits reload the plugin)");
         return;
       }
-      const legacy = await import("@deepseek-ai/dsh-settings");
-      if (typeof legacy.installSettingsSection === "function" && typeof legacy.settingsNamespace === "function") {
-        legacy.installSettingsSection(ctx, legacy.settingsNamespace("heartbeat"), Config, config, {
-          setSource: (current) => {
-            sectionSource = current;
-          },
-          onChange: () => {
-            applySettingsOverrides();
-          }
-        });
-        applySettingsOverrides();
-        ctx.logger.info("heartbeat: settings section registered (legacy 0.1.1 settings)");
-        return;
-      }
-      ctx.logger.warn("heartbeat: no settings integration found; policy file values only");
+      ctx.logger.warn("heartbeat: settings service present but not a SettingsForms instance; policy file values only");
     } catch (e) {
-      ctx.logger.warn("heartbeat: settings section unavailable (%s)", String(e).slice(0, 120));
+      ctx.logger.warn("heartbeat: settings form unavailable (%s)", String(e).slice(0, 120));
     }
-  })();
+  });
   appendAuditLine(
     guard.assert(paths.logsDir + "/heartbeat.jsonl"),
     { event: "plugin_init", dataDir: paths.dataDir }

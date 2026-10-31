@@ -25,6 +25,13 @@ export interface PsResult {
  *  and the "never rejects" contract stays intact. */
 export function runPowerShell(args: string[], timeoutMs: number, signal?: AbortSignal): Promise<PsResult> {
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'aborted' });
+  // v2.1.0: every caller of this module is a Windows-only probe (idle seconds,
+  // foreground window, toasts, screen capture). Off Windows there is no binary
+  // to spawn, so answer "probe failed" immediately — same degradation the
+  // callers already implement, without paying a spawn attempt per beat.
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ status: 1, stdout: '', stderr: `powershell unavailable on ${process.platform}` });
+  }
   return new Promise((resolve) => {
     let settled = false;
     const done = (r: PsResult): void => {

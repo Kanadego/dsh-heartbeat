@@ -14,6 +14,8 @@ import {
   loadEncryptedText,
   loadJson,
   resetVaultKeyCacheForTest,
+  setVaultPlatformForTest,
+  masterKey,
   saveEncryptedText,
   saveJson,
   upgradeOneLegacyVaultFile,
@@ -34,6 +36,7 @@ beforeEach(() => {
   resetWorkspaceForTest();
   initWorkspace();
   resetVaultKeyCacheForTest();
+  setVaultPlatformForTest(null);
 });
 
 after(() => {
@@ -227,4 +230,67 @@ test('crash debris in data/tmp is burned on first use, live scratch is left alon
   saveJson(guard, path.join(workspace().dataDir, 'seeds.json'), { v: 1 });
   assert.equal(fs.existsSync(stale), false, 'crash debris must be burned, not just unlinked');
   assert.equal(fs.existsSync(live), true, 'a fresh scratch file belongs to someone else');
+});
+test('off Windows the master key is a raw 0600 file and AES round-trips with it', () => {
+  setVaultPlatformForTest('linux');
+  try {
+    const guard = createPathGuard(workspace().dataDir);
+    const key = masterKey(guard);
+    assert.equal(key.length, 32);
+    // No DPAPI container: the file is the key itself.
+    assert.equal(containerKind(vaultKeyPath()), 'plain');
+    assert.deepEqual(fs.readFileSync(vaultKeyPath()), key);
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(vaultKeyPath()).mode & 0o777, 0o600);
+    }
+    const file = path.join(workspace().dataDir, 'state.json');
+    saveJson(guard, file, { hello: 'linux', n: 7 });
+    assert.equal(containerKind(file), 'v2');
+    assert.deepEqual(loadJson(guard, file), { hello: 'linux', n: 7 });
+    // A "fresh process" (cache dropped) re-reads the same key from disk.
+    resetVaultKeyCacheForTest();
+    assert.deepEqual(loadJson(guard, file), { hello: 'linux', n: 7 });
+  } finally {
+    setVaultPlatformForTest(null);
+    resetVaultKeyCacheForTest();
+  }
+});
+
+test('off Windows a DPAPI master key is refused instead of silently replaced', () => {
+  setVaultPlatformForTest('linux');
+  try {
+    const guard = createPathGuard(workspace().dataDir);
+    fs.mkdirSync(workspace().dataDir, { recursive: true });
+    // A key file that came from a Windows install.
+    fs.writeFileSync(vaultKeyPath(), Buffer.concat([Buffer.from('KHBV1', 'ascii'), Buffer.from('dpapi-blob')]));
+    assert.throws(
+      () => saveJson(guard, path.join(workspace().dataDir, 'gate.json'), { a: 1 }),
+      /cannot be unwrapped on linux/,
+    );
+    // The foreign key is left exactly as it was: generating a new one would
+    // orphan every container the old one wrote.
+    assert.equal(containerKind(vaultKeyPath()), 'v1');
+  } finally {
+    setVaultPlatformForTest(null);
+    resetVaultKeyCacheForTest();
+  }
+});
+
+test('off Windows a legacy payload reports "Windows-only" instead of spawning PowerShell', () => {
+  setVaultPlatformForTest('linux');
+  try {
+    const guard = createPathGuard(workspace().dataDir);
+    saveJson(guard, path.join(workspace().dataDir, 'gate.json'), { a: 1 }); // creates the linux key
+    const legacy = path.join(workspace().dataDir, 'old.json');
+    fs.writeFileSync(legacy, Buffer.concat([Buffer.from('KHBV1', 'ascii'), Buffer.from('dpapi-blob')]));
+    assert.throws(() => loadJson(guard, legacy), /KHBV1 containers are Windows-only/);
+    // The maintenance sweep reports it as failed but keeps going.
+    const r = upgradeVaultTree(guard, workspace().dataDir);
+    assert.equal(r.upgraded, 0);
+    assert.equal(r.failed.some((f) => f.file === 'old.json'), true);
+    assert.equal(containerKind(legacy), 'v1');
+  } finally {
+    setVaultPlatformForTest(null);
+    resetVaultKeyCacheForTest();
+  }
 });

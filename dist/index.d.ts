@@ -168,9 +168,17 @@ declare const name = "heartbeat";
 /**
  * Host services required by the orchestrator (verified present in
  * DSH 0.1.1-rc.2 via hb-probe: agents service + agent/created + followup).
- * `settings` = the host SettingsProvider service (0.1.5): the web card's
- * rhythm edits live there. 0.1.5's strict resolution refuses undeclared
- * service access, so the name must be declared here.
+ *
+ * `settings` is deliberately NOT declared here (v2.1.0, from issue #6's follow-up):
+ * a module-level `inject` entry is a HARD dependency — cordis keeps the plugin
+ * at `pending (waiting for service: settings)` for as long as the host does not
+ * provide it, and on DSH desktop 0.2.1-rc.3 that pending plugin was enough to
+ * take the shell down ("Web RPC failed" in openInitialWindow, then a crash dialog
+ * whose three buttons did nothing). The settings form is a convenience, not a
+ * prerequisite: rhythm values come from data/settings/ui.json plus the apply-time
+ * `config` either way. It is attached lazily through `ctx.inject(['settings'], …)`
+ * below, so the heartbeat starts on `agents` alone and picks the form up whenever
+ * the service appears.
  */
 declare const inject: string[];
 declare const Config: z<Schemastery.ObjectS<NoInfer<{
