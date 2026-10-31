@@ -2,40 +2,40 @@
 
 > 让 DeepSeek Harness 的 agent 拥有持续存在感的心跳插件：她按节律自己醒来，维护记忆与画像、感知你的忙闲、按兴趣闲逛看新东西、**把没说完的话带过下一拍**，然后**按分寸决定开不开口**——开口要有真实来处，沉默要有具体理由。
 
-[![host](https://img.shields.io/badge/DSH-0.1.2--rc.1%20%7C%200.2.1--rc.2-blue)](https://github.com/deepseek-ai/deepseek-harness)
+[![host](https://img.shields.io/badge/DSH-0.1.2--rc.1%20%7C%200.2.1--rc.5-blue)](https://github.com/deepseek-ai/deepseek-harness)
 [![npm](https://img.shields.io/npm/v/@kanadego/dsh-heartbeat)](https://www.npmjs.com/package/@kanadego/dsh-heartbeat)
 [![downloads](https://img.shields.io/npm/dm/@kanadego/dsh-heartbeat)](https://www.npmjs.com/package/@kanadego/dsh-heartbeat)
-[![platform](https://img.shields.io/badge/platform-Windows-lightgrey)]()
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)]()
 [![license](https://img.shields.io/badge/license-MIT-green)]()
 
 ---
 
 ## 一分钟了解
 
-全部能力都收在 DSH 设置页的**心跳卡片**里，日常使用零命令行：
+装好之后，全部能力都收在插件管理页的**心跳面板**里，日常使用零命令行：
 
-| 设置卡总览                              | 素材池                               |
-| --------------------------------------- | ------------------------------------ |
-| ![](docs/screenshots/card-overview.png) | ![](docs/screenshots/card-seeds.png) |
+| 心跳状态                                  | 会话绑定                                    |
+| ----------------------------------------- | ------------------------------------------- |
+| ![](docs/screenshots/panel-status.png)    | ![](docs/screenshots/panel-sessions.png)    |
 
-| 用户画像（只读）                       | 节律配置                              |
-| -------------------------------------- | ------------------------------------- |
-| ![](docs/screenshots/card-profile.png) | ![](docs/screenshots/card-rhythm.png) |
+| 素材池                                    | 用户画像（只读）                            |
+| ----------------------------------------- | ------------------------------------------- |
+| ![](docs/screenshots/panel-seeds.png)     | ![](docs/screenshots/panel-profile.png)     |
 
 <details>
-<summary><b>展开看其余分区：会话绑定 / 兴趣范围 / 账本 · 摘抄本 · 周报 · 换机迁移</b></summary>
+<summary><b>展开看其余分区：兴趣范围 / 周报 / 节律 · 专注模式 · 换机迁移</b></summary>
 
-| 会话绑定                                | 兴趣范围                                 |
-| --------------------------------------- | ---------------------------------------- |
-| ![](docs/screenshots/card-sessions.png) | ![](docs/screenshots/card-interests.png) |
+| 兴趣范围                                    | 周报                                      |
+| ------------------------------------------- | ----------------------------------------- |
+| ![](docs/screenshots/panel-interests.png)   | ![](docs/screenshots/panel-weekly.png)    |
 
-| 账本 · 摘抄本 · 周报                          | 换机迁移                                |
-| -------------------------------------------- | --------------------------------------- |
-| ![](docs/screenshots/card-ledger-excerpt-weekly.png) | ![](docs/screenshots/card-migrate.png) |
+设置页把节律、专注模式、换机迁移、账本与摘抄本入口收在一起：
+
+<img src="docs/screenshots/panel-settings.png" width="620" alt="设置：节律配置 / 时间与状态栏 / 表达 / 专注模式 / 换机迁移 / 账本与摘抄本">
 
 </details>
 
-> 截图为 v2.0.0。画像与会话绑定两张里的条目文字已打码。
+> 截图为 v2.1.0。画像与会话绑定两张里的条目文字已打码。
 
 **它想解决的三件事**：
 
@@ -66,6 +66,12 @@ dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 ### 数据放在哪
 
 数据默认住在**包外**：`<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`），重装与升级都不会碰它。老版本装在包目录里的 `data/` 会在首次启动时自动搬过去（搬迁前先备份、逐文件校验通过才删原件，见下节「卸载」）。要换位置就用插件 config 的 `dataDir`，或环境变量 `HEARTBEAT_DATA_DIR`。
+
+### 平台支持
+
+**Windows** 上全部功能可用。**v2.1.0 起 Linux / macOS 也能跑起来**：心跳循环、表达与投递、时间注入、心事匣 / 账本 / 摘抄本、素材池、周报、设置面板与 RPC 通道都照常；依赖 PowerShell 的那几项——截屏、空闲检测、锁屏检测、前台窗口探测、桌面通知——在这两个平台上不可用，插件会直接按「探针失败」降级，不会卡住某一跳。代价是忙闲判定缺席：静默时段、每日上限、开口冷却照常生效，但「他大概在忙」这类窗口判断不会触发。
+
+数据**不跨平台搬家**：`data/vault.key` 在 Windows 上由 DPAPI 保护，在 Linux / macOS 上是一份权限 0600 的密钥文件，两边互不相认。换平台就是重新开一份数据目录。
 
 ## 核心工作机制
 
@@ -146,7 +152,7 @@ dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 ### 数据 · 迁移 · 焚毁
 
 - **换机迁移**：一键打包画像/账本/素材池/周报为口令加密容器（卡片或 CLI），新机器导入自动用本机主密钥重加密。
-- **加密与焚毁**：敏感文件 **AES-256-GCM** 整文件加密，数据密钥由 **Windows DPAPI（CurrentUser）** 保管在 `data/vault.key`，只在进程启动解一次；旧版（1.x）留下的 DPAPI 容器照样能读，且在写入与每跳维护时自动改写成新格式（`vault upgrade` 一次全换）；一键焚毁运行时数据；模型出库仅限合并裁决的最小必要摘要。
+- **加密与焚毁**：敏感文件 **AES-256-GCM** 整文件加密，数据密钥由 **Windows DPAPI（CurrentUser）** 保管在 `data/vault.key`（Linux / macOS 上是权限 0600 的原始密钥文件），只在进程启动解一次；旧版（1.x）留下的 DPAPI 容器照样能读，且在写入与每跳维护时自动改写成新格式（`vault upgrade` 一次全换）；一键焚毁运行时数据；模型出库仅限合并裁决的最小必要摘要。
 
 ## Web 面板
 
@@ -202,6 +208,8 @@ dsh plugin --profile web add file:D:/path/to/dsh-heartbeat
 | 升级 `0.1.5` 后旧会话打不开（`unexpected member …` / `header version must be 3`）                | 会话格式 v3 迁移问题：前者用 `scripts/repair-v0-members.mjs`（预检→修复，自动备份）；后者首次访问会自动迁移，属正常                                                                                                                             |
 | 升级 `0.1.7` 后会话目录里多出 `.v4` 文件                                                         | 会话格式 V4 迁移的**正常**结果：首次访问该会话时转换，原 `.v3` 文件保留不删。注意这是**单向**的，降级回旧宿主可能读不了——升级前备份 `~/.dsh/sessions`                                                                                           |
 | 画像疑似损坏                                                                                     | `profile verify`（只报不修）→ `profile rebuild --check`（看 diff）→ `profile rebuild`（真重建）                                                                                                                                                 |
+| Linux 上第一跳就 `beat_error: vault spawn failed … powershell.exe ENOENT`                      | v2.1.0 之前的版本主密钥依赖 PowerShell，非 Windows 上必然失败：升级到 2.1.0 即可。此时 `data/vault.key` 里是一份 0600 的原始密钥。注意数据不跨平台——Windows 的数据目录搬到 Linux 是解不开的（会明确报错，不会假装成功）                                                                                                       |
+| 装完显示 `pending (waiting for service: settings)`，桌面上宿主起不来                          | v2.1.0 之前把 `settings` 写进了模块级 `inject`，宿主不提供这个服务时插件永远 pending，桌面端 0.2.1-rc.3 上会连带壳崩（`Web RPC failed` + 崩溃弹窗按钮无响应）。升级到 2.1.0：设置表单改成 `ctx.inject` 延迟挂载，只靠 `agents` 就能起。若仍 pending，检查 `agents` 服务是否在，而不是 `settings`                                     |
 
 </details>
 
@@ -252,7 +260,7 @@ node <插件目录>/dist/cli/index.js <命令>
 | 文件                                                                                                                                 | 内容                                                                                 | 状态                                     |
 | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------- |
 | `data/settings/`                                                                                                                     | 绑定、策略覆盖、节律配置（`ui.json`）、画像白名单、心跳状态（场景 + ≤30 字发言摘要） | 明文（用户设定要可手编）                 |
-| `data/vault.key`                                                                                                                     | 主密钥（AES 数据密钥，由 DPAPI 保护）                                                | 🔒 本机本账户可解；不随迁移包移动        |
+| `data/vault.key`                                                                                                                     | 主密钥（AES 数据密钥；Windows 由 DPAPI 保护，其他平台是 0600 的原始密钥文件）        | 🔒 本机本账户可解；不随迁移包移动；不跨平台 |
 | `data/seeds.jsonl`                                                                                                                   | 素材池                                                                               | 🔒 加密                                  |
 | `data/profile.*`                                                                                                                     | 画像三件套（journal / 物化视图 / 收件箱）                                            | 🔒 加密                                  |
 | `data/sent.json` / `data/browse.json` / `data/screen.*`                                                                              | 表达记录 / 浏览流状态 / 屏幕快照                                                     | 🔒 加密                                  |
@@ -265,7 +273,9 @@ node <插件目录>/dist/cli/index.js <命令>
 | `data/cursors.json` / `data/preference.json` / `data/seed_report.jsonl` / `data/profile_rhythm.json` / `data/time-inject-state.json` | 观察游标 / 话题偏好权重 / 素材报账流水 / 作息直方图 / 时间注入节流                   | 明文（只含编号、计数与聚合，无对话原文） |
 | `data/tmp/` / `data/exports/`                                                                                                        | 临时文件 / 画像导出                                                                  | 临时区                                   |
 
-加密分两层：数据用 **AES-256-GCM** 整文件加密（带认证，改一个字节就解不开也不会给出一半内容），数据密钥存在 `data/vault.key`，那一个文件由 **Windows DPAPI（CurrentUser 作用域）** 保护——所以本机本账户可自动解密使用，其他账户、其他机器、云同步副本都解不开。防的是他人 / 他机 / 误同步，不防同账户的恶意软件——那是操作系统边界的事。
+加密分两层：数据用 **AES-256-GCM** 整文件加密（带认证，改一个字节就解不开也不会给出一半内容），数据密钥存在 `data/vault.key`。在 Windows 上，那一个文件由 **Windows DPAPI（CurrentUser 作用域）** 保护——本机本账户可自动解密使用，其他账户、其他机器、云同步副本都解不开。防的是他人 / 他机 / 误同步，不防同账户的恶意软件——那是操作系统边界的事。
+
+**Linux / macOS 上没有 DPAPI**：`data/vault.key` 里就是那 32 字节密钥本身，靠文件权限（0600，只有运行插件的账户能读）守着——防的是「别人翻到这份数据」和「误同步」，防不住已经拿到你这个账户的同机进程，比 Windows 少一层系统钥匙串。也正因为两端密钥互不相认，**数据目录不跨平台搬家**：Windows 写的密钥到 Linux 解不开，`heartbeat vault status` 会如实报出来。
 
 1.x 写的文件用的是旧的 DPAPI 容器（`KHBV1`），v2.0 读得懂但写的是新容器（`KHBV2`）：升级插件不会让任何旧数据变成打不开的死文件。旧格式会自己换掉——任何一次写入都落成新容器，每一跳的维护相另外顺带把长期没动过的一个旧文件就地改写；想一次全换完，跑 `heartbeat vault upgrade`（`vault status` 看盘上各格式各有多少）。
 
@@ -284,7 +294,8 @@ node <插件目录>/dist/cli/index.js <命令>
 
 | 插件版本           | 适配的 DSH                  |
 | ------------------ | --------------------------- |
-| **v2.0.0**（当前） | `0.2.0-rc.1` – `0.2.1-rc.2` |
+| **v2.1.0**（当前） | `0.2.0-rc.1` – `0.2.1-rc.5` |
+| v2.0.0 – v2.0.1    | `0.2.0-rc.1` – `0.2.1-rc.2` |
 | v1.7.4 – v1.9.3    | `0.2.0-rc.1` – `0.2.0-rc.2` |
 | v1.7.2 – v1.7.3    | `0.1.7-rc.1` – `0.2.0-rc.1` |
 | v1.7.0 – v1.7.1    | `0.1.5-rc.2` – `0.1.7-rc.2` |
@@ -326,7 +337,7 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 <details open>
 <summary><b>v2.1.x</b></summary>
 
-### v2.1.0 · 未发布（专注模式 · 节律随机化 · 子代理不注入 · 闲逛去重）
+### v2.1.0 · 2026-10-31（原生面板 · 专注模式 · 节律随机化 · 子代理不注入 · 最小 Linux 支持）
 
 节律、暂停与闲逛三处的实际体验修整，外加一条只在子代理身上才看得到的注入泄漏。
 
@@ -335,6 +346,8 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **子代理会话不再被注入时间**：时间注入原先对所有 agent 生效，分身会话里也会冒出「当前本地时间…距上一条消息已过去…」。现在按会话头判定（`origin: subagent` / `delegationDepth > 0`，老版本回退扫 `subagent/descriptor` 事件），子代理一律跳过。
 - **闲逛去重 + 增量**：入库前查重——完全相同网址、归一化后同名、与近 30 天归档相似度 >0.85 的条目直接丢弃（短标题不参与相似度判定，避免「话题素材 1 / 11」这类被误杀）；每焦点带回的种子上限从 2 条提到 4 条，一次闲逛的收获不再被同 topic 合并规则吃掉。
 - **原生面板**：原来挤在设置页里的一串折叠区，改成插件管理页里的一个正经面板——状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置七个 tab，各管一件事。顶部渐变标题栏、胶囊 tab、卡片化内容，状态页是六格指标。旧设置页面板随之退役，不再挂第二份 UI（宿主 0.2.1 起就有该插槽）。
+- **最小 Linux 支持**：心跳在 Linux / macOS 上能跑起来了。原先第一跳就卡死，因为主密钥要靠 `powershell.exe` 解——现在非 Windows 平台改为把 32 字节密钥直接落成 `data/vault.key`（0600，原子改名发布），加解密仍走 Node 的 AES-256-GCM；`package.json` 的 `os` 同时从 `win32` 放开到三平台（此前 `npm install` 在这些平台上会直接被 `EBADPLATFORM` 拒掉）。截屏、空闲 / 锁屏检测、前台窗口、桌面通知仍只认 PowerShell，其他平台直接按「探针失败」降级——不再每跳白等一次进程启动，更不会拖住整跳。数据不跨平台迁移。
+- **settings 改软依赖**：`settings` 从模块级 `inject` 里挪走了。cordis 把模块级 inject 当硬依赖——宿主不给这个服务，插件就一直停在 `pending (waiting for service: settings)`，桌面上光这一个 pending 就够把整个壳带崩（`openInitialWindow` 报 `Web RPC failed`，崩溃弹窗三个按钮全无响应）。设置表单本来只是便利：节律值来自 `data/settings/ui.json` 加 apply 时的 `config`，没有它照跳。现在改由 `ctx.inject(['settings'], …)` 延迟挂载——心跳靠 `agents` 一个服务就能起，表单在服务出现时挂上、服务消失时副作用跟着回收。顺手清掉两条早已走不到的旧分支（0.1.5 的 `installSection` 与 0.1.1/0.1.2 的 free-function 回退），`@deepseek-ai/dsh-settings` 随之从依赖里移除。
 
 </details>
 
