@@ -105,9 +105,10 @@ const failures = [];
 const check = (ok, label) => { if (!ok) failures.push(label); };
 
 check(slotName === "plugins.bundle.config", "槽位名应为 plugins.bundle.config，实际 " + slotName);
-// 槽位 key 必须等于宿主报的 bundle 名（去掉 npm scope 的短名），不是完整包名：
-// plugin-manager 用 ledger.bundles.has(pkg.name) 判定，而 pkg.name 来自 Host 的 bundle.name。
-const BUNDLE_NAME = PKG.name.includes("/") ? PKG.name.slice(PKG.name.indexOf("/") + 1) : PKG.name;
+// 槽位 key 必须等于宿主报的 bundle 名（npm 全名）：plugin-manager 的 listBundles
+// 名字取自 manifest dependencies 的 key（完整包名），ledger 以该名判定是否渲染配置区。
+// v2.1.0 曾误用去掉 scope 的短名，导致面板在 0.2.1-rc.3+ 完全不显示（issue #8），已纠正。
+const BUNDLE_NAME = PKG.name;
 check(regOpts && regOpts.key === BUNDLE_NAME, "注册 key 应为 bundle 名 " + BUNDLE_NAME + "，实际 " + (regOpts && regOpts.key));
 check(!injectErr, "槽位注入抛错：" + (injectErr && (injectErr.message || injectErr)));
 if (injectErr) { console.log(JSON.stringify({ ok: false, failures }, null, 2)); process.exit(1); }

@@ -2,7 +2,7 @@
 
 dsh-heartbeat 的完整版本历史，最新的在最上面。
 
-> [README](README.md) 的「版本更新」章节只保留**最新一个大版本**（v2.0.x）——插件市场的「更新内容」读的就是那一节，所以那里不搬空；更早的记录都收在这里。
+> [README](README.md) 的「版本更新」章节只保留**当前大版本**（v2.1.x）——插件市场的「更新内容」读的就是那一节，所以那里不搬空；更早的记录都收在这里。
 
 - 逐版独立的 release notes（v1.6.2 起）：[docs/releases/](docs/releases/README.md)
 - v1.4.x 及更早：见 [docs/releases/legacy-changelog.md](docs/releases/legacy-changelog.md)
@@ -11,6 +11,10 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 
 <details open>
 <summary><b>v2.1.x</b></summary>
+
+### v2.1.1 · 2026-11-04（修复：面板槽位 key 用全名，issue #8）
+
+- **面板槽位 key 从短名改回 npm 全名**：`plugins.bundle.config` 注册的 key 曾被改成 `dsh-heartbeat`，理由是「宿主 bundle.name 是去掉 scope 的短名」——实测宿主 plugin-manager 的 listBundles 名字取自 manifest dependencies 的 key（完整包名 `@kanadego/dsh-heartbeat`），详情页以 ledger.bundles.has(openPkg.name) 判定是否渲染配置区。短名永远对不上，0.2.1-rc.3+ 上面板整块不显示（issue #8）。改动：client 注册 key 改回 `@kanadego/dsh-heartbeat`，scripts/panel-smoke.mjs 断言同步改回全名。v2.1.0 段里「槽位 key 必须用 bundle 短名」的那条是误判，订正如下。
 
 ### v2.1.0 · 未发布（专注模式 · 节律随机化 · 子代理不注入 · 闲逛去重）
 
@@ -22,7 +26,7 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 - **闲逛去重**：`addSeed` 入库前查重，范围含近 30 天归档——完全相同网址 / 归一化后同名 / 相似度 >0.85 三条规则；`DEDUP_SIMILAR_MIN_CHARS = 12` 门槛，短标题只走精确与归一化判定（防止「话题素材 1」vs「话题素材 11」= 0.889、「没有新证据的话题」vs「有新证据的话题」= 0.923 被误杀）。判重命中记 `seed_duplicate` 审计（id + reason + similarity，不含正文）。
 - **种子上限 2 → 4**：`config/interests.json` 的 `max_seeds_per_focus` 提到 4，`wanderPrompt` 原先硬编码「至多 2 条」改为按实际配置生成；`runWanderTurn` 的 `addSeed` 加 `noMerge: true`，一次闲逛的多条不再被同 topic 合并规则吃掉。
 - **原生面板**：设置页里一串折叠区改成一个面板，注册到 `plugins.bundle.config`，七个 tab：状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置。设置按「节律 / 时间与状态栏 / 表达 / 专注模式」分组，每个参数标生效时机；迁移导入加二次确认；周报正文默认收起。`settings.section` 上的旧面板在 v2.1.0 一并退役：不再挂第二份 UI，注册失败时只留一条「需要 DSH 0.2.1 及以上」的告警。
-- **槽位 key 必须用 bundle 短名**（`dsh-heartbeat`，不是 `@kanadego/dsh-heartbeat`）：宿主插件详情页用 `ledger.bundles.has(openPkg.name)` 判断要不要渲染配置区，`openPkg.name` 是去掉 scope 的短名。首版写成 npm 全名，结果详情页整块配置区不渲染（连 renderSlot 都不调用），面板「装了但看不见」——`scripts/panel-smoke.mjs` 现在直接对短名做断言。
+- **槽位 key 用短名**（`dsh-heartbeat`，不是 `@kanadego/dsh-heartbeat`）：当时误判宿主的 bundle 名是去掉 scope 的短名，详情页整块配置区不渲染。**订正（v2.1.1，issue #8）：宿主实际按 npm 全名匹配，该结论作废。**
 - **面板外观重做**：顶部渐变 hero（logo + 标题 + 徽章）、胶囊式 tab 栏、内容卡片化（卡头带渐变竖条），状态页改成六格指标网格（上次心跳 / 版本 / 今日表达带进度条 / 时间注入 / 上次结果 / 此刻动态）。样式走 `hb-` 前缀的一套 CSS（`ensurePanelStyle()` 幂等注入），颜色全取 `--dsw-alias-*` 变量，深浅主题都跟手。
 - **settings 改软依赖**（desktop 0.2.1-rc.3 上报：装完 pending、宿主起不来）：`settings` 从模块级 `inject` 里挪走了。cordis 把模块级 inject 当成硬依赖，宿主不给这个服务插件就永远停在 `pending (waiting for service: settings)`——而桌面上光这么一个 pending 就够把整个壳带崩（`openInitialWindow` 里 `Web RPC failed`，随后崩溃弹窗三个按钮全无响应）。设置表单本来就只是便利：节律值来自 `data/settings/ui.json` 加 apply 时的 `config`，没有它照样跳。现在改由 `ctx.inject(['settings'], …)` 延迟挂载：心跳靠 `agents` 一个服务就能起，表单在服务出现时挂上、服务消失时它的副作用跟着回收（cordis 的作用域语义，已用最小 cordis 探针实测：只给 `agents` 时插件照常 apply、`settings` 回调不跑，服务补齐后回调跑一次）。顺手清掉两条早已走不到的旧分支（0.1.5 的 `installSection` 与 0.1.1/0.1.2 的 free-function 回退），`@deepseek-ai/dsh-settings` 随之从 dependencies / devDependencies 移除；新增 `tests/plugin-inject.test.ts` 盯住这一行，防止有人把它加回去。peerDependencies 显式列出 `0.2.1-rc.3`/`rc.4`/`rc.5`。
 - **最小 Linux 支持**（issue #6）：vault 主密钥不再硬依赖 `powershell.exe`，非 Windows 平台把 32 字节密钥直接写成 `data/vault.key`（0600，scratch → rename 原子发布，发布前回读比对），AES-256-GCM 加解密仍在本进程完成。三处原本会炸的地方改成讲清楚：非 Windows 读 KHBV1 容器不再 spawn 一个不存在的 PowerShell，而是明确报「KHBV1 只属于 Windows、数据不跨平台」；KHBV1 主密钥同理——拒绝而不是静默换新密钥（换掉等于把已有数据全变成打不开的）。`src/core/ps.ts` 的探针运行器在非 Windows 上直接返回失败，截屏 / 空闲 / 锁屏 / 前台窗口 / 桌面通知因此干净降级（静默时段、每日上限、冷却不受影响，只是「他大概在忙」这类判断不触发）。`package.json` 的 `os` 从 `["win32"]` 放开为 `["win32","linux","darwin"]`。数据目录不跨平台迁移（KHBV1 绑 Windows 用户与机器）。

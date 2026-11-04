@@ -4,8 +4,9 @@
 // types on 0.1.1-rc.2; reworked for 0.1.7-rc.2 in v1.7.0):
 //   - the client module is applied as a CLIENT-SIDE cordis plugin; the
 //     ModuleLoader factory must return an object with an "apply" method;
-//   - the panel is an entry on 'plugins.bundle.config' (keyed by the bundle
-//     short name); the old settings.section card was retired in v2.1.0;
+//   - the panel is an entry on 'plugins.bundle.config' (keyed by the full
+//     npm package name '@kanadego/dsh-heartbeat'); the old settings.section
+//     card was retired in v2.1.0;
 //   - the rhythm editor rides the /api RPC channel (host persists to
 //     data/settings/ui.json and applies live) — no host settings API needed;
 //   - custom host data flows through an exact Fetch route under /api:
@@ -1329,10 +1330,11 @@ const LOCALE_NS = "heartbeat";
 			try {
 				ctx.slots.inject("plugins.bundle.config", function () {
 					const disposer = ctx.slots.register(
-						// key 必须等于宿主报的 bundle 名（pkg.name），不是 npm 包名：
-						// package.json 是 @kanadego/dsh-heartbeat，但 plugin-manager 的
-						// packageView 取的是 bundle.name = "dsh-heartbeat"（详情页 data-plugin-name）。
-						{ name: "plugins.bundle.config", key: "dsh-heartbeat" },
+						// key 必须等于宿主按全名匹配的 bundle 名（pkg.name），即 npm 全名
+						// '@kanadego/dsh-heartbeat'：宿主 plugin-manager 的 listBundles 名字取自
+						// manifest dependencies 的 key（完整包名），ledger 以该名判定 whether 配置区渲染。
+						// v2.1.0 曾误用短名 'dsh-heartbeat'，导致 0.2.1-rc.3+ 详情页配置区不渲染（issue #8），v2.1.1 改回全名。
+						{ name: "plugins.bundle.config", key: "@kanadego/dsh-heartbeat" },
 						HeartbeatSection,
 					);
 					return disposer;
