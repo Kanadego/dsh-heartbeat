@@ -10,3 +10,5 @@ pnpm-workspace.yaml
 CODE-REVIEW-*.md
 scripts/migrate-v1-seeds.mjs
 .probe-*/
+%SystemDrive%/
+.local/

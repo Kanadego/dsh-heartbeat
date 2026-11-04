@@ -12,6 +12,12 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 <details open>
 <summary><b>v2.1.x</b></summary>
 
+### v2.1.2 · 2026-11-04（修复：面板槽位同时注册短名与全名，issue #8 跟进）
+
+- **面板槽位 key 改为双注册**：v2.1.1 只注册了 npm 全名 `@kanadego/dsh-heartbeat`，只覆盖 npm 安装方式。实测宿主 plugin-manager 的 `listBundles()` 名字取自 profile 的 `dependencies` / `dsh.profile.bundles` key —— **npm 安装时是全名，`file:` / 本地安装时是短名 `dsh-heartbeat`**，详情页以 `ledger.bundles.has(openPkg.name)` 判定是否渲染配置区，key 对不上则整块不显示。`client.js` 改为同时注册 `dsh-heartbeat` 与 `@kanadego/dsh-heartbeat` 两个 key，`scripts/panel-smoke.mjs` 断言同步覆盖双 key，两种安装方式下面板都不消失。
+
+### v2.1.1 · 2026-11-04（修复：面板槽位 key 用全名，issue #8）
+
 ### v2.1.1 · 2026-11-04（修复：面板槽位 key 用全名，issue #8）
 
 - **面板槽位 key 从短名改回 npm 全名**：`plugins.bundle.config` 注册的 key 曾被改成 `dsh-heartbeat`，理由是「宿主 bundle.name 是去掉 scope 的短名」——实测宿主 plugin-manager 的 listBundles 名字取自 manifest dependencies 的 key（完整包名 `@kanadego/dsh-heartbeat`），详情页以 ledger.bundles.has(openPkg.name) 判定是否渲染配置区。短名永远对不上，0.2.1-rc.3+ 上面板整块不显示（issue #8）。改动：client 注册 key 改回 `@kanadego/dsh-heartbeat`，scripts/panel-smoke.mjs 断言同步改回全名。v2.1.0 段里「槽位 key 必须用 bundle 短名」的那条是误判，订正如下。

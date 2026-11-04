@@ -105,11 +105,11 @@ const failures = [];
 const check = (ok, label) => { if (!ok) failures.push(label); };
 
 check(slotName === "plugins.bundle.config", "槽位名应为 plugins.bundle.config，实际 " + slotName);
-// 槽位 key 必须等于宿主报的 bundle 名（npm 全名）：plugin-manager 的 listBundles
-// 名字取自 manifest dependencies 的 key（完整包名），ledger 以该名判定是否渲染配置区。
-// v2.1.0 曾误用去掉 scope 的短名，导致面板在 0.2.1-rc.3+ 完全不显示（issue #8），已纠正。
-const BUNDLE_NAME = PKG.name;
-check(regOpts && regOpts.key === BUNDLE_NAME, "注册 key 应为 bundle 名 " + BUNDLE_NAME + "，实际 " + (regOpts && regOpts.key));
+// 槽位 key 同时注册两种安装名：宿主 listBundles() 的 bundle 名取决于 profile 依赖的 key，
+// file: 安装时为短名 'dsh-heartbeat'，npm 安装时为 scoped 全名 '@kanadego/dsh-heartbeat'。
+// 双注册保证两种安装方式下面板都不会消失（单 key 在另一安装方式下会被过滤）。
+const BUNDLE_NAMES = ["dsh-heartbeat", "@kanadego/dsh-heartbeat"];
+check(regOpts && BUNDLE_NAMES.includes(regOpts.key), "注册 key 应为短名/全名之一，实际 " + (regOpts && regOpts.key));
 check(!injectErr, "槽位注入抛错：" + (injectErr && (injectErr.message || injectErr)));
 if (injectErr) { console.log(JSON.stringify({ ok: false, failures }, null, 2)); process.exit(1); }
 

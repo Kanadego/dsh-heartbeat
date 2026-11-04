@@ -294,7 +294,7 @@ node <插件目录>/dist/cli/index.js <命令>
 
 | 插件版本           | 适配的 DSH                  |
 | ------------------ | --------------------------- |
-| **v2.1.0**（当前） | `0.2.0-rc.1` – `0.2.1-rc.5` |
+| **v2.1.1 – v2.1.2**（当前） | `0.2.0-rc.1` – `0.2.1-rc.5` |
 | v2.0.0 – v2.0.1    | `0.2.0-rc.1` – `0.2.1-rc.2` |
 | v1.7.4 – v1.9.3    | `0.2.0-rc.1` – `0.2.0-rc.2` |
 | v1.7.2 – v1.7.3    | `0.1.7-rc.1` – `0.2.0-rc.1` |
@@ -348,6 +348,12 @@ dsh plugin --profile web remove @kanadego/dsh-heartbeat
 - **原生面板**：原来挤在设置页里的一串折叠区，改成插件管理页里的一个正经面板——状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置七个 tab，各管一件事。顶部渐变标题栏、胶囊 tab、卡片化内容，状态页是六格指标。旧设置页面板随之退役，不再挂第二份 UI（宿主 0.2.1 起就有该插槽）。
 - **最小 Linux 支持**：心跳在 Linux / macOS 上能跑起来了。原先第一跳就卡死，因为主密钥要靠 `powershell.exe` 解——现在非 Windows 平台改为把 32 字节密钥直接落成 `data/vault.key`（0600，原子改名发布），加解密仍走 Node 的 AES-256-GCM；`package.json` 的 `os` 同时从 `win32` 放开到三平台（此前 `npm install` 在这些平台上会直接被 `EBADPLATFORM` 拒掉）。截屏、空闲 / 锁屏检测、前台窗口、桌面通知仍只认 PowerShell，其他平台直接按「探针失败」降级——不再每跳白等一次进程启动，更不会拖住整跳。数据不跨平台迁移。
 - **settings 改软依赖**：`settings` 从模块级 `inject` 里挪走了。cordis 把模块级 inject 当硬依赖——宿主不给这个服务，插件就一直停在 `pending (waiting for service: settings)`，桌面上光这一个 pending 就够把整个壳带崩（`openInitialWindow` 报 `Web RPC failed`，崩溃弹窗三个按钮全无响应）。设置表单本来只是便利：节律值来自 `data/settings/ui.json` 加 apply 时的 `config`，没有它照跳。现在改由 `ctx.inject(['settings'], …)` 延迟挂载——心跳靠 `agents` 一个服务就能起，表单在服务出现时挂上、服务消失时副作用跟着回收。顺手清掉两条早已走不到的旧分支（0.1.5 的 `installSection` 与 0.1.1/0.1.2 的 free-function 回退），`@deepseek-ai/dsh-settings` 随之从依赖里移除。
+
+### v2.1.2 · 2026-11-04（修复：原生面板槽位同时注册短名与全名）
+
+> ⚠️ **升级提示：v2.1.1 存在渲染回归，建议直接跳过 v2.1.1 安装 v2.1.2。** v2.1.1 的面板槽位 key 只注册了 npm 全名 `@kanadego/dsh-heartbeat`，`file:` / 本地安装方式下宿主报的 bundle 名是短名 `dsh-heartbeat`，两者对不上时详情页整块配置区不会渲染（issue #8 跟进）。直接升级到 v2.1.2 即可恢复。
+
+- **面板槽位 key 改为双注册**：`plugins.bundle.config` 同一组件同时以 `dsh-heartbeat` 与 `@kanadego/dsh-heartbeat` 两个 key 注册，npm 安装与本地安装两种方式下面板都不再消失；`scripts/panel-smoke.mjs` 冒烟断言同步覆盖双 key。
 
 ### v2.1.1 · 2026-11-04（修复：原生面板在 DSH 0.2.1-rc.3+ 详情页完全不显示）
 

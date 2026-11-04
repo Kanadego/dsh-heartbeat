@@ -4,8 +4,10 @@
 // types on 0.1.1-rc.2; reworked for 0.1.7-rc.2 in v1.7.0):
 //   - the client module is applied as a CLIENT-SIDE cordis plugin; the
 //     ModuleLoader factory must return an object with an "apply" method;
-//   - the panel is an entry on 'plugins.bundle.config' (keyed by the full
-//     npm package name '@kanadego/dsh-heartbeat'); the old settings.section
+//   - the panel is registered on 'plugins.bundle.config' under BOTH the short
+//     key 'dsh-heartbeat' and the scoped key '@kanadego/dsh-heartbeat'
+//     (install key differs between file: installs and npm installs; same
+//     component, two keys); the old settings.section
 //     card was retired in v2.1.0;
 //   - the rhythm editor rides the /api RPC channel (host persists to
 //     data/settings/ui.json and applies live) — no host settings API needed;
@@ -1328,17 +1330,18 @@ const LOCALE_NS = "heartbeat";
 			}
 
 			try {
-				ctx.slots.inject("plugins.bundle.config", function () {
-					const disposer = ctx.slots.register(
-						// key 必须等于宿主按全名匹配的 bundle 名（pkg.name），即 npm 全名
-						// '@kanadego/dsh-heartbeat'：宿主 plugin-manager 的 listBundles 名字取自
-						// manifest dependencies 的 key（完整包名），ledger 以该名判定 whether 配置区渲染。
-						// v2.1.0 曾误用短名 'dsh-heartbeat'，导致 0.2.1-rc.3+ 详情页配置区不渲染（issue #8），v2.1.1 改回全名。
-						{ name: "plugins.bundle.config", key: "@kanadego/dsh-heartbeat" },
-						HeartbeatSection,
-					);
-					return disposer;
-				});
+				// 同时注册短名 + npm 全名：宿主 listBundles() 的 bundle 名取决于 profile 依赖的 key，
+				// file: 安装时是短名 'dsh-heartbeat'，npm 安装时是 scoped 全名 '@kanadego/dsh-heartbeat'。
+				// 双注册保证面板在两种安装方式下都不消失（v2.1.0 单短名只覆盖 file:，v2.1.1 单全名只覆盖 npm）。
+				for (const key of ["dsh-heartbeat", "@kanadego/dsh-heartbeat"]) {
+					ctx.slots.inject("plugins.bundle.config", function () {
+						const disposer = ctx.slots.register(
+							{ name: "plugins.bundle.config", key },
+							HeartbeatSection,
+						);
+						return disposer;
+					});
+				}
 			} catch (e) {
 				// v2.1.0 起旧设置页面板退役：不再往 settings.section 挂第二份 UI。
 				// 宿主 0.2.1 起就有 plugins.bundle.config，宿主过旧时面板不可用，
