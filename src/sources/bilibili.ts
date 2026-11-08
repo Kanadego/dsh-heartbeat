@@ -171,7 +171,13 @@ export function sanitizeTitle(t: string): string {
   return t.replace(/《/g, '（').replace(/》/g, '）').replace(/\s+/g, ' ').trim();
 }
 
-/** Seed brief for one record, or null when it has no usable title. */
+/**
+ * Seed brief for one record, or null when it has no usable title.
+ *
+ * 主语必须是第二人称「你」：这条素材会在心跳出口直接对木偶人转述，
+ * 说的是用户自己的观看行为。写成无主语句会被模型读成 agent 自己的行为
+ * （实测事故：无主语「《X》看到第 N 分钟」被模型顺口读成「我看了四分钟」）。
+ */
 export function seedTextFor(r: BiliRecord): string | null {
   const rawTitle = r.title?.trim() || r.show_title?.trim() || '';
   if (!rawTitle) return null;
@@ -180,19 +186,19 @@ export function seedTextFor(r: BiliRecord): string | null {
   const business = r.history?.business;
   let text: string;
   if (business === 'pgc') {
-    // 番剧影视：在追《标题》· 分P标题（有分P才带）
+    // 番剧影视：你在追《标题》· 分P标题（有分P才带）
     const part = r.show_title?.trim();
-    text = part && part !== rawTitle ? `在追《${title}》· ${sanitizeTitle(part)}` : `在追《${title}》`;
+    text = part && part !== rawTitle ? `你在追《${title}》· ${sanitizeTitle(part)}` : `你在追《${title}》`;
   } else {
     const progress = typeof r.progress === 'number' ? r.progress : -1;
     const duration = typeof r.duration === 'number' ? r.duration : 0;
     const finished = progress < 0
       || (duration > 0 && progress >= duration * BILI_FINISHED_RATIO);
     if (finished) {
-      text = `刚看完《${title}》`; // progress unknown -> no mention of progress
+      text = `你刚看完《${title}》`; // progress unknown -> no mention of progress
     } else {
       const minute = Math.max(1, Math.ceil(progress / 60));
-      text = `《${title}》看到第 ${minute} 分钟`;
+      text = `《${title}》你看到第 ${minute} 分钟`;
     }
   }
   return text.length > BILI_TEXT_MAX_CHARS ? text.slice(0, BILI_TEXT_MAX_CHARS) : text;
