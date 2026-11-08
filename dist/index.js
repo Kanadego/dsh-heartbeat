@@ -9,8 +9,10 @@ import {
   getLastBeat,
   homeSessionId,
   inQuietHours,
+  isArchivedSession,
   notepadFilePath,
   notepadView,
+  parseArchivedSessionIds,
   pauseFocus,
   readNotepad,
   readSentState,
@@ -22,7 +24,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-64COZ2ZP.js";
+} from "./chunk-6LWH2AJL.js";
 import {
   bilibiliSessionFilePath,
   createBiliLoginService,
@@ -474,17 +476,15 @@ function loadSessionTitles() {
 function loadVisibleSessionIds(registryFile) {
   try {
     const file = registryFile ?? path4.join(dshHomeDir(), "storages", "workspace.json");
-    const j = JSON.parse(fs4.readFileSync(file, "utf8"));
-    const archived = new Set(
-      (Array.isArray(j.global?.archivedSessionIds) ? j.global.archivedSessionIds : []).map((s) => String(s))
-    );
-    const isArchived = (id) => archived.has(id) || archived.has(id.replace(/^session-/, ""));
+    const text = fs4.readFileSync(file, "utf8");
+    const archived = parseArchivedSessionIds(text);
+    const j = JSON.parse(text);
     const visible = /* @__PURE__ */ new Set();
     for (const ws of Object.values(j.tables?.workspaces ?? {})) {
       const ids = Array.isArray(ws?.sessionIds) ? ws.sessionIds : [];
       for (const raw of ids) {
         const id = String(raw);
-        if (!isArchived(id)) visible.add(id);
+        if (!isArchivedSession(archived, id)) visible.add(id);
       }
     }
     return { visible, registryFound: true };

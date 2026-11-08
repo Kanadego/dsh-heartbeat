@@ -63,6 +63,7 @@ import {
 } from "./chunk-ECXYNTEV.js";
 import {
   decryptFile,
+  dshHomeDir,
   encryptFile,
   loadEncryptedText,
   loadJson,
@@ -79,8 +80,8 @@ import {
 
 // src/core/orchestrator.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import fs8 from "fs";
-import path10 from "path";
+import fs9 from "fs";
+import path11 from "path";
 
 // src/env/envpulse.ts
 import fs2 from "fs";
@@ -244,47 +245,81 @@ function readPulse(guard, paths) {
   }
 }
 
-// src/screen/screenpulse.ts
+// src/core/archived-sessions.ts
 import fs3 from "fs";
 import path3 from "path";
+function parseArchivedSessionIds(text) {
+  try {
+    const j = JSON.parse(text);
+    const raw = j.global?.archivedSessionIds;
+    if (!Array.isArray(raw)) return /* @__PURE__ */ new Set();
+    return new Set(raw.map((s) => String(s)));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+function loadArchivedSessionIds(registryFile) {
+  const file = registryFile ?? path3.join(dshHomeDir(), "storages", "workspace.json");
+  try {
+    return parseArchivedSessionIds(fs3.readFileSync(file, "utf8"));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+function isArchivedSession(archived, id) {
+  return archived.has(id) || archived.has(id.replace(/^session-/, ""));
+}
+function splitDeliverTargets(all, archived) {
+  const usable = [];
+  const skipped = [];
+  for (const t of all) {
+    if (isArchivedSession(archived, t.sessionId)) skipped.push(t);
+    else usable.push(t);
+  }
+  return { usable, skipped };
+}
+
+// src/screen/screenpulse.ts
+import fs4 from "fs";
+import path4 from "path";
 var SCREEN_JSON = "screen.json";
 var SCREEN_JPG = "screen.jpg";
 function screenJsonPath(paths) {
-  return path3.join(paths.dataDir, SCREEN_JSON);
+  return path4.join(paths.dataDir, SCREEN_JSON);
 }
 function screenJpgPath(paths) {
-  return path3.join(paths.dataDir, SCREEN_JPG);
+  return path4.join(paths.dataDir, SCREEN_JPG);
 }
 var SCREEN_STAMP = "screen.capture";
 function screenStampPath(paths) {
-  return path3.join(paths.dataDir, SCREEN_STAMP);
+  return path4.join(paths.dataDir, SCREEN_STAMP);
 }
 function readScreenStamp(paths) {
   try {
-    return fs3.readFileSync(screenStampPath(paths), "utf8").trim();
+    return fs4.readFileSync(screenStampPath(paths), "utf8").trim();
   } catch {
     return "";
   }
 }
 function shotIsCurrent(guard, paths) {
   const f = screenJpgPath(paths);
-  if (!fs3.existsSync(guard.assert(f))) return false;
+  if (!fs4.existsSync(guard.assert(f))) return false;
   const stamp = readScreenStamp(paths);
   const capturedAt = readScreenJson(guard, paths)?.captured_at ?? "";
   return Boolean(stamp) && stamp === capturedAt;
 }
 function dropStaleShot(guard, paths) {
   burnFileSync(guard.assert(screenJpgPath(paths)));
-  fs3.rmSync(screenStampPath(paths), { force: true });
+  fs4.rmSync(screenStampPath(paths), { force: true });
 }
 async function collectScreen(guard, paths, now = Date.now(), windowCap = 20, signal) {
-  const rawJson = path3.join(paths.tmpDir, "screen.raw.json");
-  const rawJpg = path3.join(paths.tmpDir, "screen.raw.jpg");
+  const rawJson = path4.join(paths.tmpDir, "screen.raw.json");
+  const rawJpg = path4.join(paths.tmpDir, "screen.raw.jpg");
   let encJson = "";
   let shotThisBeat = false;
   try {
     const r = await runPowerShellFile(
-      path3.join(paths.assetsDir, "screenpulse.ps1"),
+      path4.join(paths.assetsDir, "screenpulse.ps1"),
       ["-outdir", paths.tmpDir, "-cap", String(windowCap)],
       45e3,
       signal
@@ -296,12 +331,12 @@ async function collectScreen(guard, paths, now = Date.now(), windowCap = 20, sig
       dropStaleShot(guard, paths);
       return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: `collector exit ${r.status}` };
     }
-    const raw = fs3.readFileSync(rawJson, "utf8");
+    const raw = fs4.readFileSync(rawJson, "utf8");
     const meta = JSON.parse(raw);
-    if (meta.shot_path && fs3.existsSync(meta.shot_path)) {
+    if (meta.shot_path && fs4.existsSync(meta.shot_path)) {
       try {
         encryptFile(guard, meta.shot_path, screenJpgPath(paths));
-        fs3.writeFileSync(
+        fs4.writeFileSync(
           screenStampPath(paths),
           String(meta.captured_at ?? new Date(now).toISOString()),
           "utf8"
@@ -313,8 +348,8 @@ async function collectScreen(guard, paths, now = Date.now(), windowCap = 20, sig
     if (!shotThisBeat) dropStaleShot(guard, paths);
     const { shot_path: _drop, ...clean } = meta;
     void _drop;
-    encJson = path3.join(paths.tmpDir, `screen.enc.${now}.json`);
-    fs3.writeFileSync(encJson, JSON.stringify(clean, null, 1), "utf8");
+    encJson = path4.join(paths.tmpDir, `screen.enc.${now}.json`);
+    fs4.writeFileSync(encJson, JSON.stringify(clean, null, 1), "utf8");
     encryptFile(guard, encJson, screenJsonPath(paths));
     return {
       ok: true,
@@ -327,17 +362,17 @@ async function collectScreen(guard, paths, now = Date.now(), windowCap = 20, sig
     return { ok: false, capturedAt: null, hasShot: false, visibleCount: 0, error: String(e) };
   } finally {
     for (const leftover of [rawJson, rawJpg, encJson]) {
-      fs3.rmSync(leftover, { force: true });
+      fs4.rmSync(leftover, { force: true });
     }
   }
 }
 function readScreenJson(guard, paths) {
   const f = screenJsonPath(paths);
-  if (!fs3.existsSync(guard.assert(f))) return null;
-  const tmp = path3.join(paths.tmpDir, `screen.read.${Date.now()}.json`);
+  if (!fs4.existsSync(guard.assert(f))) return null;
+  const tmp = path4.join(paths.tmpDir, `screen.read.${Date.now()}.json`);
   try {
     decryptFile(guard, f, guard.assert(tmp));
-    return JSON.parse(fs3.readFileSync(tmp, "utf8"));
+    return JSON.parse(fs4.readFileSync(tmp, "utf8"));
   } catch {
     return null;
   } finally {
@@ -347,7 +382,7 @@ function readScreenJson(guard, paths) {
 function unlockShot(guard, paths) {
   const f = screenJpgPath(paths);
   if (!shotIsCurrent(guard, paths)) return null;
-  const tmp = path3.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
+  const tmp = path4.join(paths.tmpDir, `screen.view.${Date.now()}.jpg`);
   try {
     decryptFile(guard, f, guard.assert(tmp));
   } catch (e) {
@@ -362,8 +397,8 @@ function burnUnlocked(guard, tmpPath) {
 
 // src/screen/vision.ts
 import { createRequire } from "module";
-import fs4 from "fs";
-import path4 from "path";
+import fs5 from "fs";
+import path5 from "path";
 import { spawn } from "child_process";
 var VISION_TIMEOUT_MS = 12e4;
 var VISION_MAX_SUMMARY = 300;
@@ -371,8 +406,8 @@ function resolveModlensMain(fromUrl) {
   try {
     const req = createRequire(fromUrl);
     const pkgJson = req.resolve("@liustack/modlens/package.json");
-    const main = path4.join(path4.dirname(pkgJson), "dist", "main.js");
-    return fs4.existsSync(main) ? main : null;
+    const main = path5.join(path5.dirname(pkgJson), "dist", "main.js");
+    return fs5.existsSync(main) ? main : null;
   } catch {
     return null;
   }
@@ -410,7 +445,7 @@ function extractSummary(raw) {
 var DEFAULT_VISION_PROVIDER = "openai";
 function readVisionSettings(guard, paths) {
   try {
-    const raw = fs4.readFileSync(guard.assert(path4.join(paths.settingsDir, "vision.json")), "utf8");
+    const raw = fs5.readFileSync(guard.assert(path5.join(paths.settingsDir, "vision.json")), "utf8");
     const obj = JSON.parse(raw);
     return {
       ...typeof obj.provider === "string" && obj.provider.trim() ? { provider: obj.provider.trim() } : {},
@@ -423,7 +458,7 @@ function readVisionSettings(guard, paths) {
 async function describeScreenShot(guard, paths, opts) {
   const mainJs = opts.mainPath ?? resolveModlensMain(opts.moduleUrl);
   if (!mainJs) return { ok: false, summary: null, error: "modlens not installed" };
-  const outJson = path4.join(paths.tmpDir, `screen.vision.${Date.now()}.json`);
+  const outJson = path5.join(paths.tmpDir, `screen.vision.${Date.now()}.json`);
   const spawnCli = opts.spawnCli ?? defaultSpawn;
   const timeoutMs = opts.timeoutMs ?? VISION_TIMEOUT_MS;
   const settings = opts.settings ?? readVisionSettings(guard, paths);
@@ -451,7 +486,7 @@ async function describeScreenShot(guard, paths, opts) {
     if (code !== 0) {
       return { ok: false, summary: null, error: `modlens exit ${code}${stderr ? `: ${stderr.slice(0, 140)}` : ""}` };
     }
-    const raw = fs4.existsSync(outJson) ? fs4.readFileSync(outJson, "utf8") : "";
+    const raw = fs5.existsSync(outJson) ? fs5.readFileSync(outJson, "utf8") : "";
     const summary = extractSummary(raw);
     if (!summary) return { ok: false, summary: null, error: "modlens produced no summary" };
     return { ok: true, summary };
@@ -459,16 +494,16 @@ async function describeScreenShot(guard, paths, opts) {
     return { ok: false, summary: null, error: String(e).slice(0, 160) };
   } finally {
     if (shot) burnUnlocked(guard, shot);
-    fs4.rmSync(outJson, { force: true });
+    fs5.rmSync(outJson, { force: true });
   }
 }
 
 // src/gate/gate.ts
-import path5 from "path";
-import fs5 from "fs";
+import path6 from "path";
+import fs6 from "fs";
 var STABLE_WINDOW_MS = 15e3;
 function sentFilePath(paths) {
-  return path5.join(paths.dataDir, "sent.json");
+  return path6.join(paths.dataDir, "sent.json");
 }
 function localDay(now) {
   const d = new Date(now);
@@ -511,16 +546,16 @@ function evaluateGate(input) {
   };
 }
 async function probeFrontWindowLive(guard, paths, signal) {
-  const tmp = path5.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
+  const tmp = path6.join(paths.tmpDir, `frontwin.${Date.now()}.json`);
   try {
     const out = guard.assert(tmp);
-    const r = await runPowerShellFile(path5.join(paths.assetsDir, "frontwin.ps1"), ["-out", out], 1e4, signal);
-    if (r.status !== 0 || !fs5.existsSync(out)) return null;
-    return JSON.parse(fs5.readFileSync(out, "utf8"));
+    const r = await runPowerShellFile(path6.join(paths.assetsDir, "frontwin.ps1"), ["-out", out], 1e4, signal);
+    if (r.status !== 0 || !fs6.existsSync(out)) return null;
+    return JSON.parse(fs6.readFileSync(out, "utf8"));
   } catch {
     return null;
   } finally {
-    fs5.rmSync(tmp, { force: true });
+    fs6.rmSync(tmp, { force: true });
   }
 }
 function probeFrontWindowSnapshot(guard, paths, rules) {
@@ -762,10 +797,10 @@ function buildRuminationPrompt(input) {
 }
 
 // src/seeds/report.ts
-import path6 from "path";
+import path7 from "path";
 var REPORT_REASONS = ["\u4E0D\u60F3\u8BF4\u8BDD", "\u7D20\u6750\u4E0D\u642D", "\u5728\u5FD9\u6216\u521A\u804A\u8FC7"];
 function reportFilePath(dataDir) {
-  return path6.join(dataDir, "seed_report.jsonl");
+  return path7.join(dataDir, "seed_report.jsonl");
 }
 var REPORT_KEEP = 400;
 function parseEntry(obj) {
@@ -881,9 +916,9 @@ function buildSeedReportTool(guard, file) {
 }
 
 // src/notepad/store.ts
-import path7 from "path";
+import path8 from "path";
 function notepadFilePath(dataDir) {
-  return path7.join(dataDir, "notepad.json");
+  return path8.join(dataDir, "notepad.json");
 }
 function emptyState() {
   return { note: null, counters: { beats: 0, delivers: 0 } };
@@ -981,8 +1016,8 @@ function notepadView(st, now = Date.now()) {
 }
 
 // src/statusbar/store.ts
-import fs6 from "fs";
-import path8 from "path";
+import fs7 from "fs";
+import path9 from "path";
 function deriveScene(input) {
   if (input.quietHours) return "quiet-hours";
   if (input.spokeThisBeat) return "just-spoke";
@@ -997,14 +1032,14 @@ function clampNote(note) {
   return t.length <= 30 ? t : t.slice(0, 30);
 }
 function statusFilePath(dataDir) {
-  return path8.join(dataDir, "settings", "status.json");
+  return path9.join(dataDir, "settings", "status.json");
 }
 function writeStatus(guard, paths, state) {
   atomicWriteJsonSync(guard.assert(statusFilePath(paths.dataDir)), state);
 }
 function readStatus(guard, paths) {
   try {
-    const raw = fs6.readFileSync(guard.assert(statusFilePath(paths.dataDir)), "utf8");
+    const raw = fs7.readFileSync(guard.assert(statusFilePath(paths.dataDir)), "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed?.at !== "string" || typeof parsed?.scene !== "string") return null;
     return parsed;
@@ -1020,7 +1055,7 @@ var StatusReader = class {
     const file = statusFilePath(paths.dataDir);
     let st;
     try {
-      st = fs6.statSync(guard.assert(file));
+      st = fs7.statSync(guard.assert(file));
     } catch {
       this.mtimeMs = -1;
       this.cached = null;
@@ -1285,19 +1320,19 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
 }
 
 // src/rhythm/rhythm.ts
-import fs7 from "fs";
-import path9 from "path";
+import fs8 from "fs";
+import path10 from "path";
 var DAY_MS = 864e5;
 var TAU_DAYS = 10;
 var CELL_EPSILON = 1e-3;
 var PEAK_MIN_ACTIVE = 0.25;
 var PEAK_MIN_SHARE = 0.05;
 function rhythmFilePath(paths) {
-  return path9.join(paths.dataDir, "profile_rhythm.json");
+  return path10.join(paths.dataDir, "profile_rhythm.json");
 }
 function loadRhythm(paths) {
   try {
-    return JSON.parse(fs7.readFileSync(rhythmFilePath(paths), "utf8"));
+    return JSON.parse(fs8.readFileSync(rhythmFilePath(paths), "utf8"));
   } catch {
     return { histogram: {}, days: [], lastDecayAt: (/* @__PURE__ */ new Date()).toISOString() };
   }
@@ -1672,7 +1707,7 @@ function noteBeat(verdict, detail) {
   lastBeat = { at: (/* @__PURE__ */ new Date()).toISOString(), verdict, ...detail };
 }
 function gateFilePath(paths) {
-  return path10.join(paths.dataDir, "gate.json");
+  return path11.join(paths.dataDir, "gate.json");
 }
 function readBeatState(guard, paths) {
   try {
@@ -1690,7 +1725,7 @@ function homeSessionId(guard, paths) {
 function resetHomeSession(guard, paths, id) {
   if (homeSessionId(guard, paths) !== id) return false;
   try {
-    fs8.rmSync(guard.assert(gateFilePath(paths)), { force: true });
+    fs9.rmSync(guard.assert(gateFilePath(paths)), { force: true });
   } catch {
   }
   appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "home_reset", oldSessionId: id });
@@ -2144,7 +2179,7 @@ async function collectPhase(bc) {
 }
 function loadCursors(file) {
   try {
-    const raw = JSON.parse(fs8.readFileSync(file, "utf8"));
+    const raw = JSON.parse(fs9.readFileSync(file, "utf8"));
     if (raw?.version === 2 && raw.sessions && typeof raw.sessions === "object") {
       const sessions = {};
       for (const [id, v] of Object.entries(raw.sessions)) {
@@ -2175,6 +2210,20 @@ function spokeTextSince(session, fromSeq) {
   }
   return null;
 }
+function turnEndKindSince(session, fromSeq) {
+  let kind = null;
+  for (const e of sessionEvents(session, fromSeq)) {
+    if (e.type !== "turn/end") continue;
+    const d = e.data;
+    if (typeof d?.reason?.kind === "string") kind = d.reason.kind;
+  }
+  return kind;
+}
+function classifySilentReason(raw, turnEndKind) {
+  if (turnEndKind === "blocked") return "target turn blocked";
+  if (!raw.trim()) return "empty model output";
+  return "non-Chinese output discarded";
+}
 async function observeBoundSessions(bc) {
   throwIfAborted(bc.signal, "observe");
   const { deps, now } = bc;
@@ -2184,7 +2233,7 @@ async function observeBoundSessions(bc) {
   const data = loadBindings(guard, paths.settingsDir);
   const targets = observeTargets(data);
   if (targets.length === 0) return;
-  const cursorFile = path10.join(paths.dataDir, "cursors.json");
+  const cursorFile = path11.join(paths.dataDir, "cursors.json");
   const loaded = loadCursors(cursorFile);
   const cursors = loaded.sessions;
   if (loaded.discardedLegacy) {
@@ -2471,7 +2520,24 @@ async function deliverPackage(bc, materials, opts) {
   const homeId = bc.agent?.session?.id ?? null;
   const { loadBindings, deliverTargets } = await import("./bindings-U2M3CO2D.js");
   const data = loadBindings(guard, paths.settingsDir);
-  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  const archived = loadArchivedSessionIds();
+  const all = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  const { usable: targets, skipped } = splitDeliverTargets(all, archived);
+  if (skipped.length > 0) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+      event: "deliver_target_skipped",
+      reason: "archived",
+      targets: skipped.map((t) => t.sessionId).join(",")
+    });
+  }
+  if (targets.length === 0 && all.length > 0) {
+    appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
+      event: "spoke_failed",
+      reason: "all deliver targets archived"
+    });
+    noteBeat("spoke_failed", { reason: "all deliver targets archived" });
+    return;
+  }
   let liveTarget = null;
   for (const b of targets) {
     const acquired = await acquireTargetAgent(deps, b.sessionId);
@@ -2557,8 +2623,9 @@ async function deliverPackage(bc, materials, opts) {
           appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "preference_record_failed", error: String(e).slice(0, 120) });
         }
       } else {
-        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: "non-Chinese output discarded" });
-        noteBeat("spoke_failed", { reason: "non-Chinese output discarded" });
+        const silentReason = classifySilentReason(spokenRaw, turnEndKindSince(voiceAgent.session, beforeSeq));
+        appendAuditLine(paths.logsDir + "/heartbeat.jsonl", { event: "spoke_failed", reason: silentReason });
+        noteBeat("spoke_failed", { reason: silentReason });
       }
       return;
     }
@@ -2810,7 +2877,7 @@ async function userActiveInBoundSessions(deps) {
     const { loadBindings, observeTargets } = await import("./bindings-U2M3CO2D.js");
     const targets = observeTargets(loadBindings(deps.guard, deps.paths.settingsDir));
     if (targets.length === 0) return false;
-    const cursors = loadCursors(path10.join(deps.paths.dataDir, "cursors.json")).sessions;
+    const cursors = loadCursors(path11.join(deps.paths.dataDir, "cursors.json")).sessions;
     for (const b of targets) {
       const agent = ctx_getAgent(deps, b.sessionId);
       if (!agent) continue;
@@ -3062,6 +3129,8 @@ function startOrchestrator(deps) {
 }
 
 export {
+  parseArchivedSessionIds,
+  isArchivedSession,
   readSentState,
   inQuietHours,
   reportFilePath,
@@ -3107,6 +3176,8 @@ export {
   loadCursors,
   pickSpokenLine,
   spokeTextSince,
+  turnEndKindSince,
+  classifySilentReason,
   TOKEN_SAVER_IDLE_SECONDS,
   TOKEN_SAVER_WAKE_MS,
   userActiveInBoundSessions,
@@ -3116,4 +3187,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-64COZ2ZP.js.map
+//# sourceMappingURL=chunk-6LWH2AJL.js.map
