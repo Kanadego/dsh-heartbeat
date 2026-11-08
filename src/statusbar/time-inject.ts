@@ -3,9 +3,10 @@
 // Replaces the official dsh-time-context (disabled via the user patch — B9 is
 // superseded by D20: time injection has exactly one owner, this module).
 //
-// Gate (all must pass): step === 1 AND the turn was user-initiated (last
-// session event is `agent/inbox/spliced`, P1 ① conclusion) AND the per-session
-// throttle interval has elapsed. Mid-task steps are never injected.
+// Gate (all must pass): step === 1 AND the open turn was initiated by a real
+// user message (the splice that OPENED the turn carries source kind='user',
+// P1 ① conclusion) AND the per-session throttle interval has elapsed.
+// Mid-task steps are never injected.
 // Content: precise local time (+ timezone) and elapsed-since-last-message.
 // Transport: pre-step waterfall append — a strict `createUserMessage` message
 // (r5 rule: never splice hand-rolled objects). Source attribution
@@ -23,41 +24,44 @@ import type { HostSession } from '../core/orchestrator.js';
 /** Pure gate (§17.6): every condition must hold for an injection. */
 export function shouldInjectTime(input: {
   step: number;
-  /** Turn-origin probe (see {@link turnOriginIsInboxSplice}). */
-  originIsInboxSplice: boolean;
+  /** Turn-origin probe (see {@link turnOriginIsUserSplice}). */
+  originIsUserSplice: boolean;
   lastInjectAt: number;
   now: number;
   intervalMs: number;
 }): boolean {
   if (input.step !== 1) return false;
-  if (!input.originIsInboxSplice) return false;
+  if (!input.originIsUserSplice) return false;
   if (input.intervalMs <= 0) return false;
   return input.now - input.lastInjectAt >= input.intervalMs;
 }
 
-/** Turn-origin probe (review 2026-09-13 #2): does the OPEN turn begin
- * with an inbox splice?
+/** Turn-origin probe (review 2026-09-13 #2, tightened 2026-11-08): did the OPEN
+ * turn begin with a splice carrying a REAL user message?
  *
  * An exact "last event is spliced" check silently breaks the moment any other
- * plugin writes a session event between the splice and this hook. Instead,
- * scan backwards for the last `agent/inbox/spliced` vs the last `turn/end`:
- * the turn is inbox-driven iff a splice happened after the previous turn
- * finished. This is stable against arbitrary interleaving events. Known
- * semantic: our own delivery followups also splice, so a delivery turn counts
- * as inbox-driven — acceptable (throttled like any other; the alternative,
- * inspecting the spliced messages' sources, is deferred until it matters).
+ * plugin writes a session event between the splice and this hook. So: scan
+ * backwards for the last `turn/end` (none → scan from the start of the log),
+ * then take the FIRST `agent/inbox/spliced` inside that turn's span — the one
+ * that opened the turn — and require its `data.inserted` to carry at least one
+ * message with `source.kind === 'user'`. Later mid-turn splices (delivery
+ * followups and friends) never define the turn origin, and heartbeat splices
+ * don't count. Robustness: missing `data`, a non-array `inserted` or entries
+ * without `source` all yield false — never throws.
  * Cost: bounded by one turn length, and only paid at step === 1. */
-export function turnOriginIsInboxSplice(session: HostSession): boolean {
+export function turnOriginIsUserSplice(session: HostSession): boolean {
   const events = sessionEvents(session);
-  let splicedIdx = -1;
-  let turnEndIdx = -1;
-  for (let i = events.length - 1; i >= 0 && (splicedIdx < 0 || turnEndIdx < 0); i--) {
-    const t = events[i]!.type;
-    if (t === 'agent/inbox/spliced' && splicedIdx < 0) splicedIdx = i;
-    else if (t === 'turn/end' && turnEndIdx < 0) turnEndIdx = i;
+  let start = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]!.type === 'turn/end') { start = i + 1; break; }
   }
-  if (splicedIdx < 0) return false;
-  return splicedIdx > turnEndIdx; // no turn/end at all (-1) → splice wins
+  for (let i = start; i < events.length; i++) {
+    if (events[i]!.type !== 'agent/inbox/spliced') continue;
+    const inserted = (events[i] as { data?: { inserted?: unknown } }).data?.inserted;
+    if (!Array.isArray(inserted)) return false;
+    return inserted.some((m) => (m as { source?: { kind?: unknown } } | undefined)?.source?.kind === 'user');
+  }
+  return false;
 }
 
 /** `SessionHeader` fields we care about (dsh-session ≥ v4 headers). HostSession
@@ -210,7 +214,7 @@ export function registerTimeInjection(
     const intervalMs = Math.max(0, opts.getTimeInjectMin()) * 60_000;
     if (!shouldInjectTime({
       step: payload.step,
-      originIsInboxSplice: payload.step === 1 ? turnOriginIsInboxSplice(payload.agent.session) : false,
+      originIsUserSplice: payload.step === 1 ? turnOriginIsUserSplice(payload.agent.session) : false,
       lastInjectAt: state[sessionId] ?? 0,
       now,
       intervalMs,
