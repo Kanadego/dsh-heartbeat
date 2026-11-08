@@ -13,7 +13,6 @@
 // and, when the host's /api gate is missing, only GATE_SAFE_ENDPOINTS serve
 // (⑦A / HB-19, 2026-10-17).
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { OrchestratorDeps } from './core/orchestrator.js';
@@ -23,6 +22,7 @@ import { appendAuditLine } from './core/audit-log.js';
 import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
 import { dshHomeDir } from './core/paths.js';
+import { openPath } from './core/open-path.js';
 import { localDayKey } from './core/time-window.js';
 import type { WorkspacePaths } from './core/paths.js';
 import { inQuietHours, readSentState } from './gate/gate.js';
@@ -494,14 +494,14 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
     'ledger.open'() {
       const f = ledgerFilePath(paths.dataDir);
       if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
-      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      openPath(f);
       return ok({ path: f });
     },
 
     'excerpt.open'() {
       const f = excerptFilePath(paths.dataDir);
       if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, EXCERPT_HEADER, 'utf8');
-      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      openPath(f);
       return ok({ path: f });
     },
 

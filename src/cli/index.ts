@@ -6,10 +6,11 @@
 // `main` only builds the shared context and dispatches — one place to add a
 // command, and each verb is readable on its own.
 
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { dshHomeDir, initWorkspace } from '../core/paths.js';
+import { openPath } from '../core/open-path.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { createPathGuard } from '../core/path-guard.js';
 import type { PathGuard } from '../core/path-guard.js';
@@ -314,7 +315,7 @@ async function verbLedger(c: CliCtx): Promise<number> {
       if (!fs.existsSync(f)) {
         console.log(`(ledger will be created at ${f})`);
       }
-      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
@@ -366,7 +367,7 @@ async function verbExcerpt(c: CliCtx): Promise<number> {
         fs.mkdirSync(path.dirname(f), { recursive: true });
         fs.writeFileSync(f, EXCERPT_HEADER, 'utf8');
       }
-      spawn('cmd', ['/c', 'start', '', f], { detached: true, stdio: 'ignore' }).unref();
+      openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
@@ -880,8 +881,15 @@ export async function main(argv: string[]): Promise<number> {
   });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href) {
-  // Direct execution guard; the CLI is also importable for tests.
+// Direct execution guard; the CLI is also importable for tests.
+// Built by hand as `file:///${argv[1]}` before: on Windows that happens to
+// yield `file:///C:/...`, but a POSIX argv[1] starts with `/`, so the template
+// produced `file:////root/...` and never matched — every `heartbeat <verb>`
+// exited 0 with no output at all. `pathToFileURL` gets the host/path split and
+// percent-encoding right on every platform (`path.resolve` is defensive: Node
+// always hands out an absolute argv[1], but a relative one would otherwise be
+// read as a relative file: URL and silently fail to match again).
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   void main(process.argv.slice(2))
     .then((code) => { process.exitCode = code; })
     .catch((e: unknown) => {
