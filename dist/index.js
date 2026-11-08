@@ -22,7 +22,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-XCMGPIUQ.js";
+} from "./chunk-TEMEPRTR.js";
 import {
   EXCERPT_HEADER,
   appendExcerpt,

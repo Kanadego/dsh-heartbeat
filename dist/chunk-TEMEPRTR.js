@@ -712,12 +712,12 @@ function reconcileDelivery(materials, report, decisionIds, spokeText) {
 function buildRuminationPrompt(input) {
   const max = input.max ?? 3;
   const lines = [
-    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\u7684\u53CD\u520D\u5907\u6599\u73AF\u8282:\u4ECE\u5019\u9009\u7D20\u6750\u91CC\u6311(\u6700\u591A " + max + " \u6761),\u628A\u6BCF\u6761\u538B\u7F29\u6210\u4E00\u53E5\u8BDD\u3002",
+    "\u8FD9\u662F\u5FC3\u8DF3\u8F6E\u6B21\u7684\u53CD\u520D\u5907\u6599\u73AF\u8282:\u4ECE\u5019\u9009\u7D20\u6750\u91CC\u6311(\u6700\u591A " + max + " \u6761),\u9009\u51FA\u6700\u60F3\u8BF4\u7684\u51E0\u6761\u3002",
     "\u7D20\u6750\u53EA\u4ECE\u4E0B\u9762\u7ED9\u7684\u5019\u9009\u91CC\u6311,\u4E0D\u8981\u81EA\u5DF1\u7F16;\u6CA1\u5408\u9002\u7684\u5C31\u5C11\u6311,\u751A\u81F3\u53EF\u4EE5\u4E0D\u6311\u3002",
     "\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\u3002\u53EA\u8F93\u51FA\u4E00\u4E2A JSON \u5BF9\u8C61:",
-    '- \u6709\u60F3\u9012\u7684:{"speak":true,"text":"\u7B2C1\u6761\u7D20\u6750\n\u7B2C2\u6761\u7D20\u6750...","seed_ids":["s1","s2"],"doing":"\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u4E00\u53E5\u8BDD)"}',
-    '- \u4E00\u6761\u90FD\u4E0D\u5408\u9002:{"speak":false,"seed_ids":[],"doing":"\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u4E00\u53E5\u8BDD)"}',
-    "- text = \u6311\u51FA\u7684\u7D20\u6750,\u6BCF\u6761\u7D20\u6750\u5355\u72EC\u4E00\u884C;seed_ids = \u5BF9\u5E94\u7684\u7D20\u6750 id\u3002",
+    '- \u6709\u60F3\u9012\u7684:{"seed_ids":["s1","s2"],"doing":"\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u4E00\u53E5\u8BDD)"}',
+    '- \u4E00\u6761\u90FD\u4E0D\u5408\u9002:{"seed_ids":[],"doing":"\u4ED6\u6B64\u523B\u5728\u5E72\u4EC0\u4E48(\u4E00\u53E5\u8BDD)"}',
+    "- seed_ids = \u5BF9\u5E94\u7684\u7D20\u6750 id\u3002",
     "",
     "## \u6B64\u523B\u5904\u5883",
     input.digestTact,
@@ -2677,8 +2677,7 @@ async function expressionPhases(bc) {
   if (!Array.isArray(parsed.seed_ids) || parsed.seed_ids.length === 0) {
     appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
       event: "expression_dropped",
-      why: "no seed_ids from the decision turn",
-      speak_flag: typeof parsed.speak === "boolean" ? parsed.speak : null
+      why: "no seed_ids from the decision turn"
     });
     noteDroppedStreak(paths.logsDir + "/heartbeat.jsonl", "no seed_ids from the decision turn");
     noteBeat("silent", { reason: "no material" });
@@ -3104,4 +3103,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-XCMGPIUQ.js.map
+//# sourceMappingURL=chunk-TEMEPRTR.js.map
