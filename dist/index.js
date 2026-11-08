@@ -32,12 +32,13 @@ import {
   excerptFilePath,
   installBundledPreset,
   loadPolicy,
+  openPath,
   readExcerpts,
   recentExcerpts,
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-HE6IF6OU.js";
+} from "./chunk-NFUJ4CVH.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -135,7 +136,6 @@ function saveUiConfig(guard, settingsDir, patch) {
 }
 
 // src/rpc.ts
-import { spawn } from "child_process";
 import fs4 from "fs";
 import path4 from "path";
 
@@ -704,13 +704,13 @@ function buildEndpoints(deps, isLive) {
     "ledger.open"() {
       const f = ledgerFilePath(paths.dataDir);
       if (!fs4.existsSync(guard.assert(f))) fs4.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
-      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      openPath(f);
       return ok({ path: f });
     },
     "excerpt.open"() {
       const f = excerptFilePath(paths.dataDir);
       if (!fs4.existsSync(guard.assert(f))) fs4.writeFileSync(f, EXCERPT_HEADER, "utf8");
-      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      openPath(f);
       return ok({ path: f });
     },
     "weekly.list": () => ok({ reports: listWeeklyReports(guard, paths.dataDir, policy.weekly.keepReports) }),

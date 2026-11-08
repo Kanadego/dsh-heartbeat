@@ -14,10 +14,11 @@ import {
   excerptFilePath,
   installBundledPreset,
   loadPolicy,
+  openPath,
   presetStatus,
   readExcerpts,
   removeExcerpt
-} from "../chunk-HE6IF6OU.js";
+} from "../chunk-NFUJ4CVH.js";
 import {
   adviseWander,
   appendEntry,
@@ -69,9 +70,9 @@ import {
 } from "../chunk-IBBAISSW.js";
 
 // src/cli/index.ts
-import { spawn } from "child_process";
 import fs2 from "fs";
 import path2 from "path";
+import { pathToFileURL } from "url";
 
 // src/vault/burn-list.ts
 import fs from "fs";
@@ -419,7 +420,7 @@ async function verbLedger(c) {
       if (!fs2.existsSync(f)) {
         console.log(`(ledger will be created at ${f})`);
       }
-      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
@@ -470,7 +471,7 @@ async function verbExcerpt(c) {
         fs2.mkdirSync(path2.dirname(f), { recursive: true });
         fs2.writeFileSync(f, EXCERPT_HEADER, "utf8");
       }
-      spawn("cmd", ["/c", "start", "", f], { detached: true, stdio: "ignore" }).unref();
+      openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
@@ -942,7 +943,7 @@ async function main(argv) {
     seedAudit
   });
 }
-if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, "/")}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path2.resolve(process.argv[1])).href) {
   void main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   }).catch((e) => {
