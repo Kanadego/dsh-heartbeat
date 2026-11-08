@@ -15,7 +15,6 @@ import {
   saveTimeInjectState,
   shouldInjectTime,
   timeInjectStatePath,
-  turnOriginIsInboxSplice,
 } from '../src/statusbar/time-inject.js';
 
 let sandbox = '';
@@ -37,12 +36,12 @@ after(() => {
 const MIN = 60_000;
 
 test('shouldInjectTime: full gate matrix', () => {
-  const pass = { step: 1, originIsInboxSplice: true, lastInjectAt: 0, now: 25 * MIN, intervalMs: 25 * MIN };
+  const pass = { step: 1, originIsUserSplice: true, lastInjectAt: 0, now: 25 * MIN, intervalMs: 25 * MIN };
   assert.equal(shouldInjectTime(pass), true);
   // mid-task step: never
   assert.equal(shouldInjectTime({ ...pass, step: 2 }), false);
-  // not an inbox-driven turn
-  assert.equal(shouldInjectTime({ ...pass, originIsInboxSplice: false }), false);
+  // not a user-initiated turn
+  assert.equal(shouldInjectTime({ ...pass, originIsUserSplice: false }), false);
   // inside the throttle window
   assert.equal(shouldInjectTime({ ...pass, now: 24 * MIN }), false);
   // exactly at the interval boundary passes
@@ -51,24 +50,7 @@ test('shouldInjectTime: full gate matrix', () => {
   assert.equal(shouldInjectTime({ ...pass, intervalMs: 0 }), false);
 });
 
-test('turnOriginIsInboxSplice: robust against interleaved events (review #2)', () => {
-  const mk = (types: string[]) => ({
-    id: 'session-x',
-    snapshotEvents: () => types.map((type, i) => ({ type, time: i })),
-  });
-  // clean user turn: splice is the last event
-  assert.equal(turnOriginIsInboxSplice(mk(['turn/end', 'agent/inbox/spliced'])), true);
-  // another plugin wrote an event AFTER the splice — still inbox-driven
-  assert.equal(turnOriginIsInboxSplice(mk(['turn/end', 'agent/inbox/spliced', 'team/message/delivered'])), true);
-  // previous turn ended, then a new splice → new turn is inbox-driven
-  assert.equal(turnOriginIsInboxSplice(mk(['agent/inbox/spliced', 'turn/end', 'agent/inbox/spliced'])), true);
-  // turn began without a splice since the last turn end → not inbox-driven
-  assert.equal(turnOriginIsInboxSplice(mk(['agent/inbox/spliced', 'turn/end', 'turn/start'])), false);
-  // no splice at all
-  assert.equal(turnOriginIsInboxSplice(mk(['turn/end', 'turn/start'])), false);
-  // first-ever turn with a splice (no turn/end in the log)
-  assert.equal(turnOriginIsInboxSplice(mk(['agent/inbox/spliced'])), true);
-});
+// turnOriginIsUserSplice has its own dedicated suite: tests/time-inject-origin.test.ts.
 
 test('renderTimeText: precise time line always present; elapsed only with history', () => {
   const now = new Date('2026-09-13T04:05:00+08:00').getTime();
