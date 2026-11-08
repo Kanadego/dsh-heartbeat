@@ -271,6 +271,122 @@ export async function runBiliLogin(deps: BiliLoginDeps): Promise<number> {
   }
 }
 
+// ── Reusable login service (panel RPC, v2.3.0) ─────────────────────────────
+// The flow above is a blocking CLI loop; the panel needs the same protocol
+// chopped into two awaited steps (start = get a QR, poll = one poll call).
+// Same wire protocol (login state in data.code, SESSDATA from Set-Cookie →
+// data.url), same vault contract via the injected saveCredential. The session
+// lives in a memory Map for 3 minutes and a poll/start sweep drops expired
+// entries; a consumed (successful) session is removed immediately, so a second
+// poll on it reports expired instead of re-saving the cookie.
+
+export type BiliRpcPollState = 'waiting' | 'scanned' | 'success' | 'expired' | 'error';
+
+export interface BiliRpcPollResult {
+  state: BiliRpcPollState;
+  /** Detail for the error state (protocol code or network message) — never the cookie. */
+  message?: string;
+}
+
+export interface BiliRpcStartResult {
+  sessionId: string;
+  qrDataUrl: string;
+  expiresAt: number;
+}
+
+export interface BiliLoginServiceDeps {
+  fetchImpl: typeof fetch;
+  /** Render the login url as a PNG data URL (production: qrcode.toDataURL). */
+  renderQrDataUrl: (url: string) => Promise<string>;
+  /** Wall clock, ms — also drives the 3-minute session TTL. */
+  now: () => number;
+  /** Where the cookie is stored on success (production: saveBiliSession). */
+  saveCredential?: (value: string) => void;
+}
+
+export interface BiliLoginService {
+  startBiliLogin(): Promise<BiliRpcStartResult>;
+  pollBiliLogin(sessionId: string): Promise<BiliRpcPollResult>;
+}
+
+interface BiliRpcSession {
+  qrcodeKey: string;
+  expiresAt: number;
+}
+
+const RPC_SESSION_TTL_MS = 3 * 60_000;
+
+/**
+ * Two-step (start/poll) QR login for the panel. Every side effect (fetch,
+ * render, clock, storage) is injected, exactly like runBiliLogin, so the whole
+ * service runs in tests with a fake fetch; rpc.ts builds the production one.
+ */
+export function createBiliLoginService(deps: BiliLoginServiceDeps): BiliLoginService {
+  const sessions = new Map<string, BiliRpcSession>();
+  // Every start/poll sweeps: no background timer, expired entries die lazily.
+  const sweep = (): void => {
+    const t = deps.now();
+    for (const [id, session] of sessions) {
+      if (t >= session.expiresAt) sessions.delete(id);
+    }
+  };
+
+  const startBiliLogin = async (): Promise<BiliRpcStartResult> => {
+    sweep();
+    const resp = await deps.fetchImpl(GENERATE_URL);
+    const gen = (await resp.json()) as GenerateOk;
+    if (gen.code !== 0 || !gen.data?.url || !gen.data?.qrcode_key) {
+      throw new Error(`generate code=${gen.code}`);
+    }
+    const qrDataUrl = await deps.renderQrDataUrl(gen.data.url);
+    if (!qrDataUrl.startsWith('data:image/png;base64,')) {
+      throw new Error('qr renderer did not return a png data URL');
+    }
+    const now = deps.now();
+    const sessionId = `bili-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const expiresAt = now + RPC_SESSION_TTL_MS;
+    sessions.set(sessionId, { qrcodeKey: gen.data.qrcode_key, expiresAt });
+    return { sessionId, qrDataUrl, expiresAt };
+  };
+
+  const pollBiliLogin = async (sessionId: string): Promise<BiliRpcPollResult> => {
+    sweep();
+    const session = sessions.get(sessionId);
+    if (!session) return { state: 'expired' };
+    if (deps.now() >= session.expiresAt) {
+      sessions.delete(sessionId);
+      return { state: 'expired' };
+    }
+    let resp: Response;
+    let poll: PollResponse;
+    try {
+      resp = await deps.fetchImpl(`${POLL_URL}?qrcode_key=${encodeURIComponent(session.qrcodeKey)}`);
+      poll = (await resp.json()) as PollResponse;
+    } catch (e) {
+      return { state: 'error', message: e instanceof Error ? e.message : String(e) };
+    }
+    // Same state mapping as runBiliLogin: the login state lives in data.code
+    // (the outer code is the API call status); fall back for old flat shapes.
+    const state = poll.data?.code ?? poll.code;
+    if (state === 0) {
+      const value = sessdataFromCookies(resp) ?? sessdataFromUrl(poll.data?.url);
+      if (!value) return { state: 'error', message: 'no SESSDATA in poll response' };
+      deps.saveCredential?.(value);
+      sessions.delete(sessionId); // one-shot: never write the cookie twice
+      return { state: 'success' };
+    }
+    if (state === 86038 || state === 86103) {
+      sessions.delete(sessionId);
+      return { state: 'expired' };
+    }
+    if (state === 86101) return { state: 'waiting' };
+    if (state === 86090) return { state: 'scanned' };
+    return { state: 'error', message: `poll code ${state}` };
+  };
+
+  return { startBiliLogin, pollBiliLogin };
+}
+
 /** Production wiring for `openImage` (platform command table). */
 export function openImageProduction(platform: NodeJS.Platform): (file: string) => Promise<boolean> {
   return (file: string) => tryOpenImage(platform, file);

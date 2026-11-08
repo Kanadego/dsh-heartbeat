@@ -42,7 +42,13 @@ import { EXCERPT_HEADER, excerptFilePath } from './excerpt/excerpt.js';
 import { listWeeklyReports, readWeeklyReport } from './weekly/report.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
 import { addInterest, readEffective, removeInterest, setWanderWindows } from './browse/interests-edit.js';
-import { writeText } from './vault/vault.js';
+import { writeText, loadJson } from './vault/vault.js';
+import {
+  bilibiliSessionFilePath,
+  createBiliLoginService,
+  saveBiliSession,
+  type BiliSessionRecord,
+} from './cli/bili-login.js';
 import { readStatus } from './statusbar/store.js';
 import { loadTimeInjectState } from './statusbar/time-inject.js';
 import type { Policy } from './config/schema.js';
@@ -235,6 +241,18 @@ type Endpoint = (p: Record<string, unknown>) => RpcResult | Promise<RpcResult>;
  */
 function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) => boolean): Record<string, Endpoint> {
   const { guard, paths, policy } = deps;
+  // Bilibili QR login for the panel (v2.3.0): production wiring of the same
+  // service the CLI drives — real fetch + qrcode dataURL (no temp file) +
+  // vault-backed save. The session Map lives in this process's memory.
+  const biliLogin = createBiliLoginService({
+    fetchImpl: fetch,
+    renderQrDataUrl: async (url) => {
+      const { default: QRCode } = await import('qrcode');
+      return QRCode.toDataURL(url, { type: 'image/png', width: 400, margin: 2 });
+    },
+    now: () => Date.now(),
+    saveCredential: (value) => saveBiliSession(guard, paths, value),
+  });
   return {
     async status() {
       const now = Date.now();
@@ -389,6 +407,42 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
 
     'seeds.delete'(p) {
       return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ''), seedAuditSink(paths)) });
+    },
+
+    // ── Bilibili QR login (v2.3.0): the panel's entry to the same login the
+    //    CLI drives. Failures come back as err(...) envelopes — nothing throws
+    //    at the card; the card maps poll states onto its own i18n texts.
+    'bili.status'() {
+      try {
+        const rec = loadJson<BiliSessionRecord>(guard, bilibiliSessionFilePath(paths));
+        const loggedIn = typeof rec?.sessdata === 'string' && rec.sessdata.length > 0;
+        return ok({
+          loggedIn,
+          savedAt: loggedIn && typeof rec!.savedAt === 'number' ? rec!.savedAt : null,
+        });
+      } catch {
+        // A missing/damaged vault container reads as "not logged in" — the
+        // card must still render, the CLI remains the repair path.
+        return ok({ loggedIn: false, savedAt: null });
+      }
+    },
+
+    async 'bili.login.start'() {
+      try {
+        return ok(await biliLogin.startBiliLogin());
+      } catch (e) {
+        return err('bili-login-failed', String(e instanceof Error ? e.message : e).slice(0, 200));
+      }
+    },
+
+    async 'bili.login.poll'(p) {
+      const sessionId = String(p.sessionId ?? '');
+      if (!sessionId) return err('bad-request', 'sessionId is required');
+      try {
+        return ok(await biliLogin.pollBiliLogin(sessionId));
+      } catch (e) {
+        return err('bili-login-failed', String(e instanceof Error ? e.message : e).slice(0, 200));
+      }
     },
 
     // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
