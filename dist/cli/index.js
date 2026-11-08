@@ -903,7 +903,7 @@ async function verbBili(c) {
     openImageProduction,
     renderQrPngProduction,
     saveBiliSession
-  } = await import("../bili-login-M74D3EMV.js");
+  } = await import("../bili-login-XQVEE4M6.js");
   const outcome = await runBiliLogin({
     fetchImpl: fetch,
     renderQrPng: renderQrPngProduction,

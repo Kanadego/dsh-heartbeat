@@ -4,7 +4,6 @@ import {
 import {
   saveJson
 } from "./chunk-M72T5MZU.js";
-import "./chunk-IBBAISSW.js";
 
 // src/cli/bili-login.ts
 import { spawn } from "child_process";
@@ -141,20 +140,82 @@ async function runBiliLogin(deps) {
     }
   }
 }
+var RPC_SESSION_TTL_MS = 3 * 6e4;
+function createBiliLoginService(deps) {
+  const sessions = /* @__PURE__ */ new Map();
+  const sweep = () => {
+    const t = deps.now();
+    for (const [id, session] of sessions) {
+      if (t >= session.expiresAt) sessions.delete(id);
+    }
+  };
+  const startBiliLogin = async () => {
+    sweep();
+    const resp = await deps.fetchImpl(GENERATE_URL);
+    const gen = await resp.json();
+    if (gen.code !== 0 || !gen.data?.url || !gen.data?.qrcode_key) {
+      throw new Error(`generate code=${gen.code}`);
+    }
+    const qrDataUrl = await deps.renderQrDataUrl(gen.data.url);
+    if (!qrDataUrl.startsWith("data:image/png;base64,")) {
+      throw new Error("qr renderer did not return a png data URL");
+    }
+    const now = deps.now();
+    const sessionId = `bili-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const expiresAt = now + RPC_SESSION_TTL_MS;
+    sessions.set(sessionId, { qrcodeKey: gen.data.qrcode_key, expiresAt });
+    return { sessionId, qrDataUrl, expiresAt };
+  };
+  const pollBiliLogin = async (sessionId) => {
+    sweep();
+    const session = sessions.get(sessionId);
+    if (!session) return { state: "expired" };
+    if (deps.now() >= session.expiresAt) {
+      sessions.delete(sessionId);
+      return { state: "expired" };
+    }
+    let resp;
+    let poll;
+    try {
+      resp = await deps.fetchImpl(`${POLL_URL}?qrcode_key=${encodeURIComponent(session.qrcodeKey)}`);
+      poll = await resp.json();
+    } catch (e) {
+      return { state: "error", message: e instanceof Error ? e.message : String(e) };
+    }
+    const state = poll.data?.code ?? poll.code;
+    if (state === 0) {
+      const value = sessdataFromCookies(resp) ?? sessdataFromUrl(poll.data?.url);
+      if (!value) return { state: "error", message: "no SESSDATA in poll response" };
+      deps.saveCredential?.(value);
+      sessions.delete(sessionId);
+      return { state: "success" };
+    }
+    if (state === 86038 || state === 86103) {
+      sessions.delete(sessionId);
+      return { state: "expired" };
+    }
+    if (state === 86101) return { state: "waiting" };
+    if (state === 86090) return { state: "scanned" };
+    return { state: "error", message: `poll code ${state}` };
+  };
+  return { startBiliLogin, pollBiliLogin };
+}
 function openImageProduction(platform) {
   return (file) => tryOpenImage(platform, file);
 }
+
 export {
-  BILI_SESSION_FILE_NAME,
   GENERATE_URL,
   POLL_URL,
+  BILI_SESSION_FILE_NAME,
   bilibiliSessionFilePath,
-  openImageProduction,
-  renderQrPngProduction,
-  runBiliLogin,
   saveBiliSession,
   sessdataFromCookies,
   sessdataFromUrl,
-  tryOpenImage
+  tryOpenImage,
+  renderQrPngProduction,
+  runBiliLogin,
+  createBiliLoginService,
+  openImageProduction
 };
-//# sourceMappingURL=bili-login-M74D3EMV.js.map
+//# sourceMappingURL=chunk-SIY3YHFY.js.map

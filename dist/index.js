@@ -24,6 +24,11 @@ import {
   writeNote
 } from "./chunk-PQLFNDWE.js";
 import {
+  bilibiliSessionFilePath,
+  createBiliLoginService,
+  saveBiliSession
+} from "./chunk-SIY3YHFY.js";
+import {
   EXCERPT_HEADER,
   appendExcerpt,
   createPathGuard,
@@ -489,6 +494,15 @@ function loadVisibleSessionIds(registryFile) {
 }
 function buildEndpoints(deps, isLive) {
   const { guard, paths, policy } = deps;
+  const biliLogin = createBiliLoginService({
+    fetchImpl: fetch,
+    renderQrDataUrl: async (url) => {
+      const { default: QRCode } = await import("qrcode");
+      return QRCode.toDataURL(url, { type: "image/png", width: 400, margin: 2 });
+    },
+    now: () => Date.now(),
+    saveCredential: (value) => saveBiliSession(guard, paths, value)
+  });
   return {
     async status() {
       const now = Date.now();
@@ -625,6 +639,37 @@ function buildEndpoints(deps, isLive) {
     },
     "seeds.delete"(p) {
       return ok({ deleted: deleteSeed(guard, seedsFilePath(paths.dataDir), String(p.id ?? ""), seedAuditSink(paths)) });
+    },
+    // ── Bilibili QR login (v2.3.0): the panel's entry to the same login the
+    //    CLI drives. Failures come back as err(...) envelopes — nothing throws
+    //    at the card; the card maps poll states onto its own i18n texts.
+    "bili.status"() {
+      try {
+        const rec = loadJson(guard, bilibiliSessionFilePath(paths));
+        const loggedIn = typeof rec?.sessdata === "string" && rec.sessdata.length > 0;
+        return ok({
+          loggedIn,
+          savedAt: loggedIn && typeof rec.savedAt === "number" ? rec.savedAt : null
+        });
+      } catch {
+        return ok({ loggedIn: false, savedAt: null });
+      }
+    },
+    async "bili.login.start"() {
+      try {
+        return ok(await biliLogin.startBiliLogin());
+      } catch (e) {
+        return err("bili-login-failed", String(e instanceof Error ? e.message : e).slice(0, 200));
+      }
+    },
+    async "bili.login.poll"(p) {
+      const sessionId = String(p.sessionId ?? "");
+      if (!sessionId) return err("bad-request", "sessionId is required");
+      try {
+        return ok(await biliLogin.pollBiliLogin(sessionId));
+      } catch (e) {
+        return err("bili-login-failed", String(e instanceof Error ? e.message : e).slice(0, 200));
+      }
     },
     // ── 兴趣范围 / 浏览时段（v1.4.0；首编继承出厂，见 interests-edit.ts）──
     "interests.list": () => ok(readEffective(paths)),
