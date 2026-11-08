@@ -13,12 +13,16 @@
 //      directly, no shell wrapper). No GUI / missing viewer is NOT an error:
 //      print the image path, its directory and the login url so the user can
 //      open it by hand, then keep polling.
-//   4. Poll .../web/qrcode/poll every 2s for up to 3 minutes:
+//   4. Poll .../web/qrcode/poll every 2s for up to 3 minutes. The login state
+//      lives in data.code (the outer code is the API call status and stays 0
+//      while the QR flow runs; data.code ?? code keeps old flat shapes
+//      working):
 //        0      success -> pull SESSDATA out of Set-Cookie (preferred) or the
 //                        data.url query string, store it, delete the PNG
 //        86101  not scanned yet -> keep going
 //        86090  scanned, not confirmed -> keep going
-//        86103  QR expired -> tell the user to rerun, exit non-zero
+//        86038 / 86103  QR expired -> tell the user to rerun, exit non-zero
+//        other  unknown protocol code -> report the code only, exit non-zero
 //   5. SESSDATA never reaches a log line, an error message, or stdout — the
 //      only trace of it is the ciphertext in the vault container.
 //
@@ -95,7 +99,7 @@ interface GenerateOk {
 interface PollResponse {
   code: number;
   message?: string;
-  data?: { url?: string };
+  data?: { url?: string; code?: number; message?: string };
 }
 
 /**
@@ -223,7 +227,11 @@ export async function runBiliLogin(deps: BiliLoginDeps): Promise<number> {
         deps.log(`轮询网络错误，重试中：${e instanceof Error ? e.message : String(e)}`);
       }
       if (poll) {
-        if (poll.code === 0) {
+        // The login state lives in data.code; the outer code is the API call
+        // status (stays 0 while the QR flow runs). Fall back to the outer code
+        // for old flat shapes without data.code.
+        const state = poll.data?.code ?? poll.code;
+        if (state === 0) {
           // SESSDATA: Set-Cookie first, then the data.url query param.
           const value = (resp ? sessdataFromCookies(resp) : null) ?? sessdataFromUrl(poll.data?.url);
           if (!value) {
@@ -234,15 +242,15 @@ export async function runBiliLogin(deps: BiliLoginDeps): Promise<number> {
           deps.log('登录成功。SESSDATA 已加密存入 vault（bilibili-session.json 的 sessdata 字段），未在日志中显示原文。');
           return 0;
         }
-        if (poll.code === 86103) {
+        if (state === 86038 || state === 86103) {
           deps.log('二维码已过期，请重跑 `heartbeat bili login` 生成新的二维码。');
           return 1;
         }
-        if (poll.code === 86101 || poll.code === 86090) {
-          deps.log(pollStatusLine(poll.code));
+        if (state === 86101 || state === 86090) {
+          deps.log(pollStatusLine(state));
         } else {
           // Unknown protocol code: report code only (message text is third-party).
-          deps.log(`${pollStatusLine(poll.code)}，终止。`);
+          deps.log(`${pollStatusLine(state)}，终止。`);
           return 1;
         }
       }

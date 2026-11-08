@@ -1,8 +1,13 @@
 // bili login state machine, end to end with a fake fetch (v2.2.0).
-// Covers: 未扫 → 已扫 → 成功 (Set-Cookie source), data.url fallback, 86103
-// expiry, no-GUI fallback printing, the 3-minute deadline, the vault contract
+// Covers: 未扫 → 已扫 → 成功 (Set-Cookie source), data.url fallback,
+// data.code=86038 expiry, the legacy flat-code shape compat, no-GUI fallback
+// printing, the 3-minute deadline, the vault contract
 // (`bilibili-session.json`, shape { sessdata, savedAt }) and the "SESSDATA
 // never reaches a log line" rule.
+//
+// Poll steps use the REAL response shape measured on 2026-11-09: the outer
+// `code` is the API call status (stays 0) and the login state lives in
+// `data.code` (86101 未扫 / 86090 已扫 / 86038 过期 / 0 成功).
 import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -118,10 +123,10 @@ test('状态机：未扫 → 已扫 → 成功，SESSDATA 取自 Set-Cookie', as
   const urls: string[] = [];
   const deps = makeDeps({
     fetchImpl: fakeFetch([
-      { body: { code: 86101 } },
-      { body: { code: 86090 } },
+      { body: { code: 0, data: { code: 86101, message: '未扫码' } } },
+      { body: { code: 0, data: { code: 86090, message: '已扫码待确认' } } },
       {
-        body: { code: 0, data: { url: 'https://passport.bilibili.com/?SESSDATA=urlfallback%2Cvalue&bili_jct=x' } },
+        body: { code: 0, data: { code: 0, url: 'https://passport.bilibili.com/?SESSDATA=urlfallback%2Cvalue&bili_jct=x' } },
         headers: { 'Set-Cookie': 'SESSDATA=cookie%2Cvalue; Path=/; HttpOnly' },
       },
     ], urls),
@@ -161,7 +166,7 @@ test('Set-Cookie 没有 SESSDATA 时回退到 data.url 查询参数', async () =
   const deps = makeDeps({
     fetchImpl: fakeFetch([
       {
-        body: { code: 0, data: { url: 'https://passport.bilibili.com/?SESSDATA=urlonly%2Cvalue&dedeuserid=1' } },
+        body: { code: 0, data: { code: 0, url: 'https://passport.bilibili.com/?SESSDATA=urlonly%2Cvalue&dedeuserid=1' } },
       },
     ]),
   });
@@ -170,10 +175,10 @@ test('Set-Cookie 没有 SESSDATA 时回退到 data.url 查询参数', async () =
   assert.equal(deps.saved, 'urlonly%2Cvalue');
 });
 
-test('过期分支（86103）：退出码非 0，提示重跑', async () => {
+test('过期分支（data.code=86038）：退出码非 0，提示重跑', async () => {
   const deps = makeDeps({
     fetchImpl: fakeFetch([
-      { body: { code: 86103 } },
+      { body: { code: 0, data: { code: 86038, message: '二维码已失效' } } },
     ]),
   });
   const code = await runBiliLogin(deps.deps);
@@ -188,7 +193,7 @@ test('过期分支（86103）：退出码非 0，提示重跑', async () => {
 test('无 GUI 分支：不抛错，打印图片路径、目录与登录链接', async () => {
   const deps = makeDeps({
     fetchImpl: fakeFetch([
-      { body: { code: 0, data: { url: 'https://passport.bilibili.com/?SESSDATA=ok%2Cv' } } },
+      { body: { code: 0, data: { code: 0, url: 'https://passport.bilibili.com/?SESSDATA=ok%2Cv' } } },
     ]),
     openResult: false,
   });
@@ -205,12 +210,12 @@ test('无 GUI 分支：不抛错，打印图片路径、目录与登录链接', 
 test('超时分支：3 分钟内未完成 → 退出码非 0', async () => {
   const deps = makeDeps({
     fetchImpl: fakeFetch([
-      { body: { code: 86101 } },
-      { body: { code: 86101 } },
-      { body: { code: 86101 } },
-      { body: { code: 86101 } },
-      { body: { code: 86101 } },
-      { body: { code: 86101 } },
+      { body: { code: 0, data: { code: 86101 } } },
+      { body: { code: 0, data: { code: 86101 } } },
+      { body: { code: 0, data: { code: 86101 } } },
+      { body: { code: 0, data: { code: 86101 } } },
+      { body: { code: 0, data: { code: 86101 } } },
+      { body: { code: 0, data: { code: 86101 } } },
     ]),
     maxDurationMs: 6_000,
   });
@@ -220,15 +225,47 @@ test('超时分支：3 分钟内未完成 → 退出码非 0', async () => {
   assert.equal(deps.saved, null);
 });
 
-test('未知 poll code：终止并返回非 0', async () => {
+test('未知 poll code（data.code）：终止并返回非 0，不打印第三方 message', async () => {
   const deps = makeDeps({
     fetchImpl: fakeFetch([
-      { body: { code: 99999 } },
+      { body: { code: 0, message: 'OK', data: { code: 99999, message: '第三方原文' } } },
     ]),
   });
   const code = await runBiliLogin(deps.deps);
   assert.equal(code, 1);
   assert.equal(deps.saved, null);
+  const allLogs = deps.logs.join('\n');
+  assert.match(allLogs, /poll code 99999/);
+  assert.equal(allLogs.includes('第三方原文'), false, 'third-party message leaked into logs');
+});
+
+test('老形态兼容：只有外层 code（无 data.code）时仍按外层码分支', async () => {
+  const deps = makeDeps({
+    fetchImpl: fakeFetch([
+      { body: { code: 86101 } },
+      { body: { code: 86090 } },
+      { body: { code: 0, data: { url: 'https://passport.bilibili.com/?SESSDATA=legacy%2Cv' } } },
+    ]),
+  });
+  const code = await runBiliLogin(deps.deps);
+  assert.equal(code, 0);
+  assert.equal(deps.saved, 'legacy%2Cv');
+});
+
+test('回归：未扫码（外层 code=0 + data.code=86101）不得误判为登录成功', async () => {
+  const deps = makeDeps({
+    fetchImpl: fakeFetch([
+      { body: { code: 0, message: 'OK', ttl: 1, data: { url: '', refresh_token: '', timestamp: 0, code: 86101, message: '未扫码' } } },
+      { body: { code: 0, message: 'OK', ttl: 1, data: { url: '', refresh_token: '', timestamp: 0, code: 86101, message: '未扫码' } } },
+    ]),
+    maxDurationMs: 4_000,
+  });
+  const code = await runBiliLogin(deps.deps);
+  assert.equal(code, 1, 'must not exit 0 without scanning');
+  assert.equal(deps.saved, null);
+  const allLogs = deps.logs.join('\n');
+  assert.match(allLogs, /等待扫码/);
+  assert.equal(allLogs.includes('找不到 SESSDATA'), false, 'false success branch hit');
 });
 
 test('sessdataFromCookies：多个 cookie 时精确匹配 SESSDATA，空值不采纳', () => {
