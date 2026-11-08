@@ -200,26 +200,37 @@ test('filter 3: progress/duration < 0.1 -> dropped', async () => {
 
 test('progress < 0 boundary: unknown progress passes and the caption never mentions it', async () => {
   assert.equal(shouldDropRecord({ title: 'x', duration: 600, progress: -1, history: { bvid: 'BV1', business: 'archive' } }), null);
-  assert.equal(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }), '你刚看完《某深度视频》');
+  assert.equal(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }), '他刚看完《某深度视频》');
   assert.equal(/分钟/.test(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }) ?? ''), false);
 });
 
 // ── the three caption templates ──────────────────────────────────────────
 
-test('captions: finished / mid / pgc, each <= 60 chars', () => {
+test('captions: finished / mid / pgc, each <= 100 chars', () => {
   // 看完: progress >= duration * 0.9
-  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 570 }), '你刚看完《深海纪录片》');
+  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 570 }), '他刚看完《深海纪录片》');
   // 中途: 0 < progress < duration * 0.9 -> 第 N 分钟
-  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 65 }), '《深海纪录片》你看到第 2 分钟');
+  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 65 }), '《深海纪录片》他看到第 2 分钟');
   // 番剧影视 (pgc): 在追《标题》· 分P标题（有分P才带）
   assert.equal(
     seedTextFor({ title: '某动画 第二季', show_title: '第3话 雨夜', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }),
-    '你在追《某动画 第二季》· 第3话 雨夜',
+    '他在追《某动画 第二季》· 第3话 雨夜',
   );
-  assert.equal(seedTextFor({ title: '某动画 第二季', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }), '你在追《某动画 第二季》');
+  assert.equal(seedTextFor({ title: '某动画 第二季', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }), '他在追《某动画 第二季》');
   // length cap
   const long = seedTextFor({ title: '很长的标题'.repeat(20), duration: 600, progress: 600 });
-  assert.ok(long && long.length <= 60);
+  assert.ok(long && long.length <= 100);
+});
+
+test('caption length cap: over-long title truncates to <= 100; a 30-char title keeps the full 「》他看到第 N 分钟」 ending', () => {
+  // 超长标题：截断兜底，绝不超过上限（BILI_TEXT_MAX_CHARS = 100）
+  const long = seedTextFor({ title: '这是一个用来测试截断兜底的超长标题'.repeat(10), duration: 600, progress: 65 });
+  assert.ok(long && long.length <= 100);
+  assert.ok(long!.startsWith('《')); // 截断后仍是《包裹的素材文案
+  // 短标题（30 字）：完整保留「》他看到第 N 分钟」结尾，不被腰斩
+  const shortTitle = '一二三四五六七八九十'.repeat(3); // 恰好 30 字
+  const short = seedTextFor({ title: shortTitle, duration: 600, progress: 65 });
+  assert.equal(short, `《${shortTitle}》他看到第 2 分钟`);
 });
 
 test('sanitizeTitle: 《 -> （, 》 -> ） so the wrapper does not nest', () => {
@@ -229,7 +240,7 @@ test('sanitizeTitle: 《 -> （, 》 -> ） so the wrapper does not nest', () =>
 
 test('pgc record with a nested title round-trips through the wrapper', () => {
   const text = seedTextFor({ title: '《三体》剧集', duration: 1400, progress: 1400, history: { bvid: 'BV3', business: 'pgc' } });
-  assert.equal(text, '你在追《（三体）剧集》');
+  assert.equal(text, '他在追《（三体）剧集》');
   assert.equal((text ?? '').match(/《/g)?.length, 1); // only OUR wrapper remains
 });
 
