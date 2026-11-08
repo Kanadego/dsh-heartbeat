@@ -22,6 +22,7 @@ import { appendAuditLine } from './core/audit-log.js';
 import type { UiConfig } from './config/ui-config.js';
 import type { PathGuard } from './core/path-guard.js';
 import { dshHomeDir } from './core/paths.js';
+import { parseArchivedSessionIds, isArchivedSession } from './core/archived-sessions.js';
 import { openPath } from './core/open-path.js';
 import { localDayKey } from './core/time-window.js';
 import type { WorkspacePaths } from './core/paths.js';
@@ -204,22 +205,21 @@ function loadSessionTitles(): Record<string, string> {
 export function loadVisibleSessionIds(registryFile?: string): { visible: Set<string>; registryFound: boolean } {
   try {
     const file = registryFile ?? path.join(dshHomeDir(), 'storages', 'workspace.json');
-    const j = JSON.parse(fs.readFileSync(file, 'utf8')) as {
-      global?: { archivedSessionIds?: unknown };
+    const text = fs.readFileSync(file, 'utf8');
+    // H-archived: the archived set + mixed-prefix match now come from the
+    // shared module (same disk truth the delivery lane filters on). The outer
+    // JSON.parse below still decides `registryFound`, so a valid registry with
+    // a non-array archived field keeps reporting registryFound: true.
+    const archived = parseArchivedSessionIds(text);
+    const j = JSON.parse(text) as {
       tables?: { workspaces?: Record<string, { sessionIds?: unknown }> };
     };
-    const archived = new Set(
-      (Array.isArray(j.global?.archivedSessionIds) ? (j.global!.archivedSessionIds as unknown[]) : [])
-        .map((s) => String(s)),
-    );
-    const isArchived = (id: string): boolean =>
-      archived.has(id) || archived.has(id.replace(/^session-/, ''));
     const visible = new Set<string>();
     for (const ws of Object.values(j.tables?.workspaces ?? {})) {
       const ids = Array.isArray(ws?.sessionIds) ? (ws.sessionIds as unknown[]) : [];
       for (const raw of ids) {
         const id = String(raw);
-        if (!isArchived(id)) visible.add(id);
+        if (!isArchivedSession(archived, id)) visible.add(id);
       }
     }
     return { visible, registryFound: true };

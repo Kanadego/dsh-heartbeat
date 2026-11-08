@@ -25,6 +25,7 @@ import { scanPending, ledgerFilePath } from '../ledger/ledger.js';
 import { collectPulse, readPulse, probeIdleSeconds, probeWorkstationLocked } from '../env/envpulse.js';
 import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
+import { loadArchivedSessionIds, splitDeliverTargets } from './archived-sessions.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
 import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
@@ -1147,6 +1148,29 @@ export function spokeTextSince(session: HostSession | undefined, fromSeq: number
   return null;
 }
 
+/** H-archived: the reason.kind of the LAST turn/end this turn produced
+ *  (`fromSeq` onward) — same paging contract as {@link spokeTextSince}. A
+ *  `blocked` end means the delivery gate never opened and the model was never
+ *  even asked, which is a very different failure from "she spoke English". */
+export function turnEndKindSince(session: HostSession | undefined, fromSeq: number): string | null {
+  let kind: string | null = null;
+  for (const e of sessionEvents(session, fromSeq)) {
+    if (e.type !== 'turn/end') continue;
+    const d = e.data as { reason?: { kind?: unknown } } | undefined;
+    if (typeof d?.reason?.kind === 'string') kind = d.reason.kind;
+  }
+  return kind;
+}
+
+/** Three-state reason for a delivery that produced no speakable text. Order
+ *  matters: blocked outranks everything (no model request was ever made), then
+ *  a literally empty output, then the legacy non-Chinese discard. */
+export function classifySilentReason(raw: string, turnEndKind: string | null): string {
+  if (turnEndKind === 'blocked') return 'target turn blocked';
+  if (!raw.trim()) return 'empty model output';
+  return 'non-Chinese output discarded';
+}
+
 async function observeBoundSessions(bc: BeatContext): Promise<void> {
   throwIfAborted(bc.signal, 'observe');
   const { deps, now } = bc;
@@ -1549,7 +1573,28 @@ async function deliverPackage(
   const homeId = bc.agent?.session?.id ?? null;
   const { loadBindings, deliverTargets } = await import('./bindings.js');
   const data = loadBindings(guard, paths.settingsDir);
-  const targets = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  // H-archived: an archived session resumes fine, but DSH's ArchivedSessionGate
+  // rejects its pre-step — the turn ends `blocked` with zero output, and the
+  // audit used to misfile that as a language failure. Check the disk truth for
+  // archived ids BEFORE bringing any target live; the filter lives at the call
+  // site, `deliverTargets` itself stays unfiltered (bindings keeps its
+  // single-purpose semantics).
+  const archived = loadArchivedSessionIds();
+  const all = deliverTargets(data).filter((b) => b.sessionId !== homeId);
+  const { usable: targets, skipped } = splitDeliverTargets(all, archived);
+  if (skipped.length > 0) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'deliver_target_skipped', reason: 'archived',
+      targets: skipped.map((t) => t.sessionId).join(','),
+    });
+  }
+  if (targets.length === 0 && all.length > 0) {
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'spoke_failed', reason: 'all deliver targets archived',
+    });
+    noteBeat('spoke_failed', { reason: 'all deliver targets archived' });
+    return;
+  }
   let liveTarget: { sessionId: string; agent: HostAgent; release: () => void } | null = null;
   for (const b of targets) {
     const acquired = await acquireTargetAgent(deps, b.sessionId);
@@ -1673,8 +1718,12 @@ async function deliverPackage(
           appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
         }
       } else {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: 'non-Chinese output discarded' });
-        noteBeat('spoke_failed', { reason: 'non-Chinese output discarded' });
+        // H-archived: three-state reason — "the gate never opened" (blocked)
+        // and "the model said nothing" are not language failures. Four days of
+        // archived deliveries were misfiled as non-Chinese output before this.
+        const silentReason = classifySilentReason(spokenRaw, turnEndKindSince(voiceAgent.session, beforeSeq));
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: silentReason });
+        noteBeat('spoke_failed', { reason: silentReason });
       }
       return;
     }
