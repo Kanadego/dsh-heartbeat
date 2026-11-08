@@ -23,6 +23,7 @@ import {
   jitteredIntervalMs,
   loadCursors,
   looksPermanentResumeFailure,
+  makeHomeSetup,
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pauseFocus,
@@ -41,8 +42,9 @@ import {
   throwIfAborted,
   turnEndKindSince,
   userActiveInBoundSessions,
+  waitForVisibleTool,
   withTimeout
-} from "./chunk-6LWH2AJL.js";
+} from "./chunk-WF7ZBW5C.js";
 import "./chunk-XYBII5PR.js";
 import "./chunk-3QJJRXIR.js";
 import "./chunk-N6SMIGYJ.js";
@@ -77,6 +79,7 @@ export {
   jitteredIntervalMs,
   loadCursors,
   looksPermanentResumeFailure,
+  makeHomeSetup,
   markHomeRotateIfOverflow,
   parseJsonBlock,
   pauseFocus,
@@ -95,6 +98,7 @@ export {
   throwIfAborted,
   turnEndKindSince,
   userActiveInBoundSessions,
+  waitForVisibleTool,
   withTimeout
 };
-//# sourceMappingURL=orchestrator-CUFE752R.js.map
+//# sourceMappingURL=orchestrator-QE2XVVM6.js.map

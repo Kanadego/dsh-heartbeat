@@ -1794,6 +1794,30 @@ function pinEngineRoomTools(deps, agentCtx, notes) {
     }
   }
 }
+async function waitForVisibleTool(getSchemas, name, opts) {
+  const timeoutMs = opts?.timeoutMs ?? 2e3;
+  const pollMs = opts?.pollMs ?? 50;
+  const now = opts?.now ?? (() => Date.now());
+  const sleep = opts?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const startedAt = now();
+  let sawNames = [];
+  for (; ; ) {
+    let schemas = [];
+    try {
+      schemas = getSchemas() ?? [];
+    } catch {
+    }
+    sawNames = schemas.map((s) => String(s?.name ?? ""));
+    if (sawNames.includes(name)) {
+      return { ready: true, waitedMs: now() - startedAt, sawNames };
+    }
+    const elapsed = now() - startedAt;
+    if (elapsed >= timeoutMs) {
+      return { ready: false, waitedMs: elapsed, sawNames };
+    }
+    await sleep(Math.min(pollMs, timeoutMs - elapsed));
+  }
+}
 function makeHomeSetup(deps) {
   const { ctx, paths } = deps;
   return async (agentCtx) => {
@@ -1804,6 +1828,7 @@ function makeHomeSetup(deps) {
     } catch (e) {
       notes.push(`preset-register=threw(${String(e).slice(0, 120)})`);
     }
+    let presetMounted = false;
     try {
       const presets = agentCtx.get("agentPresets");
       if (typeof presets?.mount !== "function") {
@@ -1812,9 +1837,25 @@ function makeHomeSetup(deps) {
         const preset = await presets.mount(agentCtx, presetId);
         const joined = preset?.id;
         notes.push(`preset=mounted(${joined ?? presetId})`);
+        presetMounted = true;
       }
     } catch (e) {
       notes.push(`preset=threw(${String(e).slice(0, 200)})`);
+    }
+    if (presetMounted) {
+      const tools = agentCtx.get("tools");
+      if (typeof tools?.schemas !== "function") {
+        notes.push("toolsReady=no-api");
+      } else {
+        try {
+          const wait = await waitForVisibleTool(() => tools.schemas(agentCtx) ?? [], "web_search");
+          notes.push(
+            wait.ready ? `toolsReady=ok(${wait.waitedMs}ms)` : `toolsReady=timeout(${wait.waitedMs}ms saw=${wait.sawNames.slice(0, 5).join(",") || "(empty)"})`
+          );
+        } catch (e) {
+          notes.push(`toolsReady=threw(${String(e).slice(0, 120)})`);
+        }
+      }
     }
     pinEngineRoomTools(deps, agentCtx, notes);
     ctx.logger.info("heartbeat: tool policy %s", notes.join(" "));
@@ -3168,6 +3209,8 @@ export {
   ENGINE_ROOM_EXTRA_TOOLS,
   buildEngineRoomAllowList,
   pinEngineRoomTools,
+  waitForVisibleTool,
+  makeHomeSetup,
   shouldArchiveRotatedHome,
   agentLooksAlive,
   agentTurn,
@@ -3187,4 +3230,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-6LWH2AJL.js.map
+//# sourceMappingURL=chunk-WF7ZBW5C.js.map
