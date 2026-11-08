@@ -106,7 +106,8 @@ async function runBiliLogin(deps) {
         deps.log(`\u8F6E\u8BE2\u7F51\u7EDC\u9519\u8BEF\uFF0C\u91CD\u8BD5\u4E2D\uFF1A${e instanceof Error ? e.message : String(e)}`);
       }
       if (poll) {
-        if (poll.code === 0) {
+        const state = poll.data?.code ?? poll.code;
+        if (state === 0) {
           const value = (resp ? sessdataFromCookies(resp) : null) ?? sessdataFromUrl(poll.data?.url);
           if (!value) {
             deps.log("\u767B\u5F55\u6210\u529F\u4F46\u54CD\u5E94\u91CC\u627E\u4E0D\u5230 SESSDATA\uFF08Set-Cookie \u4E0E data.url \u90FD\u6CA1\u6709\uFF09\uFF0C\u672A\u5199\u5165\u3002");
@@ -116,14 +117,14 @@ async function runBiliLogin(deps) {
           deps.log("\u767B\u5F55\u6210\u529F\u3002SESSDATA \u5DF2\u52A0\u5BC6\u5B58\u5165 vault\uFF08bilibili-session.json \u7684 sessdata \u5B57\u6BB5\uFF09\uFF0C\u672A\u5728\u65E5\u5FD7\u4E2D\u663E\u793A\u539F\u6587\u3002");
           return 0;
         }
-        if (poll.code === 86103) {
+        if (state === 86038 || state === 86103) {
           deps.log("\u4E8C\u7EF4\u7801\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u8DD1 `heartbeat bili login` \u751F\u6210\u65B0\u7684\u4E8C\u7EF4\u7801\u3002");
           return 1;
         }
-        if (poll.code === 86101 || poll.code === 86090) {
-          deps.log(pollStatusLine(poll.code));
+        if (state === 86101 || state === 86090) {
+          deps.log(pollStatusLine(state));
         } else {
-          deps.log(`${pollStatusLine(poll.code)}\uFF0C\u7EC8\u6B62\u3002`);
+          deps.log(`${pollStatusLine(state)}\uFF0C\u7EC8\u6B62\u3002`);
           return 1;
         }
       }
@@ -156,4 +157,4 @@ export {
   sessdataFromUrl,
   tryOpenImage
 };
-//# sourceMappingURL=bili-login-FNKMAV7C.js.map
+//# sourceMappingURL=bili-login-M74D3EMV.js.map
