@@ -543,7 +543,50 @@ export function pinEngineRoomTools(
   }
 }
 
-function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): unknown }) => Promise<void> {
+/** Poll the agent-visible tool surface until `name` shows up.
+ *
+ * DSH 0.2.2-rc.1 timing gap (2026-11-08): `presets.mount()` resolving does NOT
+ * mean the preset's tools are on the agent's surface yet. The first follow-up
+ * request raced ahead of the mount, the session baseline recorded "no tools",
+ * and the later web_search arrival took the tool-addition branch — permanently
+ * marked `defer_loading: true`. After restrict the engine room was left with a
+ * single deferred tool, which the upstream API rejects outright
+ * ("at least one tool must have defer_loading=false").
+ *
+ * Contract: bounded (default 2s), degrading — a `getSchemas` throw is swallowed
+ * and polling continues, and a timeout returns `ready:false` instead of
+ * throwing, so callers can never block agent creation on it. `now`/`sleep` are
+ * injectable so unit tests run on a fake clock. */
+export async function waitForVisibleTool(
+  getSchemas: () => { name?: string }[],
+  name: string,
+  opts?: { timeoutMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> },
+): Promise<{ ready: boolean; waitedMs: number; sawNames: string[] }> {
+  const timeoutMs = opts?.timeoutMs ?? 2000;
+  const pollMs = opts?.pollMs ?? 50;
+  const now = opts?.now ?? (() => Date.now());
+  const sleep = opts?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const startedAt = now();
+  let sawNames: string[] = [];
+  for (;;) {
+    let schemas: { name?: string }[] = [];
+    try {
+      schemas = getSchemas() ?? [];
+    } catch { /* transient read failure: keep polling until the deadline */ }
+    sawNames = schemas.map((s) => String(s?.name ?? ''));
+    if (sawNames.includes(name)) {
+      return { ready: true, waitedMs: now() - startedAt, sawNames };
+    }
+    const elapsed = now() - startedAt;
+    if (elapsed >= timeoutMs) {
+      return { ready: false, waitedMs: elapsed, sawNames };
+    }
+    // Never sleep past the deadline, even if pollMs would overshoot it.
+    await sleep(Math.min(pollMs, timeoutMs - elapsed));
+  }
+}
+
+export function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): unknown }) => Promise<void> {
   const { ctx, paths } = deps;
   return async (agentCtx: { get(name: string): unknown }) => {
     // ── Composition FIRST (root cause of the 2026-09-10 empty wander) ────
@@ -572,6 +615,7 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
     } catch (e) {
       notes.push(`preset-register=threw(${String(e).slice(0, 120)})`);
     }
+    let presetMounted = false;
     try {
       const presets = agentCtx.get('agentPresets') as
         | { mount?(ctx: unknown, id?: string): Promise<unknown> }
@@ -582,9 +626,34 @@ function makeHomeSetup(deps: OrchestratorDeps): (agentCtx: { get(name: string): 
         const preset = await presets.mount(agentCtx, presetId);
         const joined = (preset as { id?: string } | undefined)?.id;
         notes.push(`preset=mounted(${joined ?? presetId})`);
+        presetMounted = true;
       }
     } catch (e) {
       notes.push(`preset=threw(${String(e).slice(0, 200)})`);
+    }
+    if (presetMounted) {
+      // 0.2.2 tool-addition timing gap: wait ONCE, here in setup only (never
+      // on the per-beat path), until the preset's web_search is visible from
+      // the agent's perspective — so the first model request's baseline
+      // carries the tool instead of a later addition being deferred forever.
+      // Bounded and degrading: a timeout is a note, restrict still runs.
+      const tools = agentCtx.get('tools') as
+        | { schemas?(scope?: unknown): { name?: string }[] }
+        | undefined;
+      if (typeof tools?.schemas !== 'function') {
+        notes.push('toolsReady=no-api');
+      } else {
+        try {
+          const wait = await waitForVisibleTool(() => tools.schemas!(agentCtx) ?? [], 'web_search');
+          notes.push(
+            wait.ready
+              ? `toolsReady=ok(${wait.waitedMs}ms)`
+              : `toolsReady=timeout(${wait.waitedMs}ms saw=${wait.sawNames.slice(0, 5).join(',') || '(empty)'})`,
+          );
+        } catch (e) {
+          notes.push(`toolsReady=threw(${String(e).slice(0, 120)})`);
+        }
+      }
     }
     pinEngineRoomTools(deps, agentCtx, notes);
       ctx.logger.info('heartbeat: tool policy %s', notes.join(' '));
