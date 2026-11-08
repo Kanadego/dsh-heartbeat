@@ -21,6 +21,7 @@ import {
   isContextOverflowError,
   loadCursors,
   looksPermanentResumeFailure,
+  makeHomeSetup,
   parseJsonBlock,
   pickSpokenLine,
   pinEngineRoomTools,
@@ -375,4 +376,41 @@ test('userActiveInBoundSessions: an undrained bound-session message counts as pr
   } as unknown as Parameters<typeof userActiveInBoundSessions>[0];
   fs.writeFileSync(path.join(paths.dataDir, 'cursors.json'), JSON.stringify({ version: 2, sessions: {} }), 'utf8');
   assert.equal(await userActiveInBoundSessions(injectedDeps), false);
+});
+
+// ── tool-ready wait in makeHomeSetup (2026-11-08) ────────────────────────
+// DSH 0.2.2's tool-addition mechanism: when the first follow-up request beats
+// the preset mount, the session baseline records "no tools" and web_search is
+// permanently deferred. setup must wait (bounded) for the tool to be visible
+// from the agent's perspective — without throwing — and still pin restrict.
+
+test('makeHomeSetup: tool visible late after mount → setup resolves and restrict still runs', async () => {
+  const calls: string[] = [];
+  let schemasCalls = 0;
+  const tools = {
+    // Agent-view read (schemas(agentCtx)): empty on the first poll, preset
+    // rows land afterwards — the delayed-visibility scenario.
+    schemas: (_scope?: unknown) => {
+      schemasCalls++;
+      return schemasCalls >= 2 ? [{ name: 'web_search' }, { name: 'compress' }] : [];
+    },
+    restrict: (filter: { allow: string[] }) => { calls.push(`restrict:${filter.allow.join('|')}`); return undefined; },
+  };
+  const agentCtx = {
+    get: (name: string) =>
+      name === 'agentPresets' ? { mount: async () => ({ id: 'heartbeat' }) }
+        : name === 'tools' ? tools
+        : undefined,
+  };
+  const deps = {
+    extraTools: undefined,
+    agentPreset: 'heartbeat',
+    ctx: { logger: { info: () => {} } },
+    paths: { logsDir: path.join(sandbox, 'logs') },
+  } as unknown as Parameters<typeof makeHomeSetup>[0];
+
+  const setup = makeHomeSetup(deps);
+  await assert.doesNotReject(() => setup(agentCtx), 'setup must degrade, never throw');
+  assert.ok(schemasCalls >= 2, 'setup actually polled the agent-visible tool surface');
+  assert.ok(calls.some((c) => c.startsWith('restrict:')), 'restrict was still called: ' + calls.join(' | '));
 });
