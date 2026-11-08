@@ -16,7 +16,8 @@ var SEED_SOURCE_DEFAULT_CONFIDENCE = {
   profile: 0.7,
   chat: 0.6,
   screen: 0.4,
-  browse: 0.4
+  browse: 0.4,
+  bilibili: 0.4
 };
 
 // src/seeds/pool.ts
@@ -30,6 +31,7 @@ function emit(audit, entry) {
   }
 }
 var SEED_CATEGORY_CAPS = { topic: 16, chat: 14 };
+var SEED_SOURCE_CAPS = { bilibili: 6 };
 var CATEGORY_VALUES = ["topic", "chat"];
 function normalizeCategory(v) {
   return typeof v === "string" && CATEGORY_VALUES.includes(v) ? v : "topic";
@@ -116,8 +118,10 @@ function evictionScore(seed, policy, now) {
   const w = policy.seeds.scoreWeights;
   return freshness * w.freshness + unused * w.unused + seed.confidence * w.confidence;
 }
-function pickEvictionVictim(db, policy, now, category) {
-  const actives = activeSeeds(db).filter((s) => category === void 0 || normalizeCategory(s.category) === category);
+function pickEvictionVictim(db, policy, now, category, source) {
+  const actives = activeSeeds(db).filter(
+    (s) => (category === void 0 || normalizeCategory(s.category) === category) && (source === void 0 || s.source === source)
+  );
   if (actives.length === 0) return null;
   const unprotected = actives.filter((s) => !s.protected);
   const candidates = unprotected.length > 0 ? unprotected : actives;
@@ -209,20 +213,34 @@ function addSeedLocked(guard, file, policy, input, now, audit) {
     savePool(guard, file, db);
     return { kind: "merged", seed: kept };
   }
-  let evicted;
-  const catCount = activeSeeds(db).filter((s) => normalizeCategory(s.category) === category).length;
-  if (catCount >= SEED_CATEGORY_CAPS[category]) {
-    const victim = pickEvictionVictim(db, policy, now, category);
-    if (victim) {
-      archiveSeed(victim, "pool_cap", now);
-      evicted = victim;
+  const sourceVictims = [];
+  const sourceCap = SEED_SOURCE_CAPS[source];
+  if (sourceCap !== void 0) {
+    while (activeSeeds(db).filter((s) => s.source === source).length >= sourceCap) {
+      const victim = pickEvictionVictim(db, policy, now, void 0, source);
+      if (!victim) break;
+      archiveSeed(victim, "source_cap", now);
+      sourceVictims.push(victim);
     }
   }
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    const victim = pickEvictionVictim(db, policy, now, category);
-    if (victim) {
-      archiveSeed(victim, "pool_cap", now);
-      evicted = evicted ?? victim;
+  let evicted;
+  if (sourceVictims.length > 0) {
+    evicted = sourceVictims[sourceVictims.length - 1];
+  } else {
+    const catCount = activeSeeds(db).filter((s) => normalizeCategory(s.category) === category).length;
+    if (catCount >= SEED_CATEGORY_CAPS[category]) {
+      const victim = pickEvictionVictim(db, policy, now, category);
+      if (victim) {
+        archiveSeed(victim, "pool_cap", now);
+        evicted = victim;
+      }
+    }
+    if (!evicted && activeSeeds(db).length >= policy.seeds.maxActive) {
+      const victim = pickEvictionVictim(db, policy, now, category);
+      if (victim) {
+        archiveSeed(victim, "pool_cap", now);
+        evicted = victim;
+      }
     }
   }
   db.seq += 1;
@@ -245,7 +263,12 @@ function addSeedLocked(guard, file, policy, input, now, audit) {
   };
   db.seeds.push(seed);
   emit(audit, { event: "seed_added", id: seed.id, kind: "added", tag: seed.tag, source: seed.source, category: seed.category, confidence: seed.confidence });
-  if (evicted) emit(audit, { event: "seed_retired", id: evicted.id, reason: "pool_cap", via: "add", into: seed.id });
+  for (const victim of sourceVictims) {
+    emit(audit, { event: "seed_retired", id: victim.id, reason: "source_cap", via: "add", into: seed.id });
+  }
+  if (evicted && sourceVictims.length === 0) {
+    emit(audit, { event: "seed_retired", id: evicted.id, reason: "pool_cap", via: "add", into: seed.id });
+  }
   savePool(guard, file, db);
   return { kind: "added", seed, evicted };
 }
@@ -346,6 +369,7 @@ function deleteSeed(guard, file, id, audit = NO_AUDIT) {
 
 export {
   SEED_CATEGORY_CAPS,
+  SEED_SOURCE_CAPS,
   normalizeCategory,
   SEED_SIMILARITY_THRESHOLD,
   normalizeSeedText,
@@ -366,4 +390,4 @@ export {
   restoreSeed,
   deleteSeed
 };
-//# sourceMappingURL=chunk-7LF5GPUT.js.map
+//# sourceMappingURL=chunk-N6SMIGYJ.js.map

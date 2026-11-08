@@ -22,7 +22,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-PQLFNDWE.js";
+} from "./chunk-64COZ2ZP.js";
 import {
   bilibiliSessionFilePath,
   createBiliLoginService,
@@ -52,7 +52,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-UAIV7JBF.js";
+} from "./chunk-XYBII5PR.js";
 import {
   openPath
 } from "./chunk-OCBE2AKW.js";
@@ -69,7 +69,7 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-7LF5GPUT.js";
+} from "./chunk-N6SMIGYJ.js";
 import {
   clearFocusState,
   readFocusState,
@@ -1456,7 +1456,7 @@ async function runBilibiliSource(deps) {
       const added = addSeed(guard, poolFile, policy, {
         text,
         tag: "scene",
-        source: "browse",
+        source: "bilibili",
         category: "topic",
         noMerge: true,
         ttlDaysOverride: BILI_SEED_TTL_DAYS

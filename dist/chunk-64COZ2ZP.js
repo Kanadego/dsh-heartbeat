@@ -22,7 +22,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-UAIV7JBF.js";
+} from "./chunk-XYBII5PR.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -33,7 +33,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-7LF5GPUT.js";
+} from "./chunk-N6SMIGYJ.js";
 import {
   resolveFocusUntil
 } from "./chunk-LQKOYTRL.js";
@@ -610,10 +610,23 @@ function shuffle(items, rand) {
   }
   return out;
 }
+var BILI_TOPIC_SOFT_CAP = 2;
 function assembleCandidates(seeds, opts = {}) {
   const rand = opts.rand ?? Math.random;
   const cat = (s) => s.category ?? "topic";
-  const topicPool = shuffle(seeds.filter((s) => cat(s) === "topic"), rand);
+  const isBili = (s) => s.source === "bilibili";
+  const shuffled = shuffle(seeds.filter((s) => cat(s) === "topic"), rand);
+  const head = [];
+  const tail = [];
+  let biliSeen = 0;
+  for (const s of shuffled) {
+    if (isBili(s) && biliSeen >= BILI_TOPIC_SOFT_CAP) tail.push(s);
+    else {
+      if (isBili(s)) biliSeen += 1;
+      head.push(s);
+    }
+  }
+  const topicPool = [...head, ...tail];
   const chatPool = seeds.filter((s) => cat(s) === "chat").sort((a, b) => Date.parse(b.lastEvidenceAt) - Date.parse(a.lastEvidenceAt));
   const topic = topicPool.slice(0, 4);
   const chat = chatPool.slice(0, 2);
@@ -1218,7 +1231,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
       rejected,
       entries: [...report.entries ?? [], ...aged.entries]
     });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-4XRTNWRP.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-76VLAZER.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -3103,4 +3116,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-PQLFNDWE.js.map
+//# sourceMappingURL=chunk-64COZ2ZP.js.map
