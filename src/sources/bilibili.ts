@@ -14,7 +14,7 @@
 //     persisted, so a restart cannot hammer the API. Failures never touch the
 //     heartbeat main flow.
 //   - Material text never names a point in time ("不报精确时间点") and stays
-//     <= 60 chars; 《》 inside titles become （） so the 《》 wrapper nests.
+//     <= 100 chars; 《》 inside titles become （） so the 《》 wrapper nests.
 //   - Dedup: the same bvid does not enter the pool twice within 24h (module-
 //     owned small state file — the smallest-change option vs threading the set
 //     through the seeds pool).
@@ -60,7 +60,12 @@ export const BILI_MIN_WATCH_RATIO = 0.1;
 
 /** Caption thresholds. */
 export const BILI_FINISHED_RATIO = 0.9;
-export const BILI_TEXT_MAX_CHARS = 60;
+/**
+ * Hard length cap for seed text. B站投稿标题上限 80 字符：最坏情况
+ * 「他刚看完《」+80+「》」= 86、「《」+80+「》他看到第 99 分钟」= 92，
+ * 100 足以容纳单 P 的完整文案（短标题不会被腰斩，超出才截断兜底）。
+ */
+export const BILI_TEXT_MAX_CHARS = 100;
 
 /** The same bvid does not re-enter the pool within this window. */
 export const BILI_DEDUPE_WINDOW_MS = 24 * 60 * 60_000;
@@ -174,9 +179,10 @@ export function sanitizeTitle(t: string): string {
 /**
  * Seed brief for one record, or null when it has no usable title.
  *
- * 主语必须是第二人称「你」：这条素材会在心跳出口直接对木偶人转述，
- * 说的是用户自己的观看行为。写成无主语句会被模型读成 agent 自己的行为
- * （实测事故：无主语「《X》看到第 N 分钟」被模型顺口读成「我看了四分钟」）。
+ * 主语必须是第三人称「他」——素材是给心跳引擎室读的资料，出口时再由模型
+ * 转成对木偶人说的「你」；写成第二人称会跟池内其他素材不一致，写成无主语句
+ * 则会被读成 agent 自己的行为（实测事故：无主语「《X》看到第 N 分钟」被模型
+ * 顺口读成「我看了四分钟」）。
  */
 export function seedTextFor(r: BiliRecord): string | null {
   const rawTitle = r.title?.trim() || r.show_title?.trim() || '';
@@ -186,19 +192,19 @@ export function seedTextFor(r: BiliRecord): string | null {
   const business = r.history?.business;
   let text: string;
   if (business === 'pgc') {
-    // 番剧影视：你在追《标题》· 分P标题（有分P才带）
+    // 番剧影视：他在追《标题》· 分P标题（有分P才带）
     const part = r.show_title?.trim();
-    text = part && part !== rawTitle ? `你在追《${title}》· ${sanitizeTitle(part)}` : `你在追《${title}》`;
+    text = part && part !== rawTitle ? `他在追《${title}》· ${sanitizeTitle(part)}` : `他在追《${title}》`;
   } else {
     const progress = typeof r.progress === 'number' ? r.progress : -1;
     const duration = typeof r.duration === 'number' ? r.duration : 0;
     const finished = progress < 0
       || (duration > 0 && progress >= duration * BILI_FINISHED_RATIO);
     if (finished) {
-      text = `你刚看完《${title}》`; // progress unknown -> no mention of progress
+      text = `他刚看完《${title}》`; // progress unknown -> no mention of progress
     } else {
       const minute = Math.max(1, Math.ceil(progress / 60));
-      text = `《${title}》你看到第 ${minute} 分钟`;
+      text = `《${title}》他看到第 ${minute} 分钟`;
     }
   }
   return text.length > BILI_TEXT_MAX_CHARS ? text.slice(0, BILI_TEXT_MAX_CHARS) : text;
