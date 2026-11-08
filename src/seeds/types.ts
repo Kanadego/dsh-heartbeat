@@ -26,8 +26,12 @@ export interface Seed {
   /** Times this seed surfaced in an actual expression. */
   used: number;
   bornAt: string;
-  /** bornAt + ttlDays[tag]; archived when passed (rule 2). */
+  /** bornAt + ttlDays[tag] (or ttlDaysOverride when set); archived when passed (rule 2). */
   expiresAt: string;
+  /** Optional per-seed TTL override in days (e.g. bilibili browse material
+   *  hard-expires in 2 days regardless of the scene tag). Absent = the tag's
+   *  policy TTL, which is the behaviour every pre-v2.2 row keeps. */
+  ttlDaysOverride?: number;
   lastUsedAt: string | null;
   /** Fresh-evidence watermark: rule 1 spares seeds with evidence newer than last use. */
   lastEvidenceAt: string;
