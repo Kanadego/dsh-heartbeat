@@ -147,6 +147,23 @@ function saveUiConfig(guard, settingsDir, patch) {
   return merged;
 }
 
+// src/config/quiet-hours.ts
+var HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+function normalizeHhMm(v) {
+  return typeof v === "string" && HHMM.test(v) ? v : null;
+}
+function resolveQuietHours(startRaw, endRaw, current) {
+  const given = (v) => v !== void 0 && v !== null;
+  if (!given(startRaw) && !given(endRaw)) return { start: current.start, end: current.end };
+  const start = normalizeHhMm(startRaw);
+  const end = normalizeHhMm(endRaw);
+  if (given(startRaw) && !start || given(endRaw) && !end) return null;
+  return {
+    start: start ?? current.start,
+    end: end ?? current.end
+  };
+}
+
 // src/rpc.ts
 import fs4 from "fs";
 import path4 from "path";
@@ -157,7 +174,7 @@ import path2 from "path";
 var MAX_INTERESTS = 32;
 var MAX_INTEREST_LEN = 60;
 var MAX_WINDOWS = 6;
-var HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+var HHMM2 = /^([01]\d|2[0-3]):([0-5]\d)$/;
 function userInterestsPath(paths) {
   return path2.join(paths.settingsDir, "interests.json");
 }
@@ -222,8 +239,8 @@ function removeInterest(guard, paths, rawText) {
 function parseWindow(w) {
   if (typeof w !== "object" || w === null) return { ok: false, reason: "not-an-object" };
   const { id, start, end } = w;
-  if (typeof start !== "string" || !HHMM.test(start)) return { ok: false, reason: `bad start ${JSON.stringify(start)}` };
-  if (typeof end !== "string" || !HHMM.test(end)) return { ok: false, reason: `bad end ${JSON.stringify(end)}` };
+  if (typeof start !== "string" || !HHMM2.test(start)) return { ok: false, reason: `bad start ${JSON.stringify(start)}` };
+  if (typeof end !== "string" || !HHMM2.test(end)) return { ok: false, reason: `bad end ${JSON.stringify(end)}` };
   if (start >= end) return { ok: false, reason: `start ${start} must be before end ${end}` };
   return { ok: true, window: { id: typeof id === "string" && id ? id : `${start}-${end}`, start, end } };
 }
@@ -695,7 +712,7 @@ function buildEndpoints(deps, isLive) {
         return err("bad-request", "config.set needs a patch object");
       }
       const keys = Object.keys(patch).filter(
-        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "psyEnabled"].includes(k)
+        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "psyEnabled", "quietStart", "quietEnd"].includes(k)
       );
       if (keys.length === 0) return err("bad-request", "config.set has no recognized field");
       try {
@@ -1263,7 +1280,7 @@ var BILI_STATE_FILE = "bilibili-source.json";
 var BILI_MIN_DURATION_SEC = 90;
 var BILI_MIN_WATCH_RATIO = 0.1;
 var BILI_FINISHED_RATIO = 0.9;
-var BILI_TEXT_MAX_CHARS = 60;
+var BILI_TEXT_MAX_CHARS = 100;
 var BILI_DEDUPE_WINDOW_MS = 24 * 60 * 6e4;
 var BILI_SEED_TTL_DAYS = 2;
 var BILI_FETCH_INTERVAL_MS = 2 * 60 * 6e4;
@@ -1325,16 +1342,16 @@ function seedTextFor(r) {
   let text;
   if (business === "pgc") {
     const part = r.show_title?.trim();
-    text = part && part !== rawTitle ? `\u5728\u8FFD\u300A${title}\u300B\xB7 ${sanitizeTitle(part)}` : `\u5728\u8FFD\u300A${title}\u300B`;
+    text = part && part !== rawTitle ? `\u4ED6\u5728\u8FFD\u300A${title}\u300B\xB7 ${sanitizeTitle(part)}` : `\u4ED6\u5728\u8FFD\u300A${title}\u300B`;
   } else {
     const progress = typeof r.progress === "number" ? r.progress : -1;
     const duration = typeof r.duration === "number" ? r.duration : 0;
     const finished = progress < 0 || duration > 0 && progress >= duration * BILI_FINISHED_RATIO;
     if (finished) {
-      text = `\u521A\u770B\u5B8C\u300A${title}\u300B`;
+      text = `\u4ED6\u521A\u770B\u5B8C\u300A${title}\u300B`;
     } else {
       const minute = Math.max(1, Math.ceil(progress / 60));
-      text = `\u300A${title}\u300B\u770B\u5230\u7B2C ${minute} \u5206\u949F`;
+      text = `\u300A${title}\u300B\u4ED6\u770B\u5230\u7B2C ${minute} \u5206\u949F`;
     }
   }
   return text.length > BILI_TEXT_MAX_CHARS ? text.slice(0, BILI_TEXT_MAX_CHARS) : text;
@@ -1709,12 +1726,22 @@ function apply(ctx, config = {}) {
     statusbar: statusbarEnabledRef,
     idleMode: idleModeRef,
     tokenSaver: tokenSaverRef,
-    psyEnabled: getRuntime().policy.profile.psyEnabled
+    psyEnabled: getRuntime().policy.profile.psyEnabled,
+    quietStart: getRuntime().policy.gate.quietHours.start,
+    quietEnd: getRuntime().policy.gate.quietHours.end
   });
   const uiSet = (patch) => {
     if (typeof patch.psyEnabled === "boolean") {
       updateUserPolicy(guard, paths.settingsDir, { profile: { psyEnabled: patch.psyEnabled } });
       getRuntime().policy.profile.psyEnabled = patch.psyEnabled;
+    }
+    if (patch.quietStart !== void 0 || patch.quietEnd !== void 0) {
+      const next = resolveQuietHours(patch.quietStart, patch.quietEnd, getRuntime().policy.gate.quietHours);
+      if (!next) throw new Error("quiet hours must be HH:MM (00:00-23:59)");
+      updateUserPolicy(guard, paths.settingsDir, { gate: { quietHours: next } });
+      const q = getRuntime().policy.gate.quietHours;
+      q.start = next.start;
+      q.end = next.end;
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
     applyLiveSettings(merged);
