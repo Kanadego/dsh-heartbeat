@@ -243,21 +243,26 @@ import fs3 from "fs";
 import path3 from "path";
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
-  if (!input.originIsInboxSplice) return false;
+  if (!input.originIsUserSplice) return false;
   if (input.intervalMs <= 0) return false;
   return input.now - input.lastInjectAt >= input.intervalMs;
 }
-function turnOriginIsInboxSplice(session) {
+function turnOriginIsUserSplice(session) {
   const events = sessionEvents(session);
-  let splicedIdx = -1;
-  let turnEndIdx = -1;
-  for (let i = events.length - 1; i >= 0 && (splicedIdx < 0 || turnEndIdx < 0); i--) {
-    const t = events[i].type;
-    if (t === "agent/inbox/spliced" && splicedIdx < 0) splicedIdx = i;
-    else if (t === "turn/end" && turnEndIdx < 0) turnEndIdx = i;
+  let start = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === "turn/end") {
+      start = i + 1;
+      break;
+    }
   }
-  if (splicedIdx < 0) return false;
-  return splicedIdx > turnEndIdx;
+  for (let i = start; i < events.length; i++) {
+    if (events[i].type !== "agent/inbox/spliced") continue;
+    const inserted = events[i].data?.inserted;
+    if (!Array.isArray(inserted)) return false;
+    return inserted.some((m) => m?.source?.kind === "user");
+  }
+  return false;
 }
 function isSubagentSession(session) {
   if (!session) return false;
@@ -333,7 +338,7 @@ function registerTimeInjection(ctx, guard, dataDir, opts) {
     const intervalMs = Math.max(0, opts.getTimeInjectMin()) * 6e4;
     if (!shouldInjectTime({
       step: payload.step,
-      originIsInboxSplice: payload.step === 1 ? turnOriginIsInboxSplice(payload.agent.session) : false,
+      originIsUserSplice: payload.step === 1 ? turnOriginIsUserSplice(payload.agent.session) : false,
       lastInjectAt: state[sessionId] ?? 0,
       now,
       intervalMs
