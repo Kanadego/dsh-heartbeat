@@ -65,6 +65,9 @@ export interface AddSeedInput {
    *  one focus in a single pass (wander) set this so each item survives as
    *  its own seed instead of collapsing into the first. */
   noMerge?: boolean;
+  /** Per-seed TTL override in days (v2.2): wins over policy.seeds.ttlDays[tag]
+   *  for THIS seed only; absent = the tag default, unchanged for everyone else. */
+  ttlDaysOverride?: number;
 }
 
 export type DuplicateReason = 'exact' | 'normalized' | 'similar';
@@ -326,7 +329,10 @@ function addSeedLocked(
   }
 
   const nowIso = new Date(now).toISOString();
-  const ttlMs = (policy.seeds.ttlDays[tag] || 14) * DAY_MS;
+  // v2.2: a per-seed override wins for this seed only; every other seed keeps
+  // the tag default (untouched behaviour).
+  const ttlDays = input.ttlDaysOverride ?? (policy.seeds.ttlDays[tag] || 14);
+  const ttlMs = ttlDays * DAY_MS;
 
   // Same-topic merge (§4.3): collapse all same-topic actives + the new item.
   // `noMerge` opts out — wander registers several items under one focus per
@@ -402,6 +408,7 @@ function addSeedLocked(
     used: 0,
     bornAt: nowIso,
     expiresAt: new Date(now + ttlMs).toISOString(),
+    ...(input.ttlDaysOverride !== undefined ? { ttlDaysOverride: input.ttlDaysOverride } : {}),
     lastUsedAt: null,
     lastEvidenceAt: nowIso,
     status: 'active',
@@ -537,7 +544,10 @@ export function restoreSeed(
   // coldBenchDays) keys off bornAt, so a restored seed used to be re-archived
   // by the very next maintenance beat ("restored, then gone one beat later").
   s.bornAt = new Date(now).toISOString();
-  s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
+  // v2.2: a restored seed keeps its own TTL override if it carries one (a
+  // bilibili seed must not outlive its 2-day hard expiry by being restored).
+  const restoreTtlDays = s.ttlDaysOverride ?? (policy.seeds.ttlDays[s.tag] || 14);
+  s.expiresAt = new Date(now + restoreTtlDays * DAY_MS).toISOString();
   s.lastEvidenceAt = new Date(now).toISOString();
   emit(audit, { event: 'seed_restored', id: s.id });
   savePool(guard, file, db);

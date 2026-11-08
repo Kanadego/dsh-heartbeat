@@ -30,6 +30,7 @@ import { buildNotepadTool } from './notepad/tool.js';
 import { notepadFilePath } from './notepad/store.js';
 import { buildExcerptTool } from './excerpt/tool.js';
 import { excerptFilePath } from './excerpt/excerpt.js';
+import { startBilibiliSource } from './sources/bilibili.js';
 
 export const name = 'heartbeat';
 
@@ -442,6 +443,26 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
 
   // §7 main loop: dedicated session/agent + timer (first beat after 15s).
   startOrchestrator(deps);
+
+  // ── Bilibili watch-history source (v2.2, ledger #f575a6) ────────────────
+  // A passive 闲逛素材 feed on its OWN 2h timer — deliberately outside the
+  // beat phases (the orchestrator must not gain a network dependency): the
+  // source throttles itself from a persisted timestamp, fails silent (at most
+  // one debug line) and never touches the heartbeat main flow. The disposer
+  // clears the timer so a plugin reload cannot leak it.
+  ctx.effect(() => {
+    const audit = (entry: Record<string, unknown>): void => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+      } catch { /* audit must never break the source */ }
+    };
+    const debug = (msg: string): void => {
+      try {
+        (ctx.logger as { debug?: (msg: string, ...a: unknown[]) => void }).debug?.('heartbeat: %s', msg);
+      } catch { /* debug sink is best-effort */ }
+    };
+    return startBilibiliSource({ guard, paths, policy: getRuntime().policy, audit, debug });
+  }, 'heartbeat: bilibili source');
 
   // ── M7b: self-built time injection (D20, §17.6) ────────────────────────
   // Gate: step===1 AND user-initiated AND ≥ timeInjectMin since the last
