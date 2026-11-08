@@ -2,7 +2,7 @@
 
 dsh-heartbeat 的完整版本历史，最新的在最上面。
 
-> [README](README.md) 的「版本更新」章节只保留**当前大版本**（v2.1.x）——插件市场的「更新内容」读的就是那一节，所以那里不搬空；更早的记录都收在这里。
+> [README](README.md) 的「版本更新」章节只保留**当前大版本**（v2.2.x）——插件市场的「更新内容」读的就是那一节，所以那里不搬空；更早的记录都收在这里。
 
 - 逐版独立的 release notes（v1.6.2 起）：[docs/releases/](docs/releases/README.md)
 - v1.4.x 及更早：见 [docs/releases/legacy-changelog.md](docs/releases/legacy-changelog.md)
@@ -10,13 +10,32 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 ---
 
 <details open>
+<summary><b>v2.2.x</b></summary>
+
+### v2.2.0 · 2026-11-09（B 站观看历史素材源 · 扫码登录 · 静默时段面板 · DSH 0.2.2 兼容）
+
+- **B 站观看历史素材源**：新增独立来源 `bilibili`，默认每 2 小时拉一次观看历史。过滤三条——时长 < 90 秒、直播间、观看进度不足 10%；同一 bvid 24 小时内不重复进池。素材单独 2 天硬过期，不跟随 tag 的 TTL。文案三种：「他刚看完《X》」「《X》他看到第 N 分钟」「他在追《X》· 分P」，标题保留上限 100 字符（B 站投稿标题上限 80）。凭据读取顺序：vault 加密值 → 配置项 `sources.bilibili.cookieFile` → 都没有则静默停用。
+- **来源上限与候选软上限**：`SEED_SOURCE_CAPS = { bilibili: 6 }`，超出时循环淘汰该来源最旧条目（存量超限一次收敛），审计 reason `source_cap`；候选包装配时 B 站素材最多 2 条（`BILI_TOPIC_SOFT_CAP`），非 B 站不足时才放宽。
+- **B 站扫码登录**：CLI `heartbeat bili login` 生成 PNG 二维码（B 站 passport 接口），手机扫码后轮询；SESSDATA 加密存入 vault 的 `bilibili-session.json`。
+- **扫码登录 UI 入口**：素材 tab 顶部新增账号卡片，显示登录状态与最近保存时间；点扫码在弹层里显示二维码，2 秒轮询，可取消、点遮罩关闭，会话 3 分钟过期。没图形界面时 CLI 会打开图片并打印绝对路径。
+- **静默时段可在面板设置**：设置 tab 的「时间与状态栏」分组新增起止两个时间输入框，保存即写用户层 policy 并直接改运行时值——改完立刻生效，不用重启、不写 `ui.json`。
+- **投递目标跳过已归档会话**：选投递目标时读 `workspace.json` 的 `archivedSessionIds`，归档会话直接跳过并记 `deliver_target_skipped`；全部目标都被归档时记 `spoke_failed: all deliver targets archived`，不再对着一个门后不进人的会话空转。
+- **静默原因分三态**：`blocked`（目标会话被归档门拒绝）/ `empty model output`（模型没吐字）/ `non-Chinese output discarded`（真说了英文）。此前一律记「非中文输出」，把「门没开」伪装成「模型说英文」。
+- **时间注入按消息来源判定**：`turnOriginIsUserSplice` 检查本轮 splice 插入消息的 `source.kind === 'user'`，引擎室的反刍 / 闲逛轮不再被误判为用户驱动、不再插入「当前本地时间」。
+- **Linux 打开账本 / 摘抄本不再拖垮宿主**（#9，感谢 [@dmscode](https://github.com/dmscode)）：跨平台打开改为 `openerFor(platform)` 平台表 + `openPath`，spawn 的 `error` 事件有监听、异常有兜底；Linux 上不再因 `spawn('cmd')` ENOENT 变成 uncaughtException 终止整个 DSH 宿主。同一 PR 还修了 CLI 入口守卫在 POSIX 下永不相等、所有 `heartbeat <verb>` 静默 exit 0 的问题。
+- **引擎室工具就绪等待（DSH 0.2.2 兼容）**：0.2.2 给工具声明加了 `deferLoading`，`presets.mount()` 返回不代表工具已进入 agent 可见面——首次请求若抢在挂载前发出，会话基线会记成「无工具」，之后到达的工具被永久标记延迟加载，上游直接拒绝。现在 setup 在挂载后等待（上限 2 秒、降级不抛），审计记 `toolsReady=ok|timeout`。
+- **反刍 JSON 精简**：输出收窄为 `{seed_ids, doing}`，删掉没人读的 `text` 与 `speak_flag`。
+- **面板文案英文化收尾**：DICT 覆盖剩余中文硬编码，zh / en 各 218 键，插值点逐个核对。
+- **peerDependencies 增加 `0.2.2-rc.1`**。
+
+</details>
+
+<details>
 <summary><b>v2.1.x</b></summary>
 
 ### v2.1.2 · 2026-11-04（修复：面板槽位同时注册短名与全名，issue #8 跟进）
 
 - **面板槽位 key 改为双注册**：v2.1.1 只注册了 npm 全名 `@kanadego/dsh-heartbeat`，只覆盖 npm 安装方式。实测宿主 plugin-manager 的 `listBundles()` 名字取自 profile 的 `dependencies` / `dsh.profile.bundles` key —— **npm 安装时是全名，`file:` / 本地安装时是短名 `dsh-heartbeat`**，详情页以 `ledger.bundles.has(openPkg.name)` 判定是否渲染配置区，key 对不上则整块不显示。`client.js` 改为同时注册 `dsh-heartbeat` 与 `@kanadego/dsh-heartbeat` 两个 key，`scripts/panel-smoke.mjs` 断言同步覆盖双 key，两种安装方式下面板都不消失。
-
-### v2.1.1 · 2026-11-04（修复：面板槽位 key 用全名，issue #8）
 
 ### v2.1.1 · 2026-11-04（修复：面板槽位 key 用全名，issue #8）
 
