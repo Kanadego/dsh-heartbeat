@@ -178,6 +178,11 @@ const LOCALE_NS = "heartbeat";
 				"seeds.hintTopic": "浏览流、手写、画像喂进来的：随机挑，可重复用",
 				"seeds.emptyArchived": "（这类还没有归档条目）",
 				"seeds.empty": "（这类还没有条目）",
+				"seeds.filterPlaceholder": "关键字过滤（匹配 文本 / 标签 / 来源）",
+				"seeds.filterClear": "清除",
+				"seeds.filterNoMatch": "没有匹配关键字的条目，换个词试试",
+				"seeds.filterHint": "过滤后剩 {n} 条",
+				"seeds.usedCount": "已用 {n} 次",
 				"seeds.restore": "恢复",
 				"seeds.archive": "归档",
 				"seeds.used": "  used:{used}",
@@ -194,6 +199,8 @@ const LOCALE_NS = "heartbeat";
 				"interests.to": "到",
 				"interests.addWindow": "加一个时段",
 				"interests.saveWindows": "保存时段",
+				"interests.stats": "当前兴趣 {n} 条 · 浏览时段 {m} 个",
+				"interests.statsNote": "面板暂无法区分出厂默认与已改过（接口未返回该标记），以上为当前生效条数",
 				"profile.tabInterest": "兴趣",
 				"profile.tabProjects": "进行中",
 				"profile.tabComm": "沟通偏好",
@@ -213,6 +220,8 @@ const LOCALE_NS = "heartbeat";
 				"profile.stale": "　久未验证",
 				"profile.updated": "　更新 {date}",
 				"profile.exportMarkdown": "导出 Markdown",
+				"profile.expand": "展开全文",
+				"profile.collapse": "收起",
 				"config.saved": "已保存（即时生效，无需重启）",
 				"config.saveFailed": "保存失败：{error}",
 				"config.interval": "心跳间隔（分钟）",
@@ -235,8 +244,19 @@ const LOCALE_NS = "heartbeat";
 				"config.focusPaused": "已暂停至 {clock}",
 				"config.focusMinutes": "分钟",
 				"config.focusFailed": "操作失败：{error}",
+				"config.group.rhythm": "节律",
+				"config.group.rhythmDesc": "心跳多久跳一次、一天最多说几条。",
+				"config.group.time": "时间与状态栏",
+				"config.group.timeDesc": "给日常会话注入精确时间、在会话里挂一条心跳状态。",
+				"config.group.express": "表达",
+				"config.group.expressDesc": "心跳说话的方式与开销。",
+				"config.group.focus": "专注模式",
+				"config.group.focusDesc": "需要安静时手动暂停心跳，到点自动恢复。它是即时生效的独立开关：点按钮立刻暂停/恢复，不走下面的「保存」。",
+				"config.effect.now": "多久生效：保存后定时器立刻按新间隔重排，下一次心跳就按新间隔走（无需重启）。",
+				"config.effect.next": "多久生效：保存后从下一跳开始生效（无需重启）。",
 				"weekly.intro": "每 7 天生成一份：本周表达与静默、新认识、账本、素材池与活跃高峰。报告只陈述事实，由后台「心跳」署名。",
 				"weekly.empty": "（还没有周报——装好一周后自动出第一期）",
+				"weekly.showBody": "展开查看报告正文",
 				"migrate.processing": "处理中…",
 				"migrate.failed": "失败：{error}",
 				"migrate.pwMismatch": "两次口令不一致或为空",
@@ -252,6 +272,8 @@ const LOCALE_NS = "heartbeat";
 				"migrate.filePlaceholder": "迁移包完整路径（.hbmig）",
 				"migrate.pwPlaceholderShort": "口令",
 				"migrate.importButton": "导入",
+				"migrate.confirmImport": "确认导入（覆盖本机数据）",
+				"migrate.confirmHint": "⚠ 危险操作：导入会用迁移包覆盖本机的心跳数据（被替换的文件会自动备份）。确认路径和口令无误后，再点一次「确认导入」才会执行。",
 				"section.status": "心跳状态",
 				"section.sessions": "会话绑定",
 				"section.seeds": "素材池",
@@ -359,6 +381,11 @@ const LOCALE_NS = "heartbeat";
 				"seeds.hintTopic": "From browsing, handwriting, and the profile: picked at random and reusable",
 				"seeds.emptyArchived": "(No archived entries of this kind yet)",
 				"seeds.empty": "(No entries of this kind yet)",
+				"seeds.filterPlaceholder": "Keyword filter (matches text / tag / source)",
+				"seeds.filterClear": "Clear",
+				"seeds.filterNoMatch": "No entries match this keyword — try another word",
+				"seeds.filterHint": "{n} entries after filtering",
+				"seeds.usedCount": "Used {n} times",
 				"seeds.restore": "Restore",
 				"seeds.archive": "Archive",
 				"seeds.used": "  used: {used}",
@@ -375,6 +402,8 @@ const LOCALE_NS = "heartbeat";
 				"interests.to": "to",
 				"interests.addWindow": "Add a window",
 				"interests.saveWindows": "Save windows",
+				"interests.stats": "{n} interests · {m} browsing windows",
+				"interests.statsNote": "The panel cannot tell factory defaults from edited entries (the API does not expose that marker); the counts above are what is currently in effect",
 				"profile.tabInterest": "Interests",
 				"profile.tabProjects": "In progress",
 				"profile.tabComm": "Communication preferences",
@@ -394,6 +423,8 @@ const LOCALE_NS = "heartbeat";
 				"profile.stale": " · not verified for a while",
 				"profile.updated": " · updated {date}",
 				"profile.exportMarkdown": "Export Markdown",
+				"profile.expand": "Show full text",
+				"profile.collapse": "Collapse",
 				"config.saved": "Saved (takes effect immediately, no restart needed)",
 				"config.saveFailed": "Failed to save: {error}",
 				"config.interval": "Heartbeat interval (minutes)",
@@ -416,8 +447,19 @@ const LOCALE_NS = "heartbeat";
 				"config.focusPaused": "Paused until {clock}",
 				"config.focusMinutes": "min",
 				"config.focusFailed": "Failed: {error}",
+				"config.group.rhythm": "Rhythm",
+				"config.group.rhythmDesc": "How often the heartbeat beats, and how many messages it may send per day.",
+				"config.group.time": "Time & status bar",
+				"config.group.timeDesc": "Inject precise time into everyday sessions and pin a heartbeat status there.",
+				"config.group.express": "Expression",
+				"config.group.expressDesc": "How the heartbeat talks, and what it costs.",
+				"config.group.focus": "Focus mode",
+				"config.group.focusDesc": "Pause the heartbeat manually when you need quiet; it resumes automatically when time is up. This is an instant, independent switch: clicking the button pauses/resumes right away, without going through Save below.",
+				"config.effect.now": "When it takes effect: after saving, the timer is rescheduled to the new interval immediately, so the very next heartbeat follows it (no restart needed).",
+				"config.effect.next": "When it takes effect: after saving, changes apply from the next heartbeat on (no restart needed).",
 				"weekly.intro": "Generated every 7 days: this week's expressions and silences, new acquaintances, ledger, material pool, and activity peaks. The report states facts only and is signed by the background Heartbeat.",
 				"weekly.empty": "(No weekly report yet — the first one appears a week after installation)",
+				"weekly.showBody": "Show report body",
 				"migrate.processing": "Working…",
 				"migrate.failed": "Failed: {error}",
 				"migrate.pwMismatch": "The two passphrases do not match, or are empty",
@@ -433,6 +475,8 @@ const LOCALE_NS = "heartbeat";
 				"migrate.filePlaceholder": "Full path to the migration package (.hbmig)",
 				"migrate.pwPlaceholderShort": "Passphrase",
 				"migrate.importButton": "Import",
+				"migrate.confirmImport": "Confirm import (overwrites local data)",
+				"migrate.confirmHint": "⚠ Dangerous operation: importing overwrites this machine's heartbeat data with the migration package (replaced files are backed up automatically). Once the path and passphrase are verified, click Confirm import one more time to proceed.",
 				"section.status": "Heartbeat status",
 				"section.sessions": "Session bindings",
 				"section.seeds": "Material pool",
@@ -701,14 +745,6 @@ const LOCALE_NS = "heartbeat";
 			// ── 素材池（v1.9.3 三版）：话题 / 聊天 × 活跃 / 归档，四个按钮各看一类 ──
 			// 和画像分区同一套 tab 交互，风格统一；一次只看一类。
 			function SeedsSection() {
-				// 面板版新增文案（不改 DICT，仅本函数使用）
-				const TXT = {
-					filterPlaceholder: "关键字过滤（匹配 文本 / 标签 / 来源）",
-					filterClear: "清除",
-					filterNoMatch: "没有匹配关键字的条目，换个词试试",
-					filterHint: (n) => "过滤后剩 " + n + " 条",
-					used: (n) => "已用 " + n + " 次",
-				};
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
 				const [tab, setTab] = React.useState("topic");
@@ -730,7 +766,7 @@ const LOCALE_NS = "heartbeat";
 						React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 2 } },
 							React.createElement("span", { style: chip }, String(s.tag)),
 							React.createElement("span", { style: chip }, String(s.source)),
-							React.createElement("span", { style: hintStyle }, TXT.used(s.used || 0)),
+							React.createElement("span", { style: hintStyle }, t("seeds.usedCount", { n: s.used || 0 })),
 						),
 						React.createElement("div", { style: { fontSize: 12.5, wordBreak: "break-word", color: "var(--dsw-alias-label-secondary)" }, title: s.text },
 							String(s.text || "").length > 80 ? String(s.text).slice(0, 80) + "…" : String(s.text || "")),
@@ -771,8 +807,8 @@ const LOCALE_NS = "heartbeat";
 					null,
 					React.createElement("div", { style: hintStyle }, L("seeds.activeSummary", { active: data.active.length, cap: data.cap, archived: data.archived.length })),
 					React.createElement("div", { style: rowStyle },
-						React.createElement("input", { style: { ...inputStyle, width: "100%", boxSizing: "border-box" }, placeholder: TXT.filterPlaceholder, value: filter, onChange: (e) => setFilter(e.target.value) }),
-						kw ? React.createElement("button", { style: buttonGhost, onClick: () => setFilter("") }, TXT.filterClear) : null,
+						React.createElement("input", { style: { ...inputStyle, width: "100%", boxSizing: "border-box" }, placeholder: t("seeds.filterPlaceholder"), value: filter, onChange: (e) => setFilter(e.target.value) }),
+						kw ? React.createElement("button", { style: buttonGhost, onClick: () => setFilter("") }, t("seeds.filterClear")) : null,
 					),
 					React.createElement("div", { style: tabRow },
 						tabButton("topic", t("seeds.tabTopic"), topics.length),
@@ -786,9 +822,9 @@ const LOCALE_NS = "heartbeat";
 						? React.createElement("div", { style: hintStyle },
 							categoryEmpty
 								? (archived ? t("seeds.emptyArchived") : t("seeds.empty"))
-								: TXT.filterNoMatch)
+								: t("seeds.filterNoMatch"))
 						: React.createElement("div", { style: scrollBox },
-							kw ? React.createElement("div", { style: { ...hintStyle, padding: "2px 0" } }, TXT.filterHint(list.length)) : null,
+							kw ? React.createElement("div", { style: { ...hintStyle, padding: "2px 0" } }, t("seeds.filterHint", { n: list.length })) : null,
 							list.map((s) => row(s, archived))),
 				);
 			}
@@ -797,12 +833,6 @@ const LOCALE_NS = "heartbeat";
 			// 首编继承出厂：第一次增删/存时段时，插件自动把出厂 interests.json
 			// 完整复制进 data/settings/interests.json，之后卡片就是唯一入口。
 			function InterestsSection() {
-				// 面板版新增文案（不改 DICT，仅本函数使用）
-				const TXT = {
-					stats: (n, m) => "当前兴趣 " + n + " 条 · 浏览时段 " + m + " 个",
-					// 如实说明：rpc 没有返回「出厂默认 / 已改过」标记字段，只能显示当前生效条数
-					statsNote: "面板暂无法区分出厂默认与已改过（接口未返回该标记），以上为当前生效条数",
-				};
 				const [data, setData] = React.useState(null);
 				const [error, setError] = React.useState(null);
 				const [status, setStatus] = React.useState("");
@@ -843,8 +873,8 @@ const LOCALE_NS = "heartbeat";
 					"div",
 					null,
 					React.createElement("div", { style: { ...hintStyle, fontWeight: 600, color: "var(--dsw-alias-label-secondary)" } },
-						TXT.stats(interests.length, windowsCount)),
-					React.createElement("div", { style: hintStyle }, TXT.statsNote),
+						t("interests.stats", { n: interests.length, m: windowsCount })),
+					React.createElement("div", { style: hintStyle }, t("interests.statsNote")),
 					React.createElement("div", { style: hintStyle }, t("interests.hint")),
 					interests.map((item) => React.createElement("div", { key: item, style: rowList },
 						React.createElement("span", { style: { flex: 1, fontSize: 12 } }, item),
@@ -892,8 +922,6 @@ const LOCALE_NS = "heartbeat";
 			// 「引擎室输入」视图。新增：单条正文过长（约超 4 行）时默认收起，
 			// 点「展开全文」看全文；刷新 / 导出按钮保留。
 			function ProfileSection() {
-				// 面板版新增文案（不改 DICT，仅本函数使用）
-				const TXT = { expand: "展开全文", collapse: "收起" };
 				const [data, setData] = React.useState(null);
 				const [digest, setDigest] = React.useState(null);
 				const [tab, setTab] = React.useState("interest");
@@ -940,7 +968,7 @@ const LOCALE_NS = "heartbeat";
 						isLong(e.content) ? React.createElement("button", {
 							style: { ...buttonGhost, height: 20, fontSize: 11, padding: "0 8px", marginTop: 2 },
 							onClick: () => setExpanded((m) => ({ ...m, [key]: !open })),
-						}, open ? TXT.collapse : TXT.expand) : null,
+						}, open ? t("profile.collapse") : t("profile.expand")) : null,
 					);
 				};
 				const om = (digest && digest.omitted) || { tact: 0, topic: 0, wander: 0 };
@@ -1003,20 +1031,12 @@ const LOCALE_NS = "heartbeat";
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [status, setStatus] = React.useState("");
 				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled]);
-				// v2.1.0 面板改造：分组小节文案（局部常量，不进 DICT，暂只做中文）。
-				const GROUP_RHYTHM = "节律";
-				const GROUP_RHYTHM_DESC = "心跳多久跳一次、一天最多说几条。";
-				const GROUP_TIME = "时间与状态栏";
-				const GROUP_TIME_DESC = "给日常会话注入精确时间、在会话里挂一条心跳状态。";
-				const GROUP_EXPRESS = "表达";
-				const GROUP_EXPRESS_DESC = "心跳说话的方式与开销。";
-				const GROUP_FOCUS = "专注模式";
-				const GROUP_FOCUS_DESC = "需要安静时手动暂停心跳，到点自动恢复。它是即时生效的独立开关：点按钮立刻暂停/恢复，不走下面的「保存」。";
+				// v2.1.0 面板改造：分组小节文案走 DICT 的 config.group.*。
 				// 「多久生效」依据 src/rpc.ts 的 config.set 实现判定：
 				//   intervalMin → applyHeartbeatInterval 立即重排定时器（保存后立刻生效）；
 				//   其余字段写入活引用/运行时 policy，每跳判定时读取（下一跳生效）。详见 manifest.md。
-				const EFFECT_NOW = "多久生效：保存后定时器立刻按新间隔重排，下一次心跳就按新间隔走（无需重启）。";
-				const EFFECT_NEXT = "多久生效：保存后从下一跳开始生效（无需重启）。";
+				const EFFECT_NOW = t("config.effect.now");
+				const EFFECT_NEXT = t("config.effect.next");
 				// 专注模式（v2.1.0 ①）：即时动作，不走「保存」，和上面那堆参数分开。
 				// 状态取 rpc 合并值（内存 + data/focus.json），所以 CLI 设的暂停这里也看得见。
 				const [focus, setFocus] = React.useState(null);
@@ -1083,7 +1103,7 @@ const LOCALE_NS = "heartbeat";
 					"div",
 					null,
 					// ── 节律 ──
-					groupTitle(GROUP_RHYTHM, GROUP_RHYTHM_DESC),
+					groupTitle(t("config.group.rhythm"), t("config.group.rhythmDesc")),
 					paramRow(t("config.interval"),
 						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftInterval, onChange: (e) => setDraftInterval(e.target.value) }),
 						null, EFFECT_NOW),
@@ -1091,18 +1111,18 @@ const LOCALE_NS = "heartbeat";
 						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, value: draftCap, onChange: (e) => setDraftCap(e.target.value) }),
 						null, EFFECT_NEXT),
 					// ── 时间与状态栏 ──
-					groupTitle(GROUP_TIME, GROUP_TIME_DESC),
+					groupTitle(t("config.group.time"), t("config.group.timeDesc")),
 					paramRow(t("config.timeInject"),
 						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, value: draftTimeInject, onChange: (e) => setDraftTimeInject(e.target.value) }),
 						t("config.timeInjectOff"), EFFECT_NEXT),
 					paramRow(t("config.statusbar"), toggleBtn(draftStatusbar, setDraftStatusbar), t("config.statusbarHint"), EFFECT_NEXT),
 					// ── 表达 ──
-					groupTitle(GROUP_EXPRESS, GROUP_EXPRESS_DESC),
+					groupTitle(t("config.group.express"), t("config.group.expressDesc")),
 					paramRow(t("config.tokenSaver"), toggleBtn(draftTokenSaver, setDraftTokenSaver), t("config.tokenSaverHint"), EFFECT_NEXT),
 					paramRow(t("config.psy"), toggleBtn(draftPsy, setDraftPsy), t("config.psyHint"), EFFECT_NEXT),
 					paramRow(t("config.idle"), toggleBtn(draftIdle, setDraftIdle), t("config.idleHint"), EFFECT_NEXT),
 					// ── 专注模式：即时动作，不进 draft 体系 ──
-					groupTitle(GROUP_FOCUS, GROUP_FOCUS_DESC),
+					groupTitle(t("config.group.focus"), t("config.group.focusDesc")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, t("config.focus")),
 						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftFocusMin, onChange: (e) => setDraftFocusMin(e.target.value) }),
@@ -1127,7 +1147,6 @@ const LOCALE_NS = "heartbeat";
 				const [selected, setSelected] = React.useState("");
 				const [text, setText] = React.useState(null);
 				// v2.1.0 面板改造：正文收进「展开查看」折叠块，默认收起；列表与加载逻辑原样保留。
-				const WEEKLY_SHOW = "展开查看报告正文";
 				const loadReport = React.useCallback((file) => {
 					setSelected(file);
 					rpc("weekly.get", { file }).then((r) => setText(r.text), (e) => setError(String(e).slice(0, 100)));
@@ -1158,7 +1177,7 @@ const LOCALE_NS = "heartbeat";
 						}, r.end.slice(0, 10))),
 					) : null,
 					text ? React.createElement("details", { style: { margin: "4px 0" } },
-						React.createElement("summary", { style: summaryStyle }, WEEKLY_SHOW),
+						React.createElement("summary", { style: summaryStyle }, t("weekly.showBody")),
 						React.createElement("pre", { style: { whiteSpace: "pre-wrap", margin: "4px 0", fontSize: 12 } }, text),
 					) : null,
 					React.createElement("div", { style: rowStyle },
@@ -1178,8 +1197,6 @@ const LOCALE_NS = "heartbeat";
 				const busy = React.useRef(false);
 				// v2.1.0 面板改造：导入是危险操作（会用迁移包覆盖本机数据），加二次确认——
 				// 第一次点只亮红色确认态并提示，再点一次才真正执行。
-				const IMPORT_CONFIRM_LABEL = "确认导入（覆盖本机数据）";
-				const IMPORT_CONFIRM_HINT = "⚠ 危险操作：导入会用迁移包覆盖本机的心跳数据（被替换的文件会自动备份）。确认路径和口令无误后，再点一次「确认导入」才会执行。";
 				const [confirmImport, setConfirmImport] = React.useState(false);
 				const run = (fn) => {
 					if (busy.current) return;
@@ -1202,7 +1219,7 @@ const LOCALE_NS = "heartbeat";
 				const onImportClick = () => {
 					if (!confirmImport) {
 						setConfirmImport(true);
-						setStatus(IMPORT_CONFIRM_HINT);
+						setStatus(t("migrate.confirmHint"));
 						return;
 					}
 					setConfirmImport(false);
@@ -1223,7 +1240,7 @@ const LOCALE_NS = "heartbeat";
 						React.createElement("input", { style: { ...inputStyle, width: 220 }, placeholder: t("migrate.filePlaceholder"), value: importFile, onChange: (e) => { setImportFile(e.target.value); setConfirmImport(false); } }),
 						React.createElement("input", { style: inputStyle, type: "password", placeholder: t("migrate.pwPlaceholderShort"), value: importPw, onChange: (e) => { setImportPw(e.target.value); setConfirmImport(false); } }),
 						confirmImport
-							? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: onImportClick }, IMPORT_CONFIRM_LABEL)
+							? React.createElement("button", { style: { ...buttonStyle, background: "#e5484d" }, onClick: onImportClick }, t("migrate.confirmImport"))
 							: React.createElement("button", { style: buttonStyle, onClick: onImportClick }, t("migrate.importButton")),
 					),
 					status ? React.createElement("div", { style: hintStyle }, status) : null,
