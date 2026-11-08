@@ -247,6 +247,8 @@ const LOCALE_NS = "heartbeat";
 				"config.cap": "每日表达上限（条）",
 				"config.timeInject": "时间注入间隔（分钟）",
 				"config.timeInjectOff": "0 = 关闭",
+				"config.quietHours": "静默时段",
+				"config.quietHoursHint": "这段时间内不主动出声；保存后下一跳生效",
 				"config.statusbar": "状态栏",
 				"config.statusbarHint": "日常会话中的心跳状态感知（会额外消耗token）",
 				"config.idle": "闲着模式",
@@ -465,6 +467,8 @@ const LOCALE_NS = "heartbeat";
 				"config.cap": "Daily expression limit",
 				"config.timeInject": "Time injection interval (minutes)",
 				"config.timeInjectOff": "0 = off",
+				"config.quietHours": "Quiet hours",
+				"config.quietHoursHint": "No proactive messages during this window; takes effect on the next beat after saving",
 				"config.statusbar": "Status bar",
 				"config.statusbarHint": "Show heartbeat status in everyday conversations (uses extra tokens)",
 				"config.idle": "Idle mode",
@@ -1193,6 +1197,9 @@ const LOCALE_NS = "heartbeat";
 				const idleMode = !!value && value.idleMode === true;
 				const tokenSaver = !!value && value.tokenSaver === true;
 				const psyEnabled = !!value && value.psyEnabled === true;
+				// 静默时段（v2.2）：policy 用户层字段（gate.quietHours），保存后下一跳生效。
+				const quietStart = value && typeof value.quietStart === "string" ? value.quietStart : "01:30";
+				const quietEnd = value && typeof value.quietEnd === "string" ? value.quietEnd : "06:30";
 				const [draftInterval, setDraftInterval] = React.useState(interval);
 				const [draftCap, setDraftCap] = React.useState(cap);
 				const [draftTimeInject, setDraftTimeInject] = React.useState(timeInject);
@@ -1200,8 +1207,10 @@ const LOCALE_NS = "heartbeat";
 				const [draftIdle, setDraftIdle] = React.useState(idleMode);
 				const [draftTokenSaver, setDraftTokenSaver] = React.useState(tokenSaver);
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
+				const [draftQuietStart, setDraftQuietStart] = React.useState(quietStart);
+				const [draftQuietEnd, setDraftQuietEnd] = React.useState(quietEnd);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled]);
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); setDraftQuietStart(quietStart); setDraftQuietEnd(quietEnd); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled, quietStart, quietEnd]);
 				// v2.1.0 面板改造：分组小节文案走 DICT 的 config.group.*。
 				// 「多久生效」依据 src/rpc.ts 的 config.set 实现判定：
 				//   intervalMin → applyHeartbeatInterval 立即重排定时器（保存后立刻生效）；
@@ -1246,6 +1255,8 @@ const LOCALE_NS = "heartbeat";
 							idleMode: !!draftIdle,
 							tokenSaver: !!draftTokenSaver,
 							psyEnabled: !!draftPsy,
+							quietStart: draftQuietStart,
+							quietEnd: draftQuietEnd,
 						});
 						setValue(v);
 						setStatus(t("config.saved"));
@@ -1286,6 +1297,14 @@ const LOCALE_NS = "heartbeat";
 					paramRow(t("config.timeInject"),
 						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, value: draftTimeInject, onChange: (e) => setDraftTimeInject(e.target.value) }),
 						t("config.timeInjectOff"), EFFECT_NEXT),
+					paramRow(t("config.quietHours"),
+						React.createElement(
+							"span",
+							null,
+							React.createElement("input", { style: inputStyle, type: "time", value: draftQuietStart, onChange: (e) => setDraftQuietStart(e.target.value) }),
+							"–",
+							React.createElement("input", { style: inputStyle, type: "time", value: draftQuietEnd, onChange: (e) => setDraftQuietEnd(e.target.value) })),
+						t("config.quietHoursHint"), EFFECT_NEXT),
 					paramRow(t("config.statusbar"), toggleBtn(draftStatusbar, setDraftStatusbar), t("config.statusbarHint"), EFFECT_NEXT),
 					// ── 表达 ──
 					groupTitle(t("config.group.express"), t("config.group.expressDesc")),
