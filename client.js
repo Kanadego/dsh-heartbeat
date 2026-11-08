@@ -86,6 +86,10 @@ const PANEL_CSS = [
 	".hb-ok{font-size:12px;color:#2fbf7f;border:1px solid rgba(61,220,151,.5);border-radius:9px;padding:6px 10px;word-break:break-all;background:rgba(61,220,151,.08)}",
 	".hb-scroll{max-height:340px;overflow-y:auto;padding:2px}",
 	".hb-pre{margin:0;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;border-radius:9px;padding:8px 10px;background:rgba(127,127,127,.10)}",
+	// B站扫码登录弹层（v2.3.0）：全屏半透明遮罩 + 居中小卡，二维码放白底上保证对比度
+	".hb-modalMask{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}",
+	".hb-modal{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:320px;padding:18px 20px;border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.25));background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 18px 50px rgba(0,0,0,.35)}",
+	".hb-qrImg{width:240px;height:240px;border-radius:8px;background:#fff;padding:8px;box-sizing:border-box}",
 ].join("");
 function ensurePanelStyle() {
 	try {
@@ -186,6 +190,21 @@ const LOCALE_NS = "heartbeat";
 				"seeds.restore": "恢复",
 				"seeds.archive": "归档",
 				"seeds.used": "  used:{used}",
+				"bili.sourceTitle": "素材来源",
+				"bili.status.loggedIn": "B站 · 已登录（保存于 {time}）",
+				"bili.status.notLoggedIn": "B站 · 未登录",
+				"bili.loginButton": "扫码登录",
+				"bili.reloginButton": "重新登录",
+				"bili.state.starting": "正在获取二维码…",
+				"bili.state.waiting": "等待扫码…",
+				"bili.state.scanned": "已扫码，请在手机上确认",
+				"bili.state.success": "登录成功",
+				"bili.state.expired": "二维码已过期，请重新获取",
+				"bili.state.error": "登录失败",
+				"bili.state.errorDetail": "失败原因：{error}",
+				"bili.qrHeading": "B站扫码登录",
+				"bili.qrHint": "用 B站 App 扫码，登录后才能抓取 B站素材",
+				"bili.cancel": "取消",
 				"interests.added": "已添加",
 				"interests.addFailed": "添加失败：{error}",
 				"interests.deleted": "已删除",
@@ -389,6 +408,21 @@ const LOCALE_NS = "heartbeat";
 				"seeds.restore": "Restore",
 				"seeds.archive": "Archive",
 				"seeds.used": "  used: {used}",
+				"bili.sourceTitle": "Material sources",
+				"bili.status.loggedIn": "Bilibili · logged in (saved {time})",
+				"bili.status.notLoggedIn": "Bilibili · not logged in",
+				"bili.loginButton": "Scan to log in",
+				"bili.reloginButton": "Log in again",
+				"bili.state.starting": "Fetching QR code…",
+				"bili.state.waiting": "Waiting for scan…",
+				"bili.state.scanned": "Scanned — confirm on your phone",
+				"bili.state.success": "Logged in",
+				"bili.state.expired": "QR code expired — please start again",
+				"bili.state.error": "Login failed",
+				"bili.state.errorDetail": "Reason: {error}",
+				"bili.qrHeading": "Bilibili QR login",
+				"bili.qrHint": "Scan with the Bilibili app; the login is used for fetching Bilibili material",
+				"bili.cancel": "Cancel",
 				"interests.added": "Added",
 				"interests.addFailed": "Failed to add: {error}",
 				"interests.deleted": "Deleted",
@@ -594,6 +628,15 @@ const LOCALE_NS = "heartbeat";
 					return d.toLocaleString(localeTag(), { hour12: false });
 				} catch { return String(iso); }
 			};
+			// MM-DD HH:mm（本地时区），用于「保存于 …」这类紧凑时间戳
+			const fmtMonthDayClock = (ms) => {
+				try {
+					const d = new Date(ms);
+					if (Number.isNaN(d.getTime())) return String(ms);
+					const two = (n) => String(n).padStart(2, "0");
+					return two(d.getMonth() + 1) + "-" + two(d.getDate()) + " " + two(d.getHours()) + ":" + two(d.getMinutes());
+				} catch { return String(ms); }
+			};
 
 			// ── 心跳状态卡片 ──────────────────────────────────────────────
 			function StatusCard() {
@@ -738,6 +781,134 @@ const LOCALE_NS = "heartbeat";
 								React.createElement("button", { style: buttonGhost, onClick: () => doBind(s.id, true, true) }, t("sessions.modesBoth")),
 							),
 						)),
+					) : null,
+				);
+			}
+
+			// ── 素材来源：B站扫码登录（v2.3.0）─────────────────────────────
+			// 素材 tab 顶部的登录入口：状态行走 bili.status；扫码流程走
+			// bili.login.start 拿 dataURL 二维码（弹层展示），之后每 2 秒
+			// bili.login.poll 轮询一次。成功/过期/出错即停表并收起弹层，
+			// 成功后刷新登录状态；弹层有「取消」按钮、点遮罩空白也能关。
+			// 卸载时清掉轮询定时器。所有文案走 DICT。
+			function BiliLoginCard() {
+				const [status, setStatus] = React.useState(null);
+				const [phase, setPhase] = React.useState("idle"); // idle|starting|waiting|scanned|success|expired|error
+				const [errMsg, setErrMsg] = React.useState("");
+				const [qrDataUrl, setQrDataUrl] = React.useState(null);
+				const [modal, setModal] = React.useState(false);
+				const pollTimer = React.useRef(null);
+				// 竞态守卫：sessionRef 记当前有效的 sessionId，startSeqRef 给每次 start
+				// 发号。连点/旧流程晚归时，过期的 start 结果与 poll 回调一律忽略，
+				// 不会误关新弹层。
+				const sessionRef = React.useRef(null);
+				const startSeqRef = React.useRef(0);
+				const stopPolling = React.useCallback(() => {
+					if (pollTimer.current !== null) { clearInterval(pollTimer.current); pollTimer.current = null; }
+				}, []);
+				// 组件卸载：轮询定时器必须跟着走，不留后台请求
+				React.useEffect(() => () => stopPolling(), [stopPolling]);
+				const reload = React.useCallback(() => {
+					rpc("bili.status").then(setStatus, () => setStatus({ loggedIn: false, savedAt: null }));
+				}, []);
+				React.useEffect(() => { reload(); }, [reload]);
+				const closeLogin = (next, message) => {
+					stopPolling();
+					sessionRef.current = null;
+					setQrDataUrl(null);
+					setModal(false);
+					setPhase(next);
+					setErrMsg(message || "");
+					if (next === "success") reload();
+				};
+				// 用户主动放弃：会话留在服务端内存里自然过期，不为此新增 rpc 调用
+				const cancelLogin = () => {
+					stopPolling();
+					startSeqRef.current += 1; // 让在途的 start 结果作废
+					sessionRef.current = null;
+					setQrDataUrl(null);
+					setModal(false);
+					setPhase("idle");
+					setErrMsg("");
+				};
+				const startLogin = async () => {
+					stopPolling();
+					const seq = ++startSeqRef.current;
+					setErrMsg("");
+					setPhase("starting");
+					let v;
+					try {
+						v = await rpc("bili.login.start");
+					} catch (e) {
+						if (startSeqRef.current !== seq) return; // 已被更新的启动/取消取代
+						setPhase("error");
+						setErrMsg(String(e).slice(0, 80));
+						return;
+					}
+					if (startSeqRef.current !== seq) return; // 晚归的旧结果：丢弃
+					sessionRef.current = v.sessionId;
+					setQrDataUrl(v.qrDataUrl);
+					setModal(true);
+					setPhase("waiting");
+					stopPolling();
+					pollTimer.current = setInterval(() => {
+						rpc("bili.login.poll", { sessionId: v.sessionId }).then(
+							(r) => {
+								if (sessionRef.current !== v.sessionId) return; // 非当前会话：忽略
+								if (r.state === "waiting" || r.state === "scanned") { setPhase(r.state); return; }
+								if (r.state === "success") closeLogin("success");
+								else if (r.state === "expired") closeLogin("expired");
+								else closeLogin("error", r.message || "");
+							},
+							(e) => {
+								if (sessionRef.current !== v.sessionId) return;
+								closeLogin("error", String(e).slice(0, 80));
+							},
+						);
+					}, 2000);
+				};
+				const loggedIn = !!(status && status.loggedIn);
+				const savedAt = status && status.loggedIn && typeof status.savedAt === "number" ? status.savedAt : null;
+				const stateLine = status === null ? t("common.loading")
+					: loggedIn ? L("bili.status.loggedIn", { time: savedAt !== null ? fmtMonthDayClock(savedAt) : t("common.unknown") })
+					: t("bili.status.notLoggedIn");
+				const phaseText = phase === "starting" ? t("bili.state.starting")
+					: phase === "waiting" ? t("bili.state.waiting")
+					: phase === "scanned" ? t("bili.state.scanned")
+					: phase === "success" ? t("bili.state.success")
+					: phase === "expired" ? t("bili.state.expired")
+					: phase === "error" ? t("bili.state.error")
+					: null;
+				const badgeCls = loggedIn ? "hb-badge hb-badgeOk" : "hb-badge hb-badgeOff";
+				return React.createElement(
+					"div",
+					{ className: "hb-card" },
+					React.createElement("div", { className: "hb-cardHead" },
+						React.createElement("span", { className: "hb-cardTitle" }, t("bili.sourceTitle")),
+						React.createElement("span", { className: badgeCls },
+							React.createElement("i", { className: "hb-dot" }),
+							stateLine)),
+					React.createElement("div", { className: "hb-row" },
+						React.createElement("button", {
+							className: phase === "starting" ? "hb-btn" : "hb-btn hb-btnPrimary",
+							disabled: phase === "starting",
+							onClick: () => { void startLogin(); },
+						}, loggedIn ? t("bili.reloginButton") : t("bili.loginButton")),
+						phaseText ? React.createElement("span", { className: phase === "error" ? "hb-err" : "hb-ok" },
+							phase === "error" && errMsg ? L("bili.state.errorDetail", { error: errMsg }) : phaseText) : null),
+					modal ? React.createElement(
+						"div",
+						{ className: "hb-modalMask", onClick: (e) => { if (e.target === e.currentTarget) cancelLogin(); } },
+						React.createElement(
+							"div",
+							{ className: "hb-modal" },
+							React.createElement("div", { className: "hb-cardTitle" }, t("bili.qrHeading")),
+							React.createElement("img", { className: "hb-qrImg", src: qrDataUrl, alt: t("bili.qrHeading") }),
+							React.createElement("div", { className: "hb-hint" },
+								phase === "scanned" ? t("bili.state.scanned") : t("bili.state.waiting")),
+							React.createElement("div", { className: "hb-hint" }, t("bili.qrHint")),
+							React.createElement("button", { className: "hb-btn", onClick: cancelLogin }, t("bili.cancel")),
+						),
 					) : null,
 				);
 			}
@@ -1324,7 +1495,12 @@ const LOCALE_NS = "heartbeat";
 					React.createElement("div", { className: "hb-body" },
 						tab === "status" ? React.createElement(StatusCard, null) : null,
 						tab === "sessions" ? card(t("panel.tab.sessions"), React.createElement(SessionsSection, null)) : null,
-						tab === "seeds" ? card(t("panel.tab.seeds"), React.createElement(SeedsSection, null)) : null,
+						tab === "seeds" ? card(t("panel.tab.seeds"), React.createElement(
+							"div",
+							null,
+							React.createElement(BiliLoginCard, { key: "bili-login" }),
+							React.createElement(SeedsSection, null),
+						)) : null,
 						tab === "interests" ? card(t("panel.tab.interests"), React.createElement(InterestsSection, null)) : null,
 						tab === "profile" ? card(t("panel.tab.profile"), React.createElement(ProfileSection, null)) : null,
 						tab === "weekly" ? card(t("panel.tab.weekly"), React.createElement(WeeklySection, null)) : null,

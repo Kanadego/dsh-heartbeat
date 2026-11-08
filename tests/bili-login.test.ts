@@ -24,6 +24,7 @@ import {
 import {
   BILI_SESSION_FILE_NAME,
   bilibiliSessionFilePath,
+  createBiliLoginService,
   runBiliLogin,
   saveBiliSession,
   sessdataFromCookies,
@@ -288,4 +289,104 @@ test('sessdataFromUrl：非 URL 输入返回 null 而不是抛错', () => {
   assert.equal(sessdataFromUrl(undefined), null);
   assert.equal(sessdataFromUrl(null), null);
   assert.equal(sessdataFromUrl('https://x.test/?SESSDATA=a%2Cb'), 'a%2Cb');
+});
+
+// ── 面板用两步式登录服务（createBiliLoginService，v2.3.0）────────────────
+// 同一套假 fetch；二维码渲染注入成假 dataURL，保存注入成真 vault 写入
+// （saveBiliSession），让「成功写 vault」可以被读回来断言。
+const QR_DATA_URL = 'data:image/png;base64,FAKEQR';
+
+function makeService(opts: {
+  steps: Step[];
+  /** 每次时钟调用的步进（ms）。默认 1s：几次调用远碰不到 3 分钟 TTL。 */
+  tickMs?: number;
+  /** 真写 vault（saveBiliSession）时为 true；否则只记录收到的值。 */
+  realVault?: boolean;
+}) {
+  const guard = createPathGuard(workspace().dataDir);
+  const paths = workspace();
+  const urls: string[] = [];
+  const saved: string[] = [];
+  let t = 0;
+  const service = createBiliLoginService({
+    fetchImpl: fakeFetch(opts.steps, urls),
+    renderQrDataUrl: async (url) => {
+      assert.equal(url, GENERATE_BODY.data.url);
+      return QR_DATA_URL;
+    },
+    now: () => (t += opts.tickMs ?? 1_000),
+    saveCredential: (value) => {
+      saved.push(value);
+      if (opts.realVault) saveBiliSession(guard, paths, value);
+    },
+  });
+  return { service, urls, saved, guard, paths };
+}
+
+test('面板服务：startBiliLogin 返回 png dataURL 二维码 + 会话，不落临时文件', async () => {
+  const { service } = makeService({ steps: [] });
+  const res = await service.startBiliLogin();
+  assert.match(res.qrDataUrl, /^data:image\/png;base64,/);
+  assert.ok(res.sessionId.length > 0);
+  // 会话 3 分钟 TTL：expiresAt = now + 180_000（start 消耗两次时钟：sweep 一次、打时间戳一次）
+  assert.equal(res.expiresAt - 180_000, 2_000);
+  // 不产生任何文件系统副作用（二维码只活在 dataURL 里）
+  const entries = fs.readdirSync(sandbox);
+  assert.deepEqual(entries.filter((e) => e.includes('bili-login-qr')), []);
+});
+
+test('面板服务 poll 四态：waiting → scanned → success（SESSDATA 走 Set-Cookie）', async () => {
+  const { service, saved } = makeService({
+    steps: [
+      { body: { code: 0, data: { code: 86101, message: '未扫码' } } },
+      { body: { code: 0, data: { code: 86090, message: '已扫码待确认' } } },
+      {
+        body: { code: 0, data: { code: 0, url: 'https://passport.bilibili.com/?SESSDATA=urlfallback%2Cv' } },
+        headers: { 'Set-Cookie': 'SESSDATA=rpc%2Cv; Path=/; HttpOnly' },
+      },
+    ],
+  });
+  const start = await service.startBiliLogin();
+  assert.equal((await service.pollBiliLogin(start.sessionId)).state, 'waiting');
+  assert.equal((await service.pollBiliLogin(start.sessionId)).state, 'scanned');
+  const done = await service.pollBiliLogin(start.sessionId);
+  assert.equal(done.state, 'success');
+  assert.equal(done.message, undefined);
+  // Cookie 是首选来源，url 兜底不得反超
+  assert.deepEqual(saved, ['rpc%2Cv']);
+});
+
+test('面板服务：success 写 vault 且会话被清理；再 poll 返回 expired（不再写第二次）', async () => {
+  const { service, saved, guard, paths } = makeService({
+    steps: [
+      { body: { code: 0, data: { code: 0, url: 'https://passport.bilibili.com/?SESSDATA=vaulted%2Cv' } } },
+    ],
+    realVault: true,
+  });
+  const start = await service.startBiliLogin();
+  assert.equal((await service.pollBiliLogin(start.sessionId)).state, 'success');
+  // vault 里按契约落了 { sessdata, savedAt }（KHBV2 容器）
+  const record = loadJson<{ sessdata: string; savedAt: number }>(guard, bilibiliSessionFilePath(paths));
+  assert.equal(record!.sessdata, 'vaulted%2Cv');
+  assert.ok(Number.isFinite(record!.savedAt));
+  // 会话一次性：同一 sessionId 再 poll 直接 expired，且不再打网络（steps 已空）
+  const again = await service.pollBiliLogin(start.sessionId);
+  assert.equal(again.state, 'expired');
+  assert.deepEqual(saved, ['vaulted%2Cv']);
+});
+
+test('面板服务：过期会话 poll 返回 expired（TTL 到点本地清理 + 86038 服务端过期）', async () => {
+  // (a) 本地 TTL：时钟每次 +200s，第二次调用（首次 poll）已越过 3 分钟
+  const a = makeService({ steps: [], tickMs: 200_000 });
+  const start = await a.service.startBiliLogin();
+  const r = await a.service.pollBiliLogin(start.sessionId);
+  assert.equal(r.state, 'expired');
+  assert.deepEqual(a.urls.length, 1, 'TTL 过期不得打 poll 网络');
+  // (b) 服务端过期：data.code=86038 → expired，会话被清
+  const b = makeService({ steps: [{ body: { code: 0, data: { code: 86038, message: '二维码已失效' } } }] });
+  const start2 = await b.service.startBiliLogin();
+  assert.equal((await b.service.pollBiliLogin(start2.sessionId)).state, 'expired');
+  assert.equal((await b.service.pollBiliLogin(start2.sessionId)).state, 'expired');
+  assert.equal(b.urls.length, 2, '86038 后会话已清，第二次 poll 不打网络');
+  assert.deepEqual(b.saved, []);
 });
