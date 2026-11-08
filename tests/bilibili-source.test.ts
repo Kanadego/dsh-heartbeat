@@ -200,7 +200,7 @@ test('filter 3: progress/duration < 0.1 -> dropped', async () => {
 
 test('progress < 0 boundary: unknown progress passes and the caption never mentions it', async () => {
   assert.equal(shouldDropRecord({ title: 'x', duration: 600, progress: -1, history: { bvid: 'BV1', business: 'archive' } }), null);
-  assert.equal(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }), '刚看完《某深度视频》');
+  assert.equal(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }), '你刚看完《某深度视频》');
   assert.equal(/分钟/.test(seedTextFor({ title: '某深度视频', duration: 600, progress: -1 }) ?? ''), false);
 });
 
@@ -208,15 +208,15 @@ test('progress < 0 boundary: unknown progress passes and the caption never menti
 
 test('captions: finished / mid / pgc, each <= 60 chars', () => {
   // 看完: progress >= duration * 0.9
-  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 570 }), '刚看完《深海纪录片》');
+  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 570 }), '你刚看完《深海纪录片》');
   // 中途: 0 < progress < duration * 0.9 -> 第 N 分钟
-  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 65 }), '《深海纪录片》看到第 2 分钟');
+  assert.equal(seedTextFor({ title: '深海纪录片', duration: 600, progress: 65 }), '《深海纪录片》你看到第 2 分钟');
   // 番剧影视 (pgc): 在追《标题》· 分P标题（有分P才带）
   assert.equal(
     seedTextFor({ title: '某动画 第二季', show_title: '第3话 雨夜', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }),
-    '在追《某动画 第二季》· 第3话 雨夜',
+    '你在追《某动画 第二季》· 第3话 雨夜',
   );
-  assert.equal(seedTextFor({ title: '某动画 第二季', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }), '在追《某动画 第二季》');
+  assert.equal(seedTextFor({ title: '某动画 第二季', duration: 1400, progress: 700, history: { bvid: 'BV2', business: 'pgc' } }), '你在追《某动画 第二季》');
   // length cap
   const long = seedTextFor({ title: '很长的标题'.repeat(20), duration: 600, progress: 600 });
   assert.ok(long && long.length <= 60);
@@ -229,7 +229,7 @@ test('sanitizeTitle: 《 -> （, 》 -> ） so the wrapper does not nest', () =>
 
 test('pgc record with a nested title round-trips through the wrapper', () => {
   const text = seedTextFor({ title: '《三体》剧集', duration: 1400, progress: 1400, history: { bvid: 'BV3', business: 'pgc' } });
-  assert.equal(text, '在追《（三体）剧集》');
+  assert.equal(text, '你在追《（三体）剧集》');
   assert.equal((text ?? '').match(/《/g)?.length, 1); // only OUR wrapper remains
 });
 
