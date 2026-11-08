@@ -150,7 +150,7 @@ function flag(argv: string[], name: string): string | undefined {
  *  unchecked. Validate against the known sets instead (the `satisfies` clauses
  *  keep these lists in step with the types). */
 const SEED_TAGS = ['news', 'fandom', 'scene', 'promise'] as const satisfies readonly SeedTag[];
-const SEED_SOURCES = ['chat', 'screen', 'browse', 'hand', 'profile'] as const satisfies readonly SeedSource[];
+const SEED_SOURCES = ['chat', 'screen', 'browse', 'bilibili', 'hand', 'profile'] as const satisfies readonly SeedSource[];
 
 function flagOneOf<T extends string>(argv: string[], name: string, allowed: readonly T[]): T | undefined {
   const v = flag(argv, name);

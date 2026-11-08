@@ -379,12 +379,14 @@ export async function runBilibiliSource(deps: BiliDeps): Promise<BiliRunResult> 
       continue;
     }
     try {
-      // browse defaults: confidence = SEED_SOURCE_DEFAULT_CONFIDENCE.browse
-      // (0.4) via the pool's own default; hard TTL via the per-seed override.
+      // 'bilibili' source (2026-11-09): own lane, capped by SEED_SOURCE_CAPS
+      // and NOT shared with the wander 'browse' news. Defaults: confidence =
+      // SEED_SOURCE_DEFAULT_CONFIDENCE.bilibili (0.4) via the pool's own
+      // default; hard TTL via the per-seed override.
       const added = addSeed(guard, poolFile, policy, {
         text,
         tag: 'scene',
-        source: 'browse',
+        source: 'bilibili',
         category: 'topic',
         noMerge: true,
         ttlDaysOverride: BILI_SEED_TTL_DAYS,

@@ -289,3 +289,79 @@ test('pickReport: only the report naming THIS delivery id; id-less reports are t
   assert.equal(pickReport([anon1, anon2], 'dA'), anon2);
   assert.equal(pickReport([], 'dA'), null);
 });
+
+// ── 2026-11-09: bilibili soft cap in the topic slots ──────────────────────
+// B站 watch history (source 'bilibili') floods in as topic stock; the package
+// must not be owned by a single origin. bilibili beyond 2 only gets in when
+// the non-bilibili supply ran out (the relax path).
+
+const mkSrc = (id: string, category: 'topic' | 'chat', lastEvidenceAt: string, source?: string): CandidateSeed => ({
+  id, text: `素材${id}`, used: 0, category, lastEvidenceAt, ...(source !== undefined ? { source } : {}),
+});
+const biliTopic = (i: number): CandidateSeed =>
+  mkSrc(`b${i}`, 'topic', `2026-11-01T00:00:0${i % 10}Z`, 'bilibili');
+const otherTopic = (i: number): CandidateSeed => mkSrc(`n${i}`, 'topic', `2026-11-02T00:00:0${i % 10}Z`, 'screen');
+const chatSeed = (i: number): CandidateSeed => mkSrc(`c${i}`, 'chat', `2026-11-03T00:00:0${i}Z`, 'chat');
+
+// several deterministic rands: the cap must hold under every shuffle outcome
+const rands: [string, () => number][] = [
+  ['identity(rand=0)', () => 0],
+  ['mid(rand=0.5)', () => 0.5],
+  ['lcg', (() => { let s = 42; return () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; }; })()],
+];
+
+test('assembleCandidates bilibili soft cap: 10 bilibili + 6 non-bilibili topics -> bilibili never exceeds 2, topic stays 4', () => {
+  const seeds = [
+    ...Array.from({ length: 10 }, (_, i) => biliTopic(i)),
+    ...Array.from({ length: 6 }, (_, i) => otherTopic(i)),
+    chatSeed(0),
+    chatSeed(1),
+  ];
+  for (const [name, rand] of rands) {
+    const out = assembleCandidates(seeds, { rand });
+    const topic = out.filter((s) => s.category !== 'chat');
+    const bili = topic.filter((s) => s.source === 'bilibili');
+    assert.equal(topic.length, 4, `topic entries fixed at 4 (${name})`);
+    assert.ok(bili.length <= 2, `bilibili capped at 2 (${name}, got ${bili.length})`);
+    assert.equal(out.length, 6, `package full (${name})`);
+    // ids unique: the deferred bilibili items never duplicate into the package
+    assert.equal(new Set(out.map((s) => s.id)).size, out.length, `no duplicates (${name})`);
+  }
+});
+
+test('assembleCandidates bilibili soft cap relaxes when non-bilibili topics are short (1 non-bilibili)', () => {
+  const seeds = [
+    ...Array.from({ length: 10 }, (_, i) => biliTopic(i)),
+    otherTopic(0),
+    chatSeed(0),
+    chatSeed(1),
+  ];
+  for (const [name, rand] of rands) {
+    const out = assembleCandidates(seeds, { rand });
+    const topic = out.filter((s) => s.category !== 'chat');
+    const bili = topic.filter((s) => s.source === 'bilibili');
+    assert.equal(topic.length, 4, `topic entries still 4 (${name})`);
+    assert.ok(bili.length >= 3, `the cap relaxed to fill the slots (${name})`);
+    assert.equal(out.length, 6, `total still bounded (${name})`);
+    assert.equal(new Set(out.map((s) => s.id)).size, out.length, `no duplicates (${name})`);
+  }
+});
+
+test('assembleCandidates: an all-bilibili topic pool still yields 4 topic entries and does not crash', () => {
+  // with chat present: 4 topic slots all bilibili (relaxed), chat untouched
+  const withChat = [
+    ...Array.from({ length: 6 }, (_, i) => biliTopic(i)),
+    chatSeed(0),
+    chatSeed(1),
+  ];
+  const out = assembleCandidates(withChat, { rand: rand0 });
+  assert.equal(out.filter((s) => s.category !== 'chat').length, 4, '4 topic entries even when all bilibili');
+  assert.equal(out.length, 6);
+  assert.ok(out.every((s) => new Set(['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'c0', 'c1']).has(s.id)));
+
+  // bare pool (no chat): no crash, sane result
+  const bare = Array.from({ length: 4 }, (_, i) => biliTopic(i));
+  const out2 = assembleCandidates(bare, { rand: rand0 });
+  assert.equal(out2.length, 4, 'still returns 4 topic entries');
+  assert.ok(out2.every((s) => s.source === 'bilibili'));
+});

@@ -43,6 +43,13 @@ function emit(audit: SeedAuditFn, entry: Record<string, unknown>): void {
 // chat material, decoupled from `source`; sum == the global maxActive default.
 export const SEED_CATEGORY_CAPS: Record<SeedCategory, number> = { topic: 16, chat: 14 };
 
+// Per-source pool caps (2026-11-09): one origin must not own the pool — the
+// bilibili watch history gets its own lane (source 'bilibili', see types.ts)
+// and is capped at 6 so it cannot crowd every other source out. Third quota
+// dimension, checked BEFORE the category and global caps; absent key =
+// uncapped source.
+export const SEED_SOURCE_CAPS: Partial<Record<SeedSource, number>> = { bilibili: 6 };
+
 const CATEGORY_VALUES: readonly string[] = ['topic', 'chat'];
 
 /** Lenient category coercion for on-disk rows: anything missing/unknown (all
@@ -228,9 +235,16 @@ export function evictionScore(seed: Seed, policy: Policy, now: number): number {
 }
 
 /** Pick the eviction victim: unprotected actives first (§4.2 加权保护); with
- *  `category`, only that category's actives compete (spec ⑤ per-category caps). */
-export function pickEvictionVictim(db: SeedDb, policy: Policy, now: number, category?: SeedCategory): Seed | null {
-  const actives = activeSeeds(db).filter((s) => category === undefined || normalizeCategory(s.category) === category);
+ *  `category`, only that category's actives compete (spec ⑤ per-category caps);
+ *  with `source`, only that source's actives compete (2026-11-09 per-source
+ *  caps). Both filters compose when given; existing callers pass neither or
+ *  one and are unaffected. */
+export function pickEvictionVictim(db: SeedDb, policy: Policy, now: number, category?: SeedCategory, source?: SeedSource): Seed | null {
+  const actives = activeSeeds(db).filter(
+    (s) =>
+      (category === undefined || normalizeCategory(s.category) === category) &&
+      (source === undefined || s.source === source),
+  );
   if (actives.length === 0) return null;
   const unprotected = actives.filter((s) => !s.protected);
   const candidates = unprotected.length > 0 ? unprotected : actives;
@@ -375,23 +389,42 @@ function addSeedLocked(
     return { kind: 'merged', seed: kept };
   }
 
-  // Capacity first (rules 4 + spec ⑤): per-category cap evicts within its own
-  // pool; the global cap evicts in the incoming seed's category (a full topic
-  // stock must not push chat material out and vice versa).
-  let evicted: Seed | undefined;
-  const catCount = activeSeeds(db).filter((s) => normalizeCategory(s.category) === category).length;
-  if (catCount >= SEED_CATEGORY_CAPS[category]) {
-    const victim = pickEvictionVictim(db, policy, now, category);
-    if (victim) {
-      archiveSeed(victim, 'pool_cap', now);
-      evicted = victim;
+  // Capacity first (rules 4 + spec ⑤ + 2026-11-09 source caps): three quota
+  // dimensions checked in order source -> category -> global, each evicting
+  // within its own scope. The source cap LOOP-evicts inside the incoming
+  // source until the lane sits below its cap — a stock already over the cap
+  // must converge, so ONE add may retire several rows (each audited; the
+  // result's `evicted` carries the LAST victim — the CLI only surfaces it as
+  // a hint). Once the source cap fired, the later caps cannot newly overflow
+  // (one in, net <= 0 out) and are skipped.
+  const sourceVictims: Seed[] = [];
+  const sourceCap = SEED_SOURCE_CAPS[source];
+  if (sourceCap !== undefined) {
+    while (activeSeeds(db).filter((s) => s.source === source).length >= sourceCap) {
+      const victim = pickEvictionVictim(db, policy, now, undefined, source);
+      if (!victim) break; // lane empty (defensive): nothing left to evict
+      archiveSeed(victim, 'source_cap', now);
+      sourceVictims.push(victim);
     }
   }
-  if (activeSeeds(db).length >= policy.seeds.maxActive) {
-    const victim = pickEvictionVictim(db, policy, now, category);
-    if (victim) {
-      archiveSeed(victim, 'pool_cap', now);
-      evicted = evicted ?? victim;
+  let evicted: Seed | undefined;
+  if (sourceVictims.length > 0) {
+    evicted = sourceVictims[sourceVictims.length - 1];
+  } else {
+    const catCount = activeSeeds(db).filter((s) => normalizeCategory(s.category) === category).length;
+    if (catCount >= SEED_CATEGORY_CAPS[category]) {
+      const victim = pickEvictionVictim(db, policy, now, category);
+      if (victim) {
+        archiveSeed(victim, 'pool_cap', now);
+        evicted = victim;
+      }
+    }
+    if (!evicted && activeSeeds(db).length >= policy.seeds.maxActive) {
+      const victim = pickEvictionVictim(db, policy, now, category);
+      if (victim) {
+        archiveSeed(victim, 'pool_cap', now);
+        evicted = victim;
+      }
     }
   }
 
@@ -415,7 +448,12 @@ function addSeedLocked(
   };
   db.seeds.push(seed);
   emit(audit, { event: 'seed_added', id: seed.id, kind: 'added', tag: seed.tag, source: seed.source, category: seed.category, confidence: seed.confidence });
-  if (evicted) emit(audit, { event: 'seed_retired', id: evicted.id, reason: 'pool_cap', via: 'add', into: seed.id });
+  for (const victim of sourceVictims) {
+    emit(audit, { event: 'seed_retired', id: victim.id, reason: 'source_cap', via: 'add', into: seed.id });
+  }
+  if (evicted && sourceVictims.length === 0) {
+    emit(audit, { event: 'seed_retired', id: evicted.id, reason: 'pool_cap', via: 'add', into: seed.id });
+  }
   savePool(guard, file, db);
   return { kind: 'added', seed, evicted };
 }

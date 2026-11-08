@@ -25,6 +25,9 @@ export interface MaterialInput {
 /** Minimal shape assembleCandidates needs (Seed satisfies this). */
 export interface CandidateSeed extends MaterialInput {
   category?: 'topic' | 'chat';
+  /** Origin of the seed (2026-11-09): the topic slots carry a soft per-source
+   *  cap — browse history must not own the whole package. Absent = uncapped. */
+  source?: string;
   lastEvidenceAt: string;
 }
 
@@ -44,10 +47,20 @@ function shuffle<T>(items: T[], rand: () => number): T[] {
   return out;
 }
 
+/** Soft per-source cap in the 4 topic slots (2026-11-09): B站 watch history
+ *  (source 'bilibili') must not own the package; beyond 2, bilibili items
+ *  only get in when the non-bilibili supply ran out (the relax path). */
+const BILI_TOPIC_SOFT_CAP = 2;
+
 /**
  * Spec ③ (2026-09-18): the rumination candidate package is assembled by CODE,
  * one shot, before the rumination agent sees anything — it picks <=3 from it.
- *   - topic seeds: random 4 (freshness already handled by eviction/TTL);
+ *   - topic seeds: random 4 (freshness already handled by eviction/TTL), with
+ *     a bilibili soft cap of 2 (2026-11-09): bilibili items beyond the cap
+ *     sink behind the non-bilibili tail after the shuffle (stable partition),
+ *     so the slice-based picks — and the two untouched complement branches —
+ *     can only reach them once the non-bilibili supply ran out. Whenever >=4
+ *     non-bilibili topics exist, the package holds at most 2 bilibili items;
  *   - chat seeds: newest evidence first, 2 (conversation freshness decays);
  *   - complement: topic < 4 -> fill from chat overflow; chat < 2 -> fill from
  *     topic overflow; combined package caps at 6. An empty pool yields an
@@ -56,7 +69,19 @@ function shuffle<T>(items: T[], rand: () => number): T[] {
 export function assembleCandidates<T extends CandidateSeed>(seeds: T[], opts: AssembleOptions = {}): T[] {
   const rand = opts.rand ?? Math.random;
   const cat = (s: T): 'topic' | 'chat' => (s.category ?? 'topic');
-  const topicPool = shuffle(seeds.filter((s) => cat(s) === 'topic'), rand);
+  const isBili = (s: T): boolean => s.source === 'bilibili';
+  const shuffled = shuffle(seeds.filter((s) => cat(s) === 'topic'), rand);
+  const head: T[] = [];
+  const tail: T[] = [];
+  let biliSeen = 0;
+  for (const s of shuffled) {
+    if (isBili(s) && biliSeen >= BILI_TOPIC_SOFT_CAP) tail.push(s);
+    else {
+      if (isBili(s)) biliSeen += 1;
+      head.push(s);
+    }
+  }
+  const topicPool = [...head, ...tail];
   const chatPool = seeds
     .filter((s) => cat(s) === 'chat')
     .sort((a, b) => Date.parse(b.lastEvidenceAt) - Date.parse(a.lastEvidenceAt));
