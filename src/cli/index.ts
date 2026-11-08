@@ -128,6 +128,7 @@ function usage(): string {
     '  burn [--yes] [--all]              shred runtime data (settings kept unless --all)',
     '  preset status                     bundled agent preset: target dir + installed?',
     '  preset install [--force]          install the bundled preset (never overwrites unless --force)',
+    '  bili login                        bilibili 扫码登录，SESSDATA 写入 vault (key bilibili.sessdata)',
   ].join('\n');
 }
 
@@ -824,6 +825,40 @@ async function verbFocus(c: CliCtx): Promise<number> {
   return 1;
 }
 
+/**
+ * Bilibili QR login (v2.2.0). All the flow logic lives in bili-login.ts behind
+ * injected deps; this just wires the real-world implementations (network
+ * fetch, qrcode renderer, platform image opener, vault-backed storage) and
+ * lands the outcome in the decision log (code only — never the cookie).
+ */
+async function verbBili(c: CliCtx): Promise<number> {
+  const { guard, paths, sub, decisionLog } = c;
+  if (sub !== 'login') {
+    console.error('usage: bili login');
+    return 1;
+  }
+  const {
+    runBiliLogin,
+    openImageProduction,
+    renderQrPngProduction,
+    saveBiliSession,
+  } = await import('./bili-login.js');
+  const outcome = await runBiliLogin({
+    fetchImpl: fetch,
+    renderQrPng: renderQrPngProduction,
+    openImage: openImageProduction(process.platform),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log: (line) => console.log(line),
+    now: () => Date.now(),
+    platform: process.platform,
+    saveCredential: (value) => saveBiliSession(guard, paths, value),
+  });
+  try {
+    appendAuditLine(decisionLog, { event: 'bili_login', outcome });
+  } catch { /* audit must never break the command */ }
+  return outcome;
+}
+
 /** Command table. Adding a verb = one function above plus one line here. */
 const VERBS: Record<string, Verb> = {
   status: verbStatus,
@@ -842,6 +877,7 @@ const VERBS: Record<string, Verb> = {
   sessions: verbSessions,
   bind: verbBind,
   preset: verbPreset,
+  bili: verbBili,
 };
 
 export async function main(argv: string[]): Promise<number> {
