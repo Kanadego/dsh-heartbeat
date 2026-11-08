@@ -1,8 +1,8 @@
 // bili login state machine, end to end with a fake fetch (v2.2.0).
 // Covers: 未扫 → 已扫 → 成功 (Set-Cookie source), data.url fallback, 86103
-// expiry, no-GUI fallback printing, the 3-minute deadline, the vault key
-// contract (`bilibili.sessdata`) and the "SESSDATA never reaches a log line"
-// rule.
+// expiry, no-GUI fallback printing, the 3-minute deadline, the vault contract
+// (`bilibili-session.json`, shape { sessdata, savedAt }) and the "SESSDATA
+// never reaches a log line" rule.
 import { sandboxDir } from './_sandbox.js';
 import { test, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';

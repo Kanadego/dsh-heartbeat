@@ -128,7 +128,7 @@ function usage(): string {
     '  burn [--yes] [--all]              shred runtime data (settings kept unless --all)',
     '  preset status                     bundled agent preset: target dir + installed?',
     '  preset install [--force]          install the bundled preset (never overwrites unless --force)',
-    '  bili login                        bilibili 扫码登录，SESSDATA 写入 vault (key bilibili.sessdata)',
+    '  bili login                        bilibili 扫码登录，SESSDATA 写入 vault (bilibili-session.json)',
   ].join('\n');
 }
 

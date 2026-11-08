@@ -198,26 +198,6 @@ function updateUserPolicy(guard, settingsDir, patch) {
   return merged;
 }
 
-// src/core/open-path.ts
-import { spawn } from "child_process";
-function openerFor(platform) {
-  if (platform === "win32") return { cmd: "cmd", args: (f) => ["/c", "start", "", f] };
-  if (platform === "darwin") return { cmd: "open", args: (f) => [f] };
-  return { cmd: "xdg-open", args: (f) => [f] };
-}
-function spawnDetached(cmd, args) {
-  try {
-    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
-    child.on("error", () => {
-    });
-    child.unref();
-  } catch {
-  }
-}
-function openPath(file, opener = openerFor(process.platform)) {
-  spawnDetached(opener.cmd, opener.args(file));
-}
-
 // src/excerpt/excerpt.ts
 import path3 from "path";
 import { randomUUID } from "crypto";
@@ -404,7 +384,6 @@ export {
   deepMerge,
   loadPolicy,
   updateUserPolicy,
-  openPath,
   EXCERPT_HEADER,
   excerptFilePath,
   readExcerpts,
@@ -418,4 +397,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-NFUJ4CVH.js.map
+//# sourceMappingURL=chunk-HE6IF6OU.js.map

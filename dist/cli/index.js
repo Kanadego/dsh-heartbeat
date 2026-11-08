@@ -14,11 +14,10 @@ import {
   excerptFilePath,
   installBundledPreset,
   loadPolicy,
-  openPath,
   presetStatus,
   readExcerpts,
   removeExcerpt
-} from "../chunk-NFUJ4CVH.js";
+} from "../chunk-HE6IF6OU.js";
 import {
   adviseWander,
   appendEntry,
@@ -36,6 +35,9 @@ import {
   sendNewMessageHint,
   weeklyDirPath
 } from "../chunk-LPPRI53J.js";
+import {
+  openPath
+} from "../chunk-OCBE2AKW.js";
 import {
   activeSeeds,
   addSeed,
@@ -268,7 +270,8 @@ function usage() {
     "  migrate import <file>             restore a container into this workspace (passphrase: 1 stdin line)",
     "  burn [--yes] [--all]              shred runtime data (settings kept unless --all)",
     "  preset status                     bundled agent preset: target dir + installed?",
-    "  preset install [--force]          install the bundled preset (never overwrites unless --force)"
+    "  preset install [--force]          install the bundled preset (never overwrites unless --force)",
+    "  bili login                        bilibili \u626B\u7801\u767B\u5F55\uFF0CSESSDATA \u5199\u5165 vault (bilibili-session.json)"
   ].join("\n");
 }
 function readStdinText() {
@@ -889,6 +892,34 @@ async function verbFocus(c) {
   console.error("usage: heartbeat focus <minutes> | focus off | focus");
   return 1;
 }
+async function verbBili(c) {
+  const { guard, paths, sub, decisionLog } = c;
+  if (sub !== "login") {
+    console.error("usage: bili login");
+    return 1;
+  }
+  const {
+    runBiliLogin,
+    openImageProduction,
+    renderQrPngProduction,
+    saveBiliSession
+  } = await import("../bili-login-FNKMAV7C.js");
+  const outcome = await runBiliLogin({
+    fetchImpl: fetch,
+    renderQrPng: renderQrPngProduction,
+    openImage: openImageProduction(process.platform),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log: (line) => console.log(line),
+    now: () => Date.now(),
+    platform: process.platform,
+    saveCredential: (value) => saveBiliSession(guard, paths, value)
+  });
+  try {
+    appendAuditLine(decisionLog, { event: "bili_login", outcome });
+  } catch {
+  }
+  return outcome;
+}
 var VERBS = {
   status: verbStatus,
   seeds: verbSeeds,
@@ -905,7 +936,8 @@ var VERBS = {
   migrate: verbMigrate,
   sessions: verbSessions,
   bind: verbBind,
-  preset: verbPreset
+  preset: verbPreset,
+  bili: verbBili
 };
 async function main(argv) {
   const [cmd, sub, ...rest] = argv;

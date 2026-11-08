@@ -32,13 +32,12 @@ import {
   excerptFilePath,
   installBundledPreset,
   loadPolicy,
-  openPath,
   readExcerpts,
   recentExcerpts,
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-NFUJ4CVH.js";
+} from "./chunk-HE6IF6OU.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -49,6 +48,9 @@ import {
   readWeeklyReport,
   scanPending
 } from "./chunk-LPPRI53J.js";
+import {
+  openPath
+} from "./chunk-OCBE2AKW.js";
 import {
   getRuntime,
   setRuntime
