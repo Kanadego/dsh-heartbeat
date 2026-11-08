@@ -266,12 +266,12 @@ test('pruneBvids: entries older than 24h fall out of the set', () => {
 
 test('addSeed ttlDaysOverride wins over the tag TTL; absent keeps the tag default', () => {
   const file = seedsFilePath(workspace().dataDir);
-  const withOverride = addSeed(guard, file, policy, { text: '覆盖TTL的素材', tag: 'scene', source: 'browse', ttlDaysOverride: 2 }, now);
+  const withOverride = addSeed(guard, file, policy, { text: '覆盖TTL的素材', tag: 'scene', source: 'bilibili', ttlDaysOverride: 2 }, now);
   assert.equal(withOverride.kind, 'added');
   assert.equal(withOverride.seed.ttlDaysOverride, BILI_SEED_TTL_DAYS);
   assert.equal(withOverride.seed.expiresAt, new Date(now + 2 * DAY_MS).toISOString());
 
-  const without = addSeed(guard, file, policy, { text: '默认TTL的素材', tag: 'scene', source: 'browse' }, now + 1);
+  const without = addSeed(guard, file, policy, { text: '默认TTL的素材', tag: 'scene', source: 'bilibili' }, now + 1);
   assert.equal(without.seed.ttlDaysOverride, undefined);
   assert.equal(without.seed.expiresAt, new Date(now + 1 + policy.seeds.ttlDays.scene * DAY_MS).toISOString());
 });
@@ -282,7 +282,7 @@ test('bilibili-sourced seeds hard-expire in 2 days and gc archives them as expir
   const file = seedsFilePath(workspace().dataDir);
   const seed = activeSeeds(loadPool(guard, file))[0]!;
   assert.equal(seed.ttlDaysOverride, 2);
-  assert.equal(seed.source, 'browse');
+  assert.equal(seed.source, 'bilibili');
   assert.equal(seed.category, 'topic');
   assert.equal(seed.expiresAt, new Date(now + 2 * DAY_MS).toISOString());
 

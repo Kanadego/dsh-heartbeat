@@ -3,9 +3,12 @@
 // conversation-validated content. Everything here may be destroyed.
 
 export type SeedTag = 'news' | 'fandom' | 'scene' | 'promise';
-export type SeedSource = 'chat' | 'screen' | 'browse' | 'hand' | 'profile';
+// 'bilibili' (2026-11-09): the watch-history ingest carries its own source
+// value — it must not share the wander 'browse' lane, or the source cap would
+// let news push bilibili material out of the shared quota.
+export type SeedSource = 'chat' | 'screen' | 'browse' | 'bilibili' | 'hand' | 'profile';
 export type SeedCategory = 'topic' | 'chat';
-export type SeedRetireReason = 'consumed' | 'expired' | 'cold_bench' | 'pool_cap' | 'completed';
+export type SeedRetireReason = 'consumed' | 'expired' | 'cold_bench' | 'pool_cap' | 'source_cap' | 'completed';
 
 export interface Seed {
   id: string;
@@ -55,4 +58,5 @@ export const SEED_SOURCE_DEFAULT_CONFIDENCE: Record<SeedSource, number> = {
   chat: 0.6,
   screen: 0.4,
   browse: 0.4,
+  bilibili: 0.4,
 };
