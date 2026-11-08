@@ -13,6 +13,7 @@ import { createPathGuard } from './core/path-guard.js';
 import { appendAuditLine } from './core/audit-log.js';
 import { loadPolicy, updateUserPolicy } from './config/load.js';
 import { loadUiConfig, saveUiConfig, type UiConfig } from './config/ui-config.js';
+import { resolveQuietHours } from './config/quiet-hours.js';
 import { deepMerge } from './config/schema.js';
 import { setRuntime, getRuntime } from './core/runtime.js';
 import { startOrchestrator, applyHeartbeatInterval, type OrchestratorDeps } from './core/orchestrator.js';
@@ -372,11 +373,23 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     idleMode: idleModeRef,
     tokenSaver: tokenSaverRef,
     psyEnabled: getRuntime().policy.profile.psyEnabled,
+    quietStart: getRuntime().policy.gate.quietHours.start,
+    quietEnd: getRuntime().policy.gate.quietHours.end,
   });
-  const uiSet = (patch: UiConfig & { psyEnabled?: boolean }): void => {
+  const uiSet = (patch: UiConfig & { psyEnabled?: boolean; quietStart?: string; quietEnd?: string }): void => {
     if (typeof patch.psyEnabled === 'boolean') {
       updateUserPolicy(guard, paths.settingsDir, { profile: { psyEnabled: patch.psyEnabled } });
       getRuntime().policy.profile.psyEnabled = patch.psyEnabled;
+    }
+    // 静默时段（v2.2）：policy 用户层字段，与 psyEnabled 同理不写 ui.json。
+    // runtime policy 是活引用（evaluateGate 每跳读它），改内存对象即下一跳生效。
+    if (patch.quietStart !== undefined || patch.quietEnd !== undefined) {
+      const next = resolveQuietHours(patch.quietStart, patch.quietEnd, getRuntime().policy.gate.quietHours);
+      if (!next) throw new Error('quiet hours must be HH:MM (00:00-23:59)');
+      updateUserPolicy(guard, paths.settingsDir, { gate: { quietHours: next } });
+      const q = getRuntime().policy.gate.quietHours;
+      q.start = next.start;
+      q.end = next.end;
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
     applyLiveSettings(merged);
