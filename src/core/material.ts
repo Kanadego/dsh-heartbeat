@@ -277,8 +277,9 @@ export function reconcileDelivery(
 
 /**
  * The engine-room rumination prompt: pick <= max materials from the active
- * candidates and compress each into one sentence; the model still returns the D23 JSON
- * {speak,text,seed_ids} (text = one sentence per line).
+ * candidates; the model returns the D23 JSON {seed_ids,doing} — speak/text
+ * removed (2026-11-08, 账本 #7f7603), the material text itself is mapped back
+ * from activeSeeds by seed_ids in the orchestrator.
  *
  * Spec ② (2026-09-18): `screen` is present ONLY when this beat's vision
  * succeeded; then the prompt carries the screen description + taskbar titles
@@ -295,12 +296,12 @@ export function buildRuminationPrompt(input: {
 }): string {
   const max = input.max ?? 3;
   const lines = [
-    '这是心跳轮次的反刍备料环节:从候选素材里挑(最多 ' + max + ' 条),把每条压缩成一句话。',
+    '这是心跳轮次的反刍备料环节:从候选素材里挑(最多 ' + max + ' 条),选出最想说的几条。',
     '素材只从下面给的候选里挑,不要自己编;没合适的就少挑,甚至可以不挑。',
     '不要使用任何工具。只输出一个 JSON 对象:',
-    '- 有想递的:{"speak":true,"text":"第1条素材\n第2条素材...","seed_ids":["s1","s2"],"doing":"他此刻在干什么(一句话)"}',
-    '- 一条都不合适:{"speak":false,"seed_ids":[],"doing":"他此刻在干什么(一句话)"}',
-    '- text = 挑出的素材,每条素材单独一行;seed_ids = 对应的素材 id。',
+    '- 有想递的:{"seed_ids":["s1","s2"],"doing":"他此刻在干什么(一句话)"}',
+    '- 一条都不合适:{"seed_ids":[],"doing":"他此刻在干什么(一句话)"}',
+    '- seed_ids = 对应的素材 id。',
     '',
     '## 此刻处境', input.digestTact,
     '## 画像话题', input.digestTopic,

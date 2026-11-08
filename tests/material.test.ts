@@ -75,12 +75,15 @@ test('buildMaterialPrompt: every package ends with the seed_report standing inst
   assert.ok(p.trimEnd().endsWith(REPORT_DECLARE));
 });
 
-test('buildRuminationPrompt: picks from candidates, one sentence per line, JSON speak/text/seed_ids', () => {
+test('buildRuminationPrompt: picks from candidates, JSON seed_ids/doing (D23 simplified)', () => {
   const prompt = buildRuminationPrompt({ digestTact: 't', digestTopic: 'top', staleLedger: '', candidates: 's1: a\ns2: b', max: 3 });
   assert.ok(prompt.includes('反刍备料'));
   assert.ok(prompt.includes('s1: a'));
-  assert.ok(prompt.includes('speak'));
   assert.ok(prompt.includes('seed_ids'));
+  assert.ok(prompt.includes('doing'));
+  assert.ok(!prompt.includes('speak'));
+  assert.ok(!prompt.includes('"text"'));
+  assert.ok(!prompt.includes('压缩成一句话'));
   assert.ok(prompt.includes('最多 3 条'));
 });
 

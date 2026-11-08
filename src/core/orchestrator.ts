@@ -1795,8 +1795,8 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
 
   // ⑤a 反刍备料（2026-09-16 改版）：引擎室只备料，不决定说不说。
-  // 从素材池候选里挑 ≤3 条、压缩成每行一句话；D23 保持 JSON {speak,text,seed_ids}
-  // 形状不变（兼容）；「此刻说不说、说哪条」移给 ⑤b 的投递会话。
+  // 从素材池候选里挑 ≤3 条；D23 已简化（2026-11-08，账本 #7f7603）：JSON 只剩
+  // {seed_ids,doing}；「此刻说不说、说哪条」移给 ⑤b 的投递会话。
   // 素材只从 activeSeeds 候选里挑，不从归档区捞。
   const ruminationPrompt = buildRuminationPrompt({
     digestTact: digest.tact,
@@ -1827,7 +1827,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     }
   })();
   if (raw === null) return;
-  let parsed: { speak?: boolean; text?: string; seed_ids?: string[]; doing?: string };
+  let parsed: { seed_ids?: string[]; doing?: string };
   try {
     parsed = parseJsonBlock(raw) as typeof parsed;
   } catch (e) {
@@ -1845,7 +1845,6 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
       event: 'expression_dropped',
       why: 'no seed_ids from the decision turn',
-      speak_flag: typeof parsed.speak === 'boolean' ? parsed.speak : null,
     });
     noteDroppedStreak(paths.logsDir + '/heartbeat.jsonl', 'no seed_ids from the decision turn');
     noteBeat('silent', { reason: 'no material' });
