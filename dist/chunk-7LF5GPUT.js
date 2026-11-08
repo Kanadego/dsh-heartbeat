@@ -173,7 +173,8 @@ function addSeedLocked(guard, file, policy, input, now, audit) {
     return { kind: "duplicate", seed: cand, reason: "similar" };
   }
   const nowIso = new Date(now).toISOString();
-  const ttlMs = (policy.seeds.ttlDays[tag] || 14) * DAY_MS;
+  const ttlDays = input.ttlDaysOverride ?? (policy.seeds.ttlDays[tag] || 14);
+  const ttlMs = ttlDays * DAY_MS;
   const sameTopic = activeSeeds(db).filter((s) => s.topic === (input.topic ?? text.slice(0, 24)));
   let seed;
   if (sameTopic.length > 0 && !input.noMerge) {
@@ -237,6 +238,7 @@ function addSeedLocked(guard, file, policy, input, now, audit) {
     used: 0,
     bornAt: nowIso,
     expiresAt: new Date(now + ttlMs).toISOString(),
+    ...input.ttlDaysOverride !== void 0 ? { ttlDaysOverride: input.ttlDaysOverride } : {},
     lastUsedAt: null,
     lastEvidenceAt: nowIso,
     status: "active"
@@ -323,7 +325,8 @@ function restoreSeed(guard, file, policy, id, now = Date.now(), audit = NO_AUDIT
     s.retireReason = void 0;
     s.retiredAt = void 0;
     s.bornAt = new Date(now).toISOString();
-    s.expiresAt = new Date(now + (policy.seeds.ttlDays[s.tag] || 14) * DAY_MS).toISOString();
+    const restoreTtlDays = s.ttlDaysOverride ?? (policy.seeds.ttlDays[s.tag] || 14);
+    s.expiresAt = new Date(now + restoreTtlDays * DAY_MS).toISOString();
     s.lastEvidenceAt = new Date(now).toISOString();
     emit(audit, { event: "seed_restored", id: s.id });
     savePool(guard, file, db);
@@ -363,4 +366,4 @@ export {
   restoreSeed,
   deleteSeed
 };
-//# sourceMappingURL=chunk-63E5OYSI.js.map
+//# sourceMappingURL=chunk-7LF5GPUT.js.map

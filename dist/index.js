@@ -22,7 +22,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-TEMEPRTR.js";
+} from "./chunk-PQLFNDWE.js";
 import {
   EXCERPT_HEADER,
   appendExcerpt,
@@ -37,7 +37,7 @@ import {
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-HE6IF6OU.js";
+} from "./chunk-F2XVKX55.js";
 import {
   appendEntry,
   ledgerFilePath,
@@ -47,7 +47,7 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending
-} from "./chunk-LPPRI53J.js";
+} from "./chunk-UAIV7JBF.js";
 import {
   openPath
 } from "./chunk-OCBE2AKW.js";
@@ -57,13 +57,14 @@ import {
 } from "./chunk-3QJJRXIR.js";
 import {
   activeSeeds,
+  addSeed,
   archiveSeedById,
   archivedSeeds,
   deleteSeed,
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-63E5OYSI.js";
+} from "./chunk-7LF5GPUT.js";
 import {
   clearFocusState,
   readFocusState,
@@ -79,6 +80,8 @@ import {
 import {
   dshHomeDir,
   initWorkspace,
+  loadJson,
+  saveJson,
   writeText
 } from "./chunk-M72T5MZU.js";
 import {
@@ -1205,6 +1208,248 @@ ${items.join("\n")}` };
   };
 }
 
+// src/sources/bilibili.ts
+import fs5 from "fs";
+import path5 from "path";
+var BILI_HISTORY_URL = "https://api.bilibili.com/x/web-interface/history/cursor?ps=8";
+var BILI_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+var BILI_SESSION_FILE = "bilibili-session.json";
+var BILI_STATE_FILE = "bilibili-source.json";
+var BILI_MIN_DURATION_SEC = 90;
+var BILI_MIN_WATCH_RATIO = 0.1;
+var BILI_FINISHED_RATIO = 0.9;
+var BILI_TEXT_MAX_CHARS = 60;
+var BILI_DEDUPE_WINDOW_MS = 24 * 60 * 6e4;
+var BILI_SEED_TTL_DAYS = 2;
+var BILI_FETCH_INTERVAL_MS = 2 * 60 * 6e4;
+function parseSessdata(cookieText) {
+  const m = /(?:^|[;\s])SESSDATA=([^;\s]+)/.exec(cookieText);
+  if (m && m[1]) return m[1];
+  const bare = cookieText.trim();
+  if (bare && !/^[A-Za-z_]+=/m.test(bare)) return bare;
+  return null;
+}
+function readVaultSessdata(guard, dataDir) {
+  try {
+    const session = loadJson(
+      guard,
+      path5.join(dataDir, BILI_SESSION_FILE)
+    );
+    const field = session?.sessdata;
+    if (typeof field !== "string") return null;
+    const raw = field.trim();
+    if (!raw) return null;
+    if (raw.includes("SESSDATA=")) return parseSessdata(raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+function readCookieFileSessdata(file) {
+  if (!file) return null;
+  try {
+    const raw = fs5.readFileSync(file, "utf8");
+    if (!raw) return null;
+    const v = parseSessdata(raw);
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+function resolveSessdata(guard, dataDir, cookieFile) {
+  return readVaultSessdata(guard, dataDir) ?? readCookieFileSessdata(cookieFile ?? "");
+}
+function shouldDropRecord(r) {
+  if (typeof r.duration !== "number" || r.duration < BILI_MIN_DURATION_SEC) return "short";
+  if (r.history?.business === "live") return "live";
+  const progress = r.progress;
+  if (typeof progress === "number" && progress >= 0 && r.duration > 0 && progress / r.duration < BILI_MIN_WATCH_RATIO) {
+    return "barely-watched";
+  }
+  return null;
+}
+function sanitizeTitle(t) {
+  return t.replace(/《/g, "\uFF08").replace(/》/g, "\uFF09").replace(/\s+/g, " ").trim();
+}
+function seedTextFor(r) {
+  const rawTitle = r.title?.trim() || r.show_title?.trim() || "";
+  if (!rawTitle) return null;
+  const title = sanitizeTitle(rawTitle);
+  if (!title) return null;
+  const business = r.history?.business;
+  let text;
+  if (business === "pgc") {
+    const part = r.show_title?.trim();
+    text = part && part !== rawTitle ? `\u5728\u8FFD\u300A${title}\u300B\xB7 ${sanitizeTitle(part)}` : `\u5728\u8FFD\u300A${title}\u300B`;
+  } else {
+    const progress = typeof r.progress === "number" ? r.progress : -1;
+    const duration = typeof r.duration === "number" ? r.duration : 0;
+    const finished = progress < 0 || duration > 0 && progress >= duration * BILI_FINISHED_RATIO;
+    if (finished) {
+      text = `\u521A\u770B\u5B8C\u300A${title}\u300B`;
+    } else {
+      const minute = Math.max(1, Math.ceil(progress / 60));
+      text = `\u300A${title}\u300B\u770B\u5230\u7B2C ${minute} \u5206\u949F`;
+    }
+  }
+  return text.length > BILI_TEXT_MAX_CHARS ? text.slice(0, BILI_TEXT_MAX_CHARS) : text;
+}
+function emptyBiliState() {
+  return { lastFetchAt: 0, bvids: [] };
+}
+function bilibiliStatePath(dataDir) {
+  return path5.join(dataDir, BILI_STATE_FILE);
+}
+function normalizeBiliState(raw) {
+  const out = emptyBiliState();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  const r = raw;
+  if (typeof r.lastFetchAt === "number" && Number.isFinite(r.lastFetchAt) && r.lastFetchAt >= 0) {
+    out.lastFetchAt = r.lastFetchAt;
+  }
+  if (Array.isArray(r.bvids)) {
+    for (const e of r.bvids) {
+      if (e && typeof e === "object" && typeof e.bvid === "string" && typeof e.at === "number") {
+        out.bvids.push({ bvid: e.bvid, at: e.at });
+      }
+    }
+  }
+  return out;
+}
+function loadBiliState(guard, file) {
+  try {
+    return normalizeBiliState(loadJson(guard, file));
+  } catch {
+    return emptyBiliState();
+  }
+}
+function saveBiliState(guard, file, state) {
+  saveJson(guard, file, state);
+}
+function pruneBvids(state, now) {
+  return {
+    lastFetchAt: state.lastFetchAt,
+    bvids: state.bvids.filter((e) => now - e.at < BILI_DEDUPE_WINDOW_MS)
+  };
+}
+async function fetchBiliHistory(sessdata, fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl(BILI_HISTORY_URL, {
+      headers: {
+        Cookie: `SESSDATA=${sessdata}`,
+        "User-Agent": BILI_USER_AGENT
+      }
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (!j || typeof j !== "object" || typeof j.code !== "number") return null;
+    const list = Array.isArray(j.data?.list) ? j.data.list : [];
+    return { code: j.code, list };
+  } catch {
+    return null;
+  }
+}
+var NO_AUDIT = () => {
+};
+async function runBilibiliSource(deps) {
+  const { guard, paths, policy } = deps;
+  const now = deps.now ?? Date.now();
+  const debug = deps.debug ?? (() => {
+  });
+  const say = (msg) => {
+    try {
+      debug(msg);
+    } catch {
+    }
+  };
+  const cfg = policy.sources?.bilibili;
+  if (cfg?.enabled === false) return { skipped: "disabled" };
+  const sessdata = resolveSessdata(guard, paths.dataDir, cfg?.cookieFile);
+  if (!sessdata) {
+    say("bilibili: no SESSDATA (vault/cookieFile) \u2014 source off");
+    return { skipped: "no-credential" };
+  }
+  const stateFile = bilibiliStatePath(paths.dataDir);
+  const state = loadBiliState(guard, stateFile);
+  if (now - state.lastFetchAt < BILI_FETCH_INTERVAL_MS) {
+    return { skipped: "throttled" };
+  }
+  saveBiliState(guard, stateFile, { ...pruneBvids(state, now), lastFetchAt: now });
+  const res = await fetchBiliHistory(sessdata, deps.fetchImpl);
+  if (res === null) {
+    say("bilibili: history/cursor fetch failed \u2014 skipping this round");
+    return { skipped: "fetch-failed" };
+  }
+  if (res.code !== 0) {
+    say(`bilibili: history/cursor code ${res.code} \u2014 skipping this round`);
+    return { skipped: `code-${res.code}` };
+  }
+  const audit = deps.audit ?? NO_AUDIT;
+  const recent = new Set(pruneBvids(state, now).bvids.map((e) => e.bvid));
+  const result = { fetched: res.list.length, added: 0, dropped: 0, deduped: 0 };
+  const fresh = [];
+  const poolFile = seedsFilePath(paths.dataDir);
+  for (const raw of res.list) {
+    const r = raw ?? {};
+    const drop = shouldDropRecord(r);
+    if (drop) {
+      result.dropped = (result.dropped ?? 0) + 1;
+      continue;
+    }
+    const bvid = r.history?.bvid;
+    if (!bvid || recent.has(bvid)) {
+      result.deduped = (result.deduped ?? 0) + 1;
+      if (bvid) fresh.push({ bvid, at: now });
+      continue;
+    }
+    const text = seedTextFor(r);
+    if (!text) {
+      result.dropped = (result.dropped ?? 0) + 1;
+      continue;
+    }
+    try {
+      const added = addSeed(guard, poolFile, policy, {
+        text,
+        tag: "scene",
+        source: "browse",
+        category: "topic",
+        noMerge: true,
+        ttlDaysOverride: BILI_SEED_TTL_DAYS
+      }, now, audit);
+      fresh.push({ bvid, at: now });
+      if (added.kind === "added") result.added = (result.added ?? 0) + 1;
+      else result.deduped = (result.deduped ?? 0) + 1;
+    } catch {
+      result.dropped = (result.dropped ?? 0) + 1;
+    }
+  }
+  const merged = /* @__PURE__ */ new Map();
+  for (const e of [...pruneBvids(state, now).bvids, ...fresh]) merged.set(e.bvid, e);
+  saveBiliState(guard, stateFile, {
+    lastFetchAt: now,
+    bvids: [...merged.values()].filter((e) => now - e.at < BILI_DEDUPE_WINDOW_MS)
+  });
+  return result;
+}
+var activeTimer = null;
+function startBilibiliSource(deps) {
+  stopBilibiliSource();
+  const tick = () => {
+    void runBilibiliSource(deps).catch(() => {
+    });
+  };
+  tick();
+  activeTimer = setInterval(tick, BILI_FETCH_INTERVAL_MS);
+  activeTimer.unref?.();
+  return stopBilibiliSource;
+}
+function stopBilibiliSource() {
+  if (activeTimer !== null) {
+    clearInterval(activeTimer);
+    activeTimer = null;
+  }
+}
+
 // src/index.ts
 var name = "heartbeat";
 var inject = ["agents"];
@@ -1461,6 +1706,21 @@ function apply(ctx, config = {}) {
     registerGlobalTool("excerpt", () => buildExcerptTool(guard, excerptFilePath(paths.dataDir)));
   }
   startOrchestrator(deps);
+  ctx.effect(() => {
+    const audit = (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+      } catch {
+      }
+    };
+    const debug = (msg) => {
+      try {
+        ctx.logger.debug?.("heartbeat: %s", msg);
+      } catch {
+      }
+    };
+    return startBilibiliSource({ guard, paths, policy: getRuntime().policy, audit, debug });
+  }, "heartbeat: bilibili source");
   const statusReader = new StatusReader();
   registerStatusbarSection(ctx, guard, paths, {
     enabled: () => statusbarEnabledRef,

@@ -22,7 +22,7 @@ import {
   sendNewMessageHint,
   sendWeeklyReadyHint,
   weeklyDue
-} from "./chunk-LPPRI53J.js";
+} from "./chunk-UAIV7JBF.js";
 import {
   getRuntime
 } from "./chunk-3QJJRXIR.js";
@@ -33,7 +33,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "./chunk-63E5OYSI.js";
+} from "./chunk-7LF5GPUT.js";
 import {
   resolveFocusUntil
 } from "./chunk-LQKOYTRL.js";
@@ -1218,7 +1218,7 @@ async function runConsolidation(guard, paths, policy, llm, now = Date.now()) {
       rejected,
       entries: [...report.entries ?? [], ...aged.entries]
     });
-    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-MAABBHC4.js");
+    const { addSeed: addSeed2, seedsFilePath: seedsFilePath2 } = await import("./pool-4XRTNWRP.js");
     const seedAudit = (entry) => {
       try {
         appendAuditLine(paths.dataDir + "/logs/heartbeat.jsonl", entry);
@@ -3103,4 +3103,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-TEMEPRTR.js.map
+//# sourceMappingURL=chunk-PQLFNDWE.js.map

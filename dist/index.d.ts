@@ -77,6 +77,17 @@ interface Policy {
         envPulseHours: number;
         decisionLogDays: number;
     };
+    /** v2.2 optional per-source config. Absent = every source's own default
+     *  behaviour (bilibili: on iff a credential exists). OPTIONAL so pre-2.2
+     *  policy layers still validate. */
+    sources?: {
+        bilibili?: {
+            /** false = hard-disable the source even with a credential. */
+            enabled?: boolean;
+            /** Fallback credential: text file whose content parses as SESSDATA. */
+            cookieFile?: string;
+        };
+    };
 }
 /** Recursive merge: user values win; objects merge, arrays and scalars replace. */
 declare function deepMerge<T>(base: T, override: unknown): T;

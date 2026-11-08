@@ -145,6 +145,19 @@ function assertPolicy(input) {
   const r = p.retention;
   if (!isPlainObject(r)) fail("retention missing");
   if (typeof r.envPulseHours !== "number" || typeof r.decisionLogDays !== "number") fail("retention fields missing");
+  if (p.sources !== void 0) {
+    if (!isPlainObject(p.sources)) fail("sources must be an object when present");
+    const bili = p.sources.bilibili;
+    if (bili !== void 0) {
+      if (!isPlainObject(bili)) fail("sources.bilibili must be an object when present");
+      if (bili.enabled !== void 0 && typeof bili.enabled !== "boolean") {
+        fail("sources.bilibili.enabled must be boolean when present");
+      }
+      if (bili.cookieFile !== void 0 && typeof bili.cookieFile !== "string") {
+        fail("sources.bilibili.cookieFile must be a string when present");
+      }
+    }
+  }
 }
 function deepMerge(base, override) {
   if (!isPlainObject(base) || !isPlainObject(override)) {
@@ -397,4 +410,4 @@ export {
   describeInstall,
   presetStatus
 };
-//# sourceMappingURL=chunk-HE6IF6OU.js.map
+//# sourceMappingURL=chunk-F2XVKX55.js.map
