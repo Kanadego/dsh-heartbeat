@@ -6,6 +6,7 @@ data/
 .npmrc
 Thumbs.db
 pnpm-workspace.yaml
+pnpm-lock.yaml
 设计要求.md
 CODE-REVIEW-*.md
 scripts/migrate-v1-seeds.mjs

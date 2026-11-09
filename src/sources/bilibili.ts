@@ -180,7 +180,7 @@ export function sanitizeTitle(t: string): string {
  * Seed brief for one record, or null when it has no usable title.
  *
  * 主语必须是第三人称「他」——素材是给心跳引擎室读的资料，出口时再由模型
- * 转成对木偶人说的「你」；写成第二人称会跟池内其他素材不一致，写成无主语句
+ * 转成对终端用户说的「你」；写成第二人称会跟池内其他素材不一致，写成无主语句
  * 则会被读成 agent 自己的行为（实测事故：无主语「《X》看到第 N 分钟」被模型
  * 顺口读成「我看了四分钟」）。
  */

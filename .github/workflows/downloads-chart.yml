@@ -31,9 +31,9 @@ jobs:
             echo "chart unchanged today"
             exit 0
           fi
-          # 谁在维护这个仓库就让谁署名：这条曲线是琥珀在盯着，不是那个机器人。
-          git config user.name "琥珀"
-          git config user.email "amber@users.noreply.github.com"
+          # 署名用维护者身份，不用机器人账号。
+          git config user.name "Kanadego"
+          git config user.email "kanadego@users.noreply.github.com"
           git add docs/assets/npm-downloads.svg
           git commit -m "chore(chart): refresh npm downloads"
           git push

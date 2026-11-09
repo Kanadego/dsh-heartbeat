@@ -25,7 +25,7 @@ import { scanPending, ledgerFilePath } from '../ledger/ledger.js';
 import { collectPulse, readPulse, probeIdleSeconds, probeWorkstationLocked } from '../env/envpulse.js';
 import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
-import { loadArchivedSessionIds, splitDeliverTargets } from './archived-sessions.js';
+import { isArchivedSession, loadArchivedSessionIds, splitDeliverTargets } from './archived-sessions.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenShot } from '../screen/vision.js';
 import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
@@ -2251,6 +2251,18 @@ export async function beat(deps: OrchestratorDeps, trigger: BeatTrigger = 'inter
     // Rotation sits the beat out — the next beat runs on the fresh home.
     if (agent && homeRotatePending === null && shouldRotateHome({ eventCount: sessionEventCount(agent.session) })) {
       homeRotatePending = `size threshold (${sessionEventCount(agent.session)} events ≥ ${HOME_ROTATE_EVENT_COUNT})`;
+    }
+    // H-archived(home): DSH 0.2.2's ArchivedSessionGate rejects the pre-step of
+    // every turn whose session is archived, so the engine-room turn ends
+    // `blocked` with zero model output — the beat looks like a language failure
+    // and nothing is ever delivered (2026-11-09: the home was archived while the
+    // plugin still assumed 0.2.1 semantics). Rotating retires the archived home
+    // and gives the next beat a fresh one; the old room keeps its history.
+    if (agent && homeRotatePending === null) {
+      const homeId = agent.session?.id;
+      if (homeId && isArchivedSession(loadArchivedSessionIds(), homeId)) {
+        homeRotatePending = `home session archived (${homeId})`;
+      }
     }
     if (agent && homeRotatePending !== null) {
       try {

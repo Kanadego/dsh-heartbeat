@@ -2998,6 +2998,12 @@ async function beat(deps, trigger = "interval") {
     if (agent && homeRotatePending === null && shouldRotateHome({ eventCount: sessionEventCount(agent.session) })) {
       homeRotatePending = `size threshold (${sessionEventCount(agent.session)} events \u2265 ${HOME_ROTATE_EVENT_COUNT})`;
     }
+    if (agent && homeRotatePending === null) {
+      const homeId = agent.session?.id;
+      if (homeId && isArchivedSession(loadArchivedSessionIds(), homeId)) {
+        homeRotatePending = `home session archived (${homeId})`;
+      }
+    }
     if (agent && homeRotatePending !== null) {
       try {
         await rotateHome(deps, homeRotatePending);
@@ -3230,4 +3236,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-WF7ZBW5C.js.map
+//# sourceMappingURL=chunk-CJK6RTMH.js.map
