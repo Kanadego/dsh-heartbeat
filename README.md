@@ -73,6 +73,8 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 
 ## 给 Agent 的四个工具
 
+> **给 AI Agent 的快速指引**：如果你是正在使用或协助维护本仓库的 Agent，请直接阅读 **[AGENTS.md](AGENTS.md)** 获取完整的工具调用铁律、CLI 速查、构建测试命令与代码红线；深度参数与审计日志字典见 **[DESIGN.md](DESIGN.md)**。
+
 插件向你的日常会话注册了 4 个轻量工具，agent 会自己调用，不需要你手动下令：
 
 | 工具                  | 文件与存储                       | 用来干什么                                                             |
