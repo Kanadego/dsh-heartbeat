@@ -1,1141 +1,321 @@
-# dsh-heartbeat · 设计与维护手册
+# @kanadego/dsh-heartbeat — 开发者设计与维护手册
 
-> **这份手册写给维护这套代码的人。** 它回答四件事：
+> **当前版本**：v2.2.1 · **宿主兼容**：DSH `0.2.0-rc.1` – `0.2.2-rc.1` · **平台**：Windows / Linux / macOS
 >
-> · **它是怎么跑起来的** —— §2 运行框架
-> · **每块代码在哪、在干什么** —— §4 模块实现
-> · **想调什么该改哪儿** —— §6 参数位置速查
-> · **出问题怎么查** —— §7 诊断手册
->
-> 有一节要优先看：**§3 宿主集成契约**。这个插件跑在 DSH 宿主进程里，与宿主之间那层约定没有类型系统兜底，只能靠文档记着——**升级 DSH 之前，把 §3 从头到尾过一遍。**
->
-> 面向用户的说明（装什么、能干什么、每个参数什么意思）在 `README.md`；本文只讲实现与维护，不重复它的内容。
+> 本文档面向插件维护者与二次开发者，提供：**架构与核心功能全景**、**源码与磁盘文件映射**、**全量参数速查表**、以及 **审计日志（`logs/heartbeat.jsonl`）字典与排障指南**。
 
 ---
 
-## 1. 快速事实卡
+## 1. 核心架构与设计原则
 
-| 项 | 值 |
-|---|---|
-| 形态 | DSH cordis 插件 = 宿主进程内服务（定时器 / 编排 / 探针）+ web 设置卡片 + 独立 CLI |
-| 宿主 | DSH 0.2.0-rc.2 实测运行；0.1.7-rc.2 / 0.2.0-rc.1 / 0.2.0-rc.2 / 0.2.1-rc.1 / 0.2.1-rc.2 已验收；0.1.5-rc.2 兼容。≤ 0.1.1-rc.2 请用 v1.0（v1.1 起依赖 `snapshotEvents()` 与 agent 预设机制） |
-| 适配声明 | peer 依赖 `@deepseek-ai/dsh-llm`：`^0.1.1-rc.2 \|\| ^0.1.5-rc.2 \|\| ^0.1.7-rc.1 \|\| ^0.2.0-rc.1 \|\| ^0.2.1-rc.1`。`@deepseek-ai/dsh-settings` 是**运行时真依赖**，必须留在 `dependencies`（原因见 §3.1） |
-| 平台 | **Windows 专属**：PowerShell 探针、DPAPI 保管的数据密钥（数据本身 AES-256-GCM）、WinRT toast；`package.json` 声明 `os: ["win32"]` |
-| 技术栈 | TypeScript（strict、`noUncheckedIndexedAccess`）、ESM、tsup 构建、Node ≥ 22.19 |
-| 产物 | `dist/index.js`（插件入口）、`dist/cli/index.js`（CLI）、`dist/index.d.ts`（类型）、`client.js`（前端卡片，手写、不参与构建） |
-| 测试 | node:test + tsx，**378 个**（约 17 秒）；CI 在 windows-latest 上跑 `npm ci` → `typecheck` → `test` |
-| 运行数据 | `dataDir` 默认 `<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`），**在包外**，重装 / 升级 / 卸载都不会碰它；换位置用插件配置 `dataDir` 或环境变量 `HEARTBEAT_DATA_DIR`（v1.9.2 / issue #2） |
-| 老数据 | v1.9.1 及更早默认装在包内 `data/`（在 `node_modules` 下面），升级后首次启动自动搬出去：先备份、逐文件校验通过才删原件，失败原地不动并留痕（见 C13b） |
-| 心跳节律 | 出厂 60 分钟一拍（设置页 / CLI 可调）；沉默拍**零模型调用** |
-| 主循环 | `src/core/orchestrator.ts` 的 `beat()` |
-| 代码规模 | 58 个 `.ts` 文件；核心是 `orchestrator.ts`（约 2110 行）与 `rpc.ts`（约 630 行） |
+### 1.1 双会话分离（Dual-Session Architecture）
 
----
+心跳插件不在用户的日常聊天会话里跑后台任务，而是将**后台思考**与**前台陪伴**拆成两类会话：
 
-## 2. 运行框架
+1. **引擎室（Home Session / 正身会话）**
+   - 插件自己创建并持有的后台专属会话，绑定内置 `kohaku-heartbeat` preset，收敛危险工具，隐藏在常规会话列表之外（通过工作区打标与归档过滤）。
+   - 负责执行**闲逛搜索（Wander）**、**屏幕多模态读图（Screen Vision）**、**用户画像整合（Profile Consolidation）**、**每周回顾生成（Weekly Report）**。
+   - **自动旋转（Home Rotation）**：当引擎室事件数达到 `HOME_ROTATE_EVENT_COUNT = 3000`、遇到 `CONTEXT_WINDOW_EXCEEDED`、或被用户在 UI 中手动归档时，自动丢弃旧会话并拉起新引擎室（状态全部落盘在 `dataDir`，旋转零数据丢失）。
+2. **陪伴会话（Companion Sessions / 绑定会话）**
+   - 用户日常聊天的会话，在 Web 面板「会话」页或通过 CLI 绑定：
+     - **`observe: true`（观察源）**：心跳按游标增量读取用户发言（过滤插件自身注入的文本），送入收件箱供画像提炼。
+     - **`deliver: true`（投递目标）**：当门禁放行且有话可说时，把组好的「心跳素材包」以 `user/message` 形式投递进该会话，由陪伴 Agent 决定说不说、说什么，并调用 `seed_report` 报账。
 
-### 2.1 一次心跳的生命周期
+### 1.2 零闲置 Token 原则
 
-定时器每 `heartbeat.intervalMin` 分钟触发一次 `beat()`；宿主启动后 15 秒先来第一拍。`beat()` 里的顺序是固定的：
-
-```
-取引擎室 agent（复用 / resume / create 三态，失败走退避重试）
-  ↓
-家轮换检查 —— 上下文溢出被标记，或引擎室事件数 ≥ 3000 → 换个新会话当引擎室
-  ↓
-省 token 闸 —— 人离开 ≥ 30 分钟、锁屏，且绑定会话里没有未消化的新消息 → 整拍挂起（连维护相都不跑）；挂起期间每 3 分钟只重探一次环境（不取 agent、不调模型），回来即恢复
-  ↓
-① 维护 maintenancePhase          超时 10 min
-     素材池 gc · 日志按龄裁剪 · 判断画像该不该合并 · 收件箱健康检查
-①′ 周报 weeklyPhase（到期才跑，走同一套模型轮次）
-② 采集 collectPhase              超时 5 min
-     截图 + 前台窗口（加密落盘）→ 视觉识别 → 空闲秒数与窗口类别 → 记一笔作息
-     末尾顺带观察绑定会话（observeBoundSessions）
-②′ 闲逛 wanderPhase              超时 15 min
-     开窗 + 间隔 + 焦点冷却都过了，才调 web_search 攒素材；结果由代码入池
-②″ 补货闲逛 refillWanderPhase     超时 15 min（素材告急才跑，可与正常闲逛同拍叠加）
-  ↓
-③ 表达段（在 beat() 里内联）
-     闸门（零模型）→ 拼处境摘要 + 挑素材 → 引擎室反刍 → 素材包投递给目标会话 → 归账
-  ↓
-收尾：写状态文件、落审计、清看门狗
-```
-
-几个理解要点：
-
-- **沉默拍不花钱。** 闸门（静默时段 / 忙时窗口 / 在场联动 / 每日上限 / 冷却）全部在**调模型之前**判完，判定结果只落一行 `silent` 审计，带 reason。
-- **表达轮的决策权在目标会话的 agent**，不在引擎室。引擎室只负责"备料"——把素材各压成一句话，输出机器 JSON；真正说不说、说哪条、要不要附一句真心话，由收到素材包的那个会话 agent 决定。它说出口的话，落在用户读的那个会话里。
-- **素材由代码入池。** 闲逛搜到什么、几时入池、什么时候退休，全由 `seeds/pool.ts` 按策略算，模型不碰登记。
-- **agent 拿不到时数据照样跑。** 引擎室获取失败的那一拍走"无 agent 分支"：维护与采集照跑，只是不表达，并留一条 `beat_agentless`，同时排一个退避重试。
-
-### 2.2 单飞、超时与看门狗
-
-| 机制 | 值 | 作用 |
-|---|---|---|
-| 拍级单飞 | 模块状态 `beating` | 同一时刻只允许一拍在跑，重入直接返回 |
-| 合并单飞 | `consolidating` 锁 | 画像合并同一时刻只跑一次 |
-| 相超时 | 维护 10 min / 采集 5 min / 闲逛 15 min | 单相卡死不拖垮整拍（`withTimeout` 包装）；**超时会连同这一拍的 AbortController 一起 abort**，旧任务不再继续跑、继续写盘 |
-| 拍看门狗 | `BEAT_WATCHDOG_MS = 45 min` | 超时 `abort()` 这一拍的取消链（模型调用、探针、子进程一起停）并记 `beat_watchdog`，**不补拍** |
-| 单次模型轮次 | `TURN_TIMEOUT_MS = 180 s` | `agentTurn` 的兜底超时 |
-| 等会话空闲 | `IDLE_WAIT_TIMEOUT_MS = 240 s` | `whenIdle()` 的上限，超时按轮次各自降级 |
-| 获取退避 | 60 s × 2ⁿ，上限 30 min | 引擎室拿不到时的重试阶梯，成功即复位 |
-
-### 2.3 三个进程
-
-1. **宿主进程内的插件** —— 定时器、编排、探针 spawn、模型轮次，全在这里。
-2. **PowerShell 子进程** —— `idle.ps1` / `frontwin.ps1` / `screenpulse.ps1` / `notify.ps1` / `vault.ps1`，都是短命进程、按需拉起，统一走 `core/ps.ts`（永不 reject，超时与异常都归一成返回值）。
-3. **CLI**（`dist/cli/index.js`）—— 独立进程，直接读写 `data/`。它**改不了运行中宿主的内存状态**：间隔这类 live 参数以设置页 / RPC 为准，CLI 写进文件的值要重启后才生效。
-
-### 2.4 目录地图
-
-```
-src/
-├── index.ts              插件入口：apply() —— 装配一切
-├── rpc.ts                卡片与宿主之间的数据通道
-├── client.js             （包根）web 设置卡片，手写
-├── core/                 地基
-│   ├── orchestrator.ts   ★ 主循环 beat() 与各个相
-│   ├── paths.ts          dataDir 解析（env > 配置 > 包外默认）、老数据搬迁与工作区初始化
-│   ├── path-guard.ts     路径白名单守卫
-│   ├── atomic-fs.ts      原子写与粉碎删除
-│   ├── audit-log.ts      JSONL 审计的读写与裁剪
-│   ├── file-lock.ts      跨进程文件锁
-│   ├── ps.ts             PowerShell 调用收口
-│   ├── time-window.ts    HH:MM 窗口判定
-│   ├── runtime.ts        运行时单例
-│   ├── bindings.ts       会话绑定
-│   ├── material.ts       素材组装与归账（纯函数，好测）
-│   ├── preset-install.ts 随包预设的安装与校验（≤0.1.5 的文件系统路径）
-│   ├── preset-definition.ts 心跳预设的运行时注册（0.1.7+；issue #2 之后）
-│   └── data-relocate.ts  老数据从包内搬到包外（备份 → 校验 → 原子落地 → 清源；永不抛）
-├── config/               三层配置的加载与校验
-├── vault/                加密容器、焚毁、换机迁移
-├── gate/                 分寸闸门
-├── seeds/                素材池与投递报账
-├── profile/              用户画像（收件箱 / 存储 / 白名单 / 合并 / 处境摘要 / 快照）
-├── screen/               截图与视觉识别
-├── env/                  空闲状态、窗口类别、时间语义
-├── rhythm/               作息直方图
-├── browse/               闲逛裁决、兴趣编辑、偏好加权
-├── statusbar/            状态数据源、时间注入、状态栏轨道
-├── weekly/               周报
-├── ledger/               账本
-├── notepad/              心事匣（一格便签 + 模型工具）
-├── excerpt/              摘抄本（明文笔记本 + 模型工具）
-└── notify/               Windows 通知
-assets/                   PowerShell 探针 + 随包预设模板
-config/                   出厂配置（policy / busy-rules / interests / profile-schema）
-scripts/                  会话修复等一次性工具
-tests/                    378 个测试
-```
-
-`message-source.d.ts` 是给宿主消息类型打的补丁声明，不参与运行。
+- **门禁前置**：专注模式、安静时段、每日上限、冷却间隔、无活动省流（Token Saver）全部在纯 TypeScript 层完成判定。
+- **不唤醒则零消耗**：只要本跳不需要闲逛、不需要整合画像、也没到投递时刻，连引擎室与陪伴会话的 LLM 都不会调用，整跳耗时 `< 10ms`、消耗 `0 token`。
 
 ---
 
-## 3. 宿主集成契约（★ 升级 DSH 前必读）
+## 2. 源码目录与数据落盘索引
 
-这一节记的是**插件与 DSH 之间的约定**。它们没有类型系统兜底：宿主换了实现，插件只在运行时炸，或者更糟——不炸，只是静默失效。每条都标注了**坏了是什么样**，方便升级后按症状反查。
+### 2.1 源码结构（`src/`）
 
-编号（C1…C24）是稳定的，代码注释和提交信息里会引用它们。**升级宿主后，逐条复查，并用 §7 的诊断表验证。**
-
-### 3.1 装载与配置
-
-**C1 · 插件装载**
-包主入口导出 `{name, inject, Config(schemastery), apply(ctx, config)}`；`package.json` 的 `dsh.bundle.patch` 指向随包的 `cordis.patch.yml`。`dsh plugin --profile X add <pkg>` = pnpm 安装 + 自动把声明了 `dsh.bundle` 的依赖记进 `dsh.profile.bundles`。
-
-**C2 · effect 语义**
-`ctx.effect(fn, label)` 的 `fn` **立即执行**；`fn` 的**返回值**才是 fiber 卸载时调用的清理函数。
-
-```ts
-ctx.effect(() => {
-  const timer = setInterval(tick, ms);   // 立即执行
-  return () => clearInterval(timer);     // 卸载时执行
-}, 'heartbeat: timer');
-```
-
-把清理逻辑直接写进 `fn` 本身 = 插件刚装上就把自己拆了。症状：`orchestrator_started` 后面紧跟 `orchestrator_disposed`，心跳一声不响。
-
-**C8 · settings 的三代 API**
-心跳做特性探测，三代并存：
-
-| 宿主 | 形态 | 心跳走哪条路 |
-|---|---|---|
-| 0.1.1 / 0.1.2 | 包内自由函数 `installSettingsSection(ctx, ns, …)` | 兜底分支 |
-| 0.1.5 | 宿主 `settings` 服务的 `installSection(...)`，且插件 `inject` 必须声明 `'settings'` | 服务法 |
-| 0.1.7 起 | `installSection` 与客户端 `settingsScope` 一并删除；设置改由 profile 的插件配置承载（插件页自动表单，编辑即插件重载） | `describe` 存在即跳过注册，`sectionSource = () => config` |
-
-两条硬规矩：① `@deepseek-ai/dsh-settings` **必须在 `dependencies`**——挪到 peer 会让 profile 里的实体包被清掉，表现为"节律配置保存不生效 + 重启回默认"；② client 侧 **inject 不得声明 `settingsScope`**——0.1.7 下整个客户端 bundle 会卡在 pending，web 报 "Failed to load plugins"。
-
-**C10 · `file:` 安装是复制**
-`file:` 协议安装 = 目录拷贝，不是链接。改完源码必须把 `dist` 重拷进 profile 的 `node_modules` 副本（或重跑 `dsh plugin add`），否则跑的一直是旧代码。**排查任何"改了没反应"之前，先确认这一步做了**（§9）。
-
-### 3.2 agent 与模型
-
-**C3 · agent 获取的三态**
-会话 live（UI 开着或已 resume）→ `ctx.agents.get(sessionId)` 直接取裸 agent；持久化但空闲 → `agents.resume({resumeSessionId, setup})`；全新 → `agents.create({sessionId, meta:{cwd}, setup})`。
-
-- `create` 对已持久化的 id 报 `already owns this identity`；`resume` 对 live 会话报 `while it is live`。
-- 0.1.2 起必须显式传 `agentOptions`（见 C12），并在 `setup` 里挂预设（见 C13）。
-- `setup` 可以是 async：工厂会 await 它，抛错即回滚创建。
-
-**C4 · 句柄要解包**
-`agents.create/resume` 返回 `AgentHandle{ agent, dispose }`，裸 agent 在 `.agent` 上。
-
-**C5 · 模型轮次与事件**
-`agent.followup(createUserMessage({...}))` 发起一轮，`await agent.whenIdle()` 等它跑完；助手文本从事件流里 `type` 含 `assistant` 的事件提取。
-
-- 0.1.2 **移除了 `Session.events`**：改读 `snapshotEvents(fromSeq?, toSeqExclusive?)` + `seq`。插件侧封了 `sessionEvents()` / `sessionEventCount()` 做兼容回退，别在业务代码里直接摸 `session.events`。
-- 所有写进会话的消息**必须经宿主 `createUserMessage` 严格工厂**。手写消息对象会缺 message id，宿主加载该会话时报 `session event at seq N lacks an identified message`——用户的会话直接打不开（修复工具见 §13）。
-
-**C6 · 工具限制**
-`agentCtx.get('tools').restrict({ allow: ['web_search'] })`，在 `setup(agentCtx)` 钩子里调用，按 agent 作用域终身生效。 这份白名单在两条获取路径上都会套：`create` / `resume` 走 `setup`；取到**已存在且活着**的 agent（审计 `agent_reuse_live`）时 `setup` 会被跳过，复用分支因此单独调一次 `pinEngineRoomTools`（2026-10-17 修——修之前这条路径不套白名单，实测跑到全局层全量 62 个工具）。
-
-- 只能点名**继承层**里的工具。agent 自身层注册的只进 `knownNames`、不进 `restrictableNames`，所以**没有预设的裸 agent 连 `web_search` 都点不了名**（报 `names unknown global tool "web_search"`）——这也是为什么预设是必需的（C13）。
-- `tools.schemas()` 不传 scope 拿到的是**全局视图**，不能拿来判断预设挂上没有。判据是同一行审计里的 `restrict=ok`。
-
-**C12 · 模型路由必须显式传**
-0.1.2 起 `agents.create/resume` 的 `agentOptions` 默认 `{}`，宿主**不再代填部署默认**。不传 → `options.model === undefined` → 内置 persona 插值失败，**每一轮**都在起点抛：
-
-```
-prompt variable "{{model}}" has no value for this assembly (section "deployment:persona")
-```
-
-插件侧的 `defaultAgentOptions(ctx)` 读 `ctx.get('agentDefaultModel').currentSelection()` 拿默认路由。
-
-**投递目标的 resume 同样必须带它**——这是踩过最狠的一次：漏传时插件只记一句 `spoke_failed: non-Chinese output discarded`（空文本被兜底闸拦下），而报错实际出现在**用户自己的会话里**，因为宿主会把这个没有模型路由的 agent 当成该会话的 live agent 继续复用。投递一结束就 `handle.dispose()` 把 agent 还回去（审计 `deliver_target_released`），宿主会在用户下次打开该会话时按自己的组合重建。
-
-**C13 · agent 预设**
-`agents.create/resume` 发布的是**裸 agent**：不加入任何预设时，工具、提示段、技能目录全部按**空全局层**解析——部署预设里的 `web_search` 因此完全不存在，闲逛相只能返回空数组。
-
-修法：在 `setup(agentCtx)` 里 `await agentCtx.get('agentPresets').mount(agentCtx, id)`（async；要求 `scopeOf(agentCtx)` 有效；id 缺省用 `defaultId`）。
-
-- 预设目录布局（≤0.1.5）：`<dshHome>/.agent-presets/<id>/{agent.cordis.yml, preset.yml}`，id 需匹配 `[a-z0-9][a-z0-9-]*`。
-- **0.1.7 起：运行时注册**（v1.9.2，issue #2）。中间那段时间走的是"组合声明行"（`@deepseek-ai/dsh-agent-preset`，与官方 `preset-standard` 同机制），它要求 **profile 自己能解析那个包**——代价见 C13a。
-- 现在预设定义活在本插件里：`src/core/preset-definition.ts` 的 `heartbeatPresetDefinition(id)` = `compaction` 组 + `tool-web`（`fetch:false`），**故意没有 persona 行**——人格沿用部署 persona。插件加载时调 `agentPresets.register(definition)`（该 API 的 docstring 就是"Parsed configuration supplied by the declaring plugin"），`cordis.patch.yml` 里**不再有任何宿主包引用**。
-- `list()` 每次调用都重新 readdir（无缓存），所以运行期新建的预设目录对下一次 `mount()` 立即可见，不需要重启宿主。
-
-**C13a · 预设为什么改成运行时注册（issue #2，2026-10-10）**
-
-以前心跳的预设是写在 `cordis.patch.yml` 里的一行声明（`@deepseek-ai/dsh-agent-preset`），由宿主在装载时读它。这一行本身很轻，但它牵进来的依赖里包含 cordis 的装载机制本身，于是出现两种死法：
-
-- **profile 解析不到这个包**（pnpm 默认不自动装 peer 依赖）→ 宿主的装载直接中断，`plugin tree failed to load: … Cannot find package '@deepseek-ai/dsh-agent-preset'`，**整个 DSH 起不来**——不是心跳不工作，是宿主挂了。
-- **用户为了让它启动、把缺的依赖手工补进 profile** → 心跳能加载了，但 profile 与宿主各持一套装载机制，注册互相打架（`persona-prefix is already registered`、`requires a scoped preset Context`），结果是**任何会话都无法恢复**。对照实验：把那批包移除，立刻恢复正常。
-
-我们本机一直没撞上，是因为共享层 `<dshHome>/profiles/node_modules/@deepseek-ai/` 里恰好有几条 junction 指向宿主自带的副本——运气好，不能当成设计成立。
-
-所以 v1.9.2 把那行删掉了，改成本插件加载时自己向宿主注册（`src/core/preset-definition.ts` 的 `heartbeatPresetDefinition()` / `registerHeartbeatPreset()`）。profile 从此不需要认识任何宿主包，宿主也不再可能有两套装载机制；预设的注册失败只影响预设本身，不牵连启动。四种结果都留一条审计（`preset_register`）：
-
-| 结果 | 什么时候出现 | 意味着什么 |
-|---|---|---|
-| `registered` | 宿主提供了注册服务 | 预设正常 |
-| `skipped-no-api` | 宿主没有这个服务（残缺的旧版） | 心跳退化成没有预设的裸 agent——闲逛相看不到 `web_search`，但宿主照常启动 |
-| `skipped-disabled` | 配置里 `installPreset: false` | 预设完全交给运维自己管 |
-| `error` | 注册时抛错 | 写进审计 `detail`，宿主不受影响 |
-
-**C18 · 随包预设的自动安装（≤0.1.5 的文件系统路径）**
-插件启动时取 `agentPresets.roots`（公开 getter）里 `trust === 'user'` 的那一项当目标根——不猜 `~/.dsh`，也不依赖 `@deepseek-ai/dsh-home-paths`（那个包不在 profile 的 node_modules 里，import 不到）。`installBundledPreset()` 的四种结果：
-
-| 结果 | 含义 |
+| 目录 / 文件 | 核心职责 |
 |---|---|
-| `created` | 目录/文件缺失，已建 |
-| `repaired` | 目录在但缺 `agent.cordis.yml`，已补 |
-| `exists` | 已有 composition 文件，**一个字节都没动**（手改过的自定义预设是安全的） |
-| `restored` | 只有 `--force` 才会走到，覆盖 |
-| `skipped-disabled` / `skipped-no-root` / `skipped-custom-id` | `installPreset:false` / roster 里没有 user 根 / `agentPreset` 不是 `heartbeat` |
+| `src/index.ts` | 插件主入口：Schema 声明（`dataDir` / `installPreset`）、工作区迁移、注册 4 个 Agent 工具、挂载时间感知与状态栏中间件、懒加载 `settings` / `webui` RPC |
+| `src/rpc.ts` | Web 面板与宿主的 JSON-RPC 桥（同时向 `settings` 与 `webui` 注册 `dsh-heartbeat` 通道），提供 25 个动作端点 |
+| `src/client.js` | 浏览器端原生 7-Tab 面板（状态 / 会话 / 素材 / 兴趣 / 画像 / 周报 / 设置），同时挂在 `dsh-heartbeat` 与 `@kanadego/dsh-heartbeat` 两个 bundle key 下 |
+| `src/core/orchestrator.ts` | 心跳主循环 `beat()`、引擎室生命周期与旋转、单飞锁与 45 分钟 Watchdog、陪伴会话投递与报账闭环 |
+| `src/core/focus-store.ts` | 专注模式状态读写（内存与 `data/focus.json` 双写同步，支持 CLI 跨进程暂停） |
+| `src/core/archived-sessions.ts` | 解析 DSH `storages/workspace.json` 的归档会话集合，供投递目标跳过与引擎室自动重建使用 |
+| `src/core/bindings.ts` | 会话绑定表（`home` / `observe` / `deliver`）读写与目标筛选 |
+| `src/core/path-guard.ts` | 路径沙箱守卫：所有读写强制校验在 `dataDir` 内，拦截 `..` 越界与外链 symlink |
+| `src/core/atomic-fs.ts` | 原子写文件（先写 `data/tmp/` 临时文件再 `rename`）與跨进程目录锁（`withFileLock`） |
+| `src/config/schema.ts` | `Policy` 类型定义、运行时范围校验 `assertPolicy()`、用户覆盖层 `deepMerge()` |
+| `src/config/quiet-hours.ts` | 安静时段（`gate.quietHours`）与闲逛窗口（`browse.windows`）校验与用户层持久化 |
+| `src/gate/gate.ts` | 硬门禁状态机（安静时段 / 每日上限 / 冷却时间 / 同会话自上次投递后是否有用户回复） |
+| `src/seeds/pool.ts` | 话题素材池（增删、三层去重、评分排序、按来源配额淘汰、冷板凳与归档上限 GC） |
+| `src/browse/browse.ts` | 自主闲逛调度：读取 `config/interests.yaml` + 用户覆盖层，抽签话题并拼装引擎室搜索提示词 |
+| `src/sources/bilibili.ts` | B 站观看历史被动源：每 2 小时增量拉取已登录账号的观看记录并转为 `source: "bilibili"` 素材 |
+| `src/env/envpulse.ts` | 桌面感知与全屏截图：采集前台窗口标题与截屏，哈希去重后由引擎室提炼五元组 |
+| `src/profile/store.ts` & `consolidate.ts` | 10 分区用户画像存储（KHBV2 加密）、预算裁剪、引擎室增量整合与 `snapshots/` 快照回滚 |
+| `src/notepad/` · `src/ledger/` · `src/excerpt/` | 陪伴 Agent 专属工具后端：心事匣（单格便签）、待办账本、摘抄本 |
+| `src/weekly/report.ts` | 每周回顾生成、周锚点记录与历史周报保留裁剪 |
+| `src/statusbar/` | `time-inject.ts`（用户轮次注入当前时间与距上次发言间隔，跳过子代理与非用户源）+ `track.ts`（记录最近活跃会话） |
+| `src/vault/` | `vault.ts`（AES-256-GCM `KHBV2` 容器加解密 + 平台密钥管理）、`migrate.ts`（PBKDF2 密码流式导出/导入）、`burn-list.ts`（一键焚毁） |
+| `src/cli/index.ts` & `bili-login.ts` | 运维 CLI（17 个一级子命令）与 B 站终端扫码登录实现 |
 
-**C13b · 数据目录为什么搬出包外、怎么搬（issue #2，v1.9.2）**
+### 2.2 数据目录（`dataDir`）文件清单
 
-老版本的运行数据默认住在包目录里的 `data/`。麻烦在于它在 `node_modules` 下面，而 `dsh plugin add` 与版本升级都是「把整个包目录换掉」——画像、素材池、正身记录（`gate.json`）会跟着一起没。按设计只有显式 `burn` 才该销毁这些数据，所以这是事故，不是使用方式的问题。
+默认路径：`~/.dsh/heartbeat-data/`（可在插件设置 `dataDir` 中自定义迁移）。
 
-v1.9.2 起默认落在包外：`<DSH_HOME>/heartbeat-data`（没有 `DSH_HOME` 就是 `~/.dsh/heartbeat-data`）。启动时按这个顺序决定用哪个目录（`paths.ts` 的 `initWorkspace()`）：
-
-1. 环境变量 `HEARTBEAT_DATA_DIR`
-2. 插件配置里的 `dataDir`
-3. 包外默认（如果那儿已经有数据）
-4. 包内 `data/`（如果那儿有数据 → 触发搬迁）
-5. 包外默认
-
-搬迁（`data-relocate.ts` 的 `relocateDataDir()`）比「拷过去再删」谨慎得多：先在源目录旁边做一份备份，再把数据复制到目标旁边的临时目录，逐文件比对（文件清单、大小、sha256 三项全一致才算过），确认无误才原子地挪到目标位置，最后才删原目录与备份。任何一步出问题都停在原地——**源数据一个字节都不动**，继续用包里那份，审计留一条 `data_dir_relocate_failed`。
-
-两处判断上的取舍：
-
-- 「这个文件解不开」只算警告、不算失败。源文件本身坏掉时，一份字节完全相同的副本仍然是用户的数据；因为解不开就拒绝搬迁，等于把它永久留在一个随时会被升级删掉的地方。
-- 「有没有数据」只认实质内容：只有空骨架（`settings/`、`logs/` 等空目录）不算数据，`tmp/` 里的东西是临时文件也不算——否则一次干净的安装会平白搬一趟。
-
-跳过搬迁的三种情况：源目录不存在、源里没有实质数据、目标已经有一份数据（不动用户自己的）。显式配过 `dataDir` 或 `HEARTBEAT_DATA_DIR` 的一律不搬——用户自己钉的位置归用户。成功则留一条 `data_dir_relocated`。
-
-### 3.3 事件、会话与持久化
-
-**C7 · pre-step 注入**
-```ts
-ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
-  const result = await next();
-  return { kind: 'enter', messages: [...注入的消息] };
-}, { prepend: true });
-```
-waterfall：`await next()` 之后返回 `{kind:'enter', messages}` 是**追加式**注入，不碰已有前缀。
-
-门控信号：**step === 1 且末事件是 `agent/inbox/spliced`** = 用户发起的轮次；**step > 1 且 `step/end`** = 任务中途。日常会话的时间注入与状态栏就靠这个区分。
-
-**C11 · 会话持久化布局**
-`~/.dsh/sessions/<cwd-slug>/<sessionId>/session.jsonl.zstd`（zstd 可用 `node:zlib` 解）。会话 flush 是**惰性**的——活跃会话的内容可能只在内存里，磁盘上看不到。
-
-**C14 · 事件形态：reasoning 块会骗人**
-`assistant/message` 的 `content` 是**块数组**：`[{type:'reasoning', text:…}, {type:'text', text:…}]`。reasoning 块**同样带 `text` 字段**，所以按 `typeof c.text === 'string'` 过滤会把思考草稿和正文无分隔地拼在一起（`…{"speak":false}{"speak":false}`），JSON 解析必崩：
-
-```
-SyntaxError: Unexpected non-whitespace character after JSON at position 15
-```
-
-**读模型输出必须排除 reasoning 块。** 流式事件里另有 `{type:'block-start', blockType:'reasoning'}` 和 `block-end.block.type` 可以判。
-
-**C17 · 会话标题**
-0.1.2 起标题按**每会话一条记录**存放：`~/.dsh/storages/session_projcache/sessions/<sessionId>.json` 的 `rows.title.val`。非 `session-` 前缀的记录（子代理会话）要跳过；旧的单文件聚合 `session_projcache.json` 只作兼容回退。
-
-**C19 · 0.1.5 事件改名**
-`assistant/chunk` 更名 `assistant/attempt`（载荷 `{turn, step, stream: AssistantStreamRecord[]}`，失败/重试/取消的尝试整段嵌入）；新增 surface 事件 `system/message`。
-
-对插件的影响面：`terminalTurnError()` 兼容扫两种事件；`assistantText()` 不受影响（`assistant/message` 仍带 `message`，attempt 事件没有 content，会被空文本自然跳过）；观察相按事件类型过滤、游标按 `seq` 索引，插入新事件类型无影响。
-
-**C20 · 0.1.5 持久层重构（会话格式 v3）**
-持久层拆成中立的 `dsh-session-persistence` + 独立后端 `dsh-session-persistence-jsonl`（产物仍是每会话一个只追加的 `.jsonl.zstd`）。`SESSION_FORMAT_VERSION` 从 0 跳到 **3**，旧版本头被直接拒绝；宿主内置**代际迁移**——保留历史代文件（`session.jsonl.zstd` = v0），首次访问时解码-迁移-校验后发布当前代，**源文件只读不改**。
-
-**升级宿主前必须备份 `~/.dsh/sessions`。** 迁移后的目录是多代文件布局，`scripts/repair-session.mjs` 的手册要按新布局复查（修复工具只应再碰 v0 历史代）。
-
-### 3.4 前端与数据通道
-
-**C9 · client 契约**
-`package.json` 里 `dsh.client: { platform: 'web' }` + exports `"./client"`。client 模块是 `window.__ModuleLoader__.load({ id, factory })`，**factory 必须返回带 `apply` 的对象**（client 侧也跑 cordis，同样校验）。
-
-```js
-ctx.slots.inject('settings.section', function* () {
-  yield ctx.slots.register({ name: 'settings.section', id, order, label, inject }, ReactComponent);
-});
-```
-
-client 侧能 inject 的服务：`slots / locale / sessions / remote`（`settingsScope` 见 C8 的警告）。
-
-**C15 · client 模块的身份**
-client 模块的注册 id **必须严格等于包名**：宿主 `resolveSource()` → `locatePkgJson()` 向上找 `package.json` 并要求 `name === expectedPackageName`，不匹配返回 null，该包被从 client 组合里**静默剔除**——**没有任何报错**，host 半照跑、数据照写，只是设置页整块消失。
-
-三处必须一致：`package.json.name`、`cordis.patch.yml` 里 insert 行的 `name`、`client.js` 的 `load({id})`。
-
-**C16 · 前端 bundle 缓存**
-client bundle 由宿主**启动时**读入内存并按内容打 immutable 缓存（组合 URL 形如 `/plugins/??ids/client.js&rev`），内部**没有 fs.watch**（热重载只在 dev 模式有）。改完 `client.js` 刷新页面无效，**必须重启 DSH**。
-
-**C21 · RPC 走 `/api` 精确路由**
-0.1.5 的 cordis 严格服务解析下，**自定义 `rpc.handle` 通道整体不可用**：cordis `Service` 把 `this.ctx` 固定在提供方自己的上下文里（`dsh-client-connection` 的模块 inject 没有 `webServer`），于是通道内部的 `webServer.register(route)` 必然抛 `cannot get property "webServer" without inject`——**调用方怎么 inject 都救不了**。
-
-正解：`connection.fetch.register()` 在 `/api` 下注册精确 Fetch 路由，只写 connection 内部的注册表、不碰别的服务，两代通用。信封与 `/api` 同构（`client-request` / `server-response`），端点名走 `payload.endpoint`；客户端 `rpc.call('/api', 'heartbeat', { endpoint, … })`。
-
-**鉴别法**：405 = 路由没注册（请求落到了静态资源的 fallback 座位）；404 = 路由在但端点名不匹配；401 / 403 = `/api` 的认证拦截。心跳注册成功会留一行 `rpc_registered route=/api/heartbeat`。
-
-**C22 · 兴趣与时段卡片的编辑口径**
-权威文件仍是 `interests.json`，`loadInterests` 的语义是"用户层**整体取代**出厂层"。卡片编辑走 `interests.list / add / remove / setWindows` 四个端点。
-
-- **首次成功变更时把出厂文件逐字节复制进用户层**，此后用户层即唯一权威——出厂文件更新不再自动跟上。
-- 读取与**失败的校验**都是只读的，绝不顺手创建用户层（否则"看一眼卡片"就接管了出厂配置）。
-- 窗口校验：HH:MM、同日起始 < 结束、1–6 个、两两不重叠（裁判取第一个命中窗口，重叠会静默改变优先级）。
-- 兴趣条目：trim + 折叠空白、≤ 60 字、大小写不敏感去重、≤ 32 条。
-- `_comment` 等未知顶层键保存时保留。
-
-**C24 · RPC 通道的宿主闸门**
-插件注册的 `/api/heartbeat`**自身不做鉴权**，靠宿主 `/api` 前缀路由在 dispatch 前调 `connection.admit(req)` → `requestRejection(req)`（Host/Origin fence + 32 字节浏览器认证 secret）把守。
-
-插件在注册时自检宿主 `connection` 上有没有这两个钩子：缺失就写审计 `rpc_host_gate_missing`，并**让整个通道失败关闭**——只放行 `GATE_SAFE_ENDPOINTS` 里五个只读低敏端点（`status` / `config.get` / `sessions.list` / `bindings.get` / `weekly.list`），其余一律 `forbidden`（曾经只拒六个破坏性端点，等于把画像摘要与素材池向 loopback 敞开）。端点表是 `Map`——普通对象索引会命中原型键，`constructor` / `__proto__` 这类名字曾被当成端点。
-
-**升级 DSH 后如果动了 `src/rpc.ts`，先确认这两个钩子还在。** 都不在 = 通道退化成"任何能 POST 到本机端口的人都算数"。
-
-### 3.5 视觉桥
-
-**C23 · ModLens 视觉识别**
-截图描述走宿主 profile 里的 `@liustack/modlens` CLI（与插件同在 profile 的 node_modules 树里，**运行时向上解析** `dist/main.js`，不存绝对路径；解析不到 = 视觉静默关闭）。
-
-```
-node main.js -i <解密后的截图> -o <tmpJson> -p <provider> --timeout <ms>
-```
-
-- **必须用 `-p` 钉死 provider**：默认链会先探测 Antigravity CLI 的登录态，未配置时干转约 97 秒才 exit 1。默认 `-p openai`，`data/settings/vision.json` 的 `{provider, prompt}` 可以覆盖。
-- 输出 JSON 取 `result.summary`（宽容解析 `result.summary` / `summary` / `ocr.full_text`）。
-- 异步 spawn（同步会冻结宿主事件循环）；stderr 截 4000 字进 `screen_vision` 审计行。
-- 截图的"解密 → 使用 → 焚毁"复用 screenpulse 的 `unlockShot` / `burnUnlocked`。
-
-### 3.6 升级 DSH 的复查顺序
-
-1. **先备份** `~/.dsh/sessions`（C20 会动用户数据）。
-2. 看两类审计行：`tool_policy`（工具面是否完整）与 `beat_error`（有没有结构性抛错）。它们比"看 UI 有没有动静"定位快得多。
-3. 逐条过本节的 C1–C24，重点看历史上最爱变的几条：**C2**（effect 语义）、**C4**（句柄形状）、**C5**（事件读取）、**C8**（settings 三代）、**C9/C15**（client 契约与身份）、**C12**（模型路由）。
+| 相对路径 | 加密层级 | 读写模块 | 用途说明 |
+|---|---|---|---|
+| `vault.key` | 平台保护 | `vault/vault.ts` | 32 字节主密钥：Windows 下为 DPAPI 密文（`KHBK1`），Linux/macOS 下为 `0600` 权限裸密钥 |
+| `data/profile.json` | **KHBV2 加密** | `profile/store.ts` | 10 分区长期用户画像库 |
+| `data/notepad.json` | **KHBV2 加密** | `notepad/notepad.ts` | 心事匣（留给下一跳的一句话引子與年龄计数） |
+| `data/bilibili-session.json` | **KHBV2 加密** | `cli/bili-login.ts` | 扫码登录保存的 B 站 `SESSDATA` 凭据 |
+| `data/inbox/YYYY-MM-DD.jsonl` | **逐行 KHBV2** | `profile/inbox.ts` | 待整合的聊天观察、屏幕五元组与闲逛摘录队列 |
+| `data/weekly/YYYY-Www.md` | **KHBV2 加密** | `weekly/report.ts` | 历次生成的周报正文 |
+| `data/seeds.json` | 明文 JSON | `seeds/pool.ts` | 活跃素材池（`active`）与已归档素材（`archived`） |
+| `data/gate.json` | 明文 JSON | `gate/gate.ts` | 门禁状态（今日已投递次数、上次投递时间戳、正身 `agentSessionId`） |
+| `data/focus.json` | 明文 JSON | `core/focus-store.ts` | 专注模式到期时间戳 `until`（未开启时文件不存在） |
+| `data/cursors.json` | 明文 JSON | `core/orchestrator.ts` | 各观察会话已消费到的事件 `seq` 游标 |
+| `data/bilibili-source.json` | 明文 JSON | `sources/bilibili.ts` | B 站历史源上次拉取时间 `lastPollAt` 与高水位 `lastViewAt` |
+| `data/browse-state.json` | 明文 JSON | `browse/browse.ts` | 各兴趣类目上次闲逛时间与冷却状态 |
+| `data/env-pulse.jsonl` | 明文 JSONL | `env/envpulse.ts` | 最近 N 小时的桌面窗口感知脉冲记录 |
+| `data/heartbeat-status.json` | 明文 JSON | `core/orchestrator.ts` | 最近一跳摘要状态（供面板「状态」页读取） |
+| `data/ledger.md` | 明文 Markdown | `ledger/ledger.ts` | 共享待办与承诺账本 |
+| `data/excerpt.md` | 明文 Markdown | `excerpt/excerpt.ts` | 陪伴 Agent 的句子摘抄本 |
+| `data/settings/bindings.json` | 明文 JSON | `core/bindings.ts` | 会话绑定表（`home` + `sessions[]`） |
+| `data/settings/ui-config.json` | 明文 JSON | `config/ui-config.ts` | 面板开关项（心跳总开关、屏幕感知、空闲模式、省流模式、心跳间隔等） |
+| `data/settings/policy.json` | 明文 JSON | `config/load.ts` | 用户策略覆盖层（深度合并到出厂 `config/policy.json` 之上） |
+| `data/settings/interests.json` | 明文 JSON | `browse/interests-store.ts` | 用户在面板新增/删除的闲逛兴趣词条 |
+| `data/snapshots/*.json` | **KHBV2 加密** | `profile/snapshot.ts` | 每次画像整合前自动保存的回滚快照（最多保留 10 份） |
+| `logs/heartbeat.jsonl` | 明文 JSONL | `core/audit-log.ts` | 核心审计与错误日志（仅记事件名、原因码与耗时，绝不落盘聊天正文或 Cookie） |
 
 ---
 
-## 4. 模块实现
+## 3. 单跳执行流水线与核心机制
 
-### 4.1 core/ —— 地基
+### 3.1 `beat(deps, trigger)` 完整生命周期
 
-| 文件 | 干什么 | 要动它时注意 |
-|---|---|---|
-| `paths.ts` | dataDir 解析 + 包定位 | 优先级：env `HEARTBEAT_DATA_DIR` > 插件配置 `dataDir` > 包外默认（已有数据时）> 包内 `data/`（有数据时搬迁）> 包外默认；`initWorkspace` 幂等建目录。搬迁细节见 C13b |
-| `path-guard.ts` | 路径白名单守卫 | 先把路径 realpath 规范化（目标不存在时：realpath 最深的存在祖先 + 回拼缺失的尾巴），再与规范化后的 dataDir 做**大小写不敏感、带分隔符边界**的前缀比对。必测向量：`..` 穿越 / 符号链接 / 8.3 短名 / 大小写 / UNC |
-| `atomic-fs.ts` | 原子写 | 同目录随机 tmp + rename（Windows 上是替换写）；`shredFileSync` 覆写 N 次后删除 |
-| `audit-log.ts` | JSONL 审计 | `appendAuditLine` / `readAuditLines`（坏行保留为标记）/ `pruneAuditFile`（按龄裁剪，原子重写）。**写入永不抛**，失败只落 stderr——审计故障不该拖垮业务 |
-| `file-lock.ts` | 跨进程文件锁 | `withFileLock(target, fn)`：锁文件 `${target}.lock`，`O_EXCL` 创建 + 写 pid；15 秒判陈旧、3 秒轮询等待，**等不到就抛 `FileLockTimeoutError`，fn 一次都不跑**（fail-closed——锁防的是并发损坏，宁可跳过这次写入并留痕）。陈旧锁要同时满足「够老」与「持有进程确实不在了」才回收（读不到 pid 时给 30 秒宽限）；`pid` 是自己时也算活着。只想跳过、不想抛的场景用 `tryWithFileLock`（返回 `null`）。宿主插件与 CLI 是两个进程、会同写 `seeds.jsonl` 与 `profile_inbox.jsonl`，所有"读-改-写"路径都过它 |
-| `ps.ts` | PowerShell 调用收口 | `runPowerShell` / `runPowerShellFile`，**永不 reject**（超时、非零退出、异常一律归一成返回值） |
-| `time-window.ts` | HH:MM 窗口判定 | `parseHhMm` / `minutesOfDay` / `inHhMmWindow`（半开区间，支持跨夜）。静默窗与闲逛窗口共用同一份实现 |
-| `runtime.ts` | 运行时单例 | paths / guard / policy / UI 开关的统一读取口；测试用 `resetRuntimeForTest` |
-| `bindings.ts` | 会话绑定 | 读写 `data/settings/bindings.json`；`deliverTargets` / `observeTargets` 两个过滤器 |
-| `material.ts` | 素材组装与归账 | 纯函数、好测：`assembleCandidates`（组候选）、`buildMaterialPrompt`（素材包三段式；v1.9.3 起先判"要不要开口"，决定沉默时正文留空）、`buildRuminationPrompt`（反刍备料）、`reconcileDelivery`（归账） |
-| `preset-install.ts` | 随包预设的安装与校验 | ≤0.1.5 的文件系统路径，见 C18 |
-| `preset-definition.ts` | 心跳预设的运行时注册 | `heartbeatPresetDefinition()` + `registerHeartbeatPreset()`（容错语义见 C13a）；0.1.7+ 走这条 |
-| `data-relocate.ts` | 老数据搬出包外 | `hasPayload()` / `verifyTrees()`（清单 + size + sha256 是硬闸门，`unparseable` 只算 warning）/ `relocateDataDir()`（备份 → 复制 → 校验 → 原子落地 → 清源；**永不抛、失败不删源**），见 C13b |
+每次定时器到期（`interval`）、启动首跳（`startup`，延迟 15s）、或面板唤醒（`wake`）时，`src/core/orchestrator.ts` 按以下顺序执行：
 
-### 4.2 orchestrator.ts —— 主循环
-
-全项目最大的文件（约 1730 行），但结构很直白：**一坨模块状态 + 一堆相函数 + 一个 `beat()`**。
-
-模块级状态（都在 `startOrchestrator` 的 disposer 里清干净——宿主可能因为一次配置编辑重载插件，残留状态会被新实例当成自己的）：
-
-| 状态 | 用途 |
-|---|---|
-| `beating` / `beatCancel` | 拍级单飞，以及取消正在跑的那一轮模型 |
-| `beatWatchdog` | 45 分钟看门狗（到点 abort 当前拍的取消链） |
-| `agentPromise` | 引擎室 agent 的缓存 Promise |
-| `homeRotatePending` | 家轮换的待办理由（溢出标记或尺寸阈值） |
-| `lastBeat` / `droppedStreak` | 最近一拍的结果、连续丢弃计数 |
-| `deferredRetries` / `retryTimer` | 获取失败时的退避阶梯 |
-| `reschedule` | 改间隔时重排定时器 |
-
-几个值得先记住的函数：
-
-- `ensureAgent()` —— 引擎室的三态获取，含"看起来还活着吗"的探测与自愈。
-- `agentTurn()` —— 跑一轮并抽文本：排除 reasoning 块、过滤工具收尾标签、取最后一个含中文的行。踩过多次坑的地方（C14）。
-- 表达段 —— **不是一个函数，内联在 `beat()` 里**：闸门 → 备料 → 反刍 → 投递 → 归账。
-- `spokeTextSince()` —— 投递超时之后回到事件流里确认"到底说没说出口"，这是记账的兜底锚点。
-
-**家轮换**：引擎室会话会越聊越长，长到上下文溢出就没法用了。两条触发路径——`agentTurn` 撞上上下文溢出错误时主动标记，或者事件数达到 `HOME_ROTATE_EVENT_COUNT = 3000`。轮换时把旧会话归档（可关）、建一个新的当引擎室，**本拍不表达**，等下一拍。
-
-### 4.3 config/ —— 三层配置
-
-从低到高：
-
-1. **出厂层** `config/policy.json`（包内只读）
-2. **用户文件层** `data/settings/policy.json`（`deepMerge` 覆盖，非法即 fail-closed）
-3. **UI 层** `data/settings/ui.json`（设置卡片写的六个字段：`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`）
-4. **组合条目覆盖** profile 的 `cordis.patch.yml` 里 `id: heartbeat` 的 config（`intervalMin` / `maxDailySend` / `dataDir` 等，0 = 不覆盖）
-
-> **只有 UI 层这六个字段支持热改**（外加卡片上的 psy 开关——它写的是 policy 用户层的 `profile.psyEnabled`，保存同样立刻生效）——设置卡片一保存就生效，不用重启。**其余参数只有出厂层与用户文件层两条路**，改完要重启。这是刻意的：经常要拧的旋钮做成热的，结构性参数做成冷的。
-
-`assertPolicy` 是唯一的校验入口——非法配置直接 fail-closed，不给半残策略。`ui-config.ts` 单独管 UI 层那六个字段的读写与消毒。
-
-### 4.4 vault/ —— 加密与焚毁
-
-- **`vault.ts`**：写路径一律产出 **`KHBV2`** 容器（`KHBV2` magic + version + nonce(12) + tag(16) + AES-256-GCM 密文，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 容器存在 `data/vault.key`，进程启动解一次。读路径三代都认：`KHBV2`（内存解密，**不需要任何明文临时文件**）、`KHBV1`（旧版 DPAPI 容器，走 `assets/vault.ps1` + `data/tmp` 明文窗）、明文（兼容读取）。`loadJson` / `saveJson`、`encryptFile` / `decryptFile`、`loadEncryptedText` / `saveEncryptedText`、`readText` / `writeText` 的对外名与语义不变。**密钥文件存在但解不开直接抛错，绝不另生成一把**；加密文件解密 / 解析失败也抛错，不返回空值（否则调用方会把空库盖回去）。`vault status` 报告各代容器数量；旧容器**平时就会自己换代**——任何一次写入都落成 `KHBV2`，另外每一跳的维护相顺带把长期没动过的一个旧容器就地改写（`upgradeOneLegacyVaultFile`，成功记 `vault_upgraded`，失败的留原样下跳再试）；`vault upgrade` 是一次全换。旧的 1.x 数据不会变死数据，反向不行（1.x 读不了 `KHBV2`）。
-- **`assets/vault.ps1`**：只服务旧 `KHBV1` 容器的加解密（含 `vault.key` 的封装 / 解开），保持 **ASCII-only**（避开 PowerShell 5.1 的代码页坑）。
-- **`burn-list.ts`**：**焚毁清单的单一事实源**（曾经两份硬编码漂移、漏掉文件）。burn = 预演 / `--yes` 执行（覆写 ×3 + 删除）/ `--all` 连设置一起清；卸载时的 `--purge` 复用同一套清除核心。除固定文件与前缀外还支持 `match: RegExp` 的「族」——迁移备份 `*.bak-migrate-<时间戳>` 与导入暂存 `*.incoming-<时间戳>`，任意子目录层级都认。焚毁后会重建 journal 并写一条 `BURN_EVENT`。`vault.key` 有意**不在**清单里——烧数据不该顺带烧掉密钥。
-- **`migrate.ts`**：换机迁移的导出 / 导入。导入是**两阶段且两端全或无**的——白名单（`isMigratablePath`：固定文件 + journal 归档 + `weekly/*.json`）之外的名字、越界路径、超预算（**5000 文件 / 64MB**）一律判整包失败；先全部落成 `.incoming-<时间戳>`，任一文件被拒就把已暂存的全部删掉、本地数据原样不动；全部通过才统一改名，被替换的原文件留 `.bak-migrate-<时间戳>`。
-
-### 4.5 gate/ —— 分寸闸门
-
-判定顺序（`evaluateGate` 是纯函数，全部可单测）：
-
-```
-静默时段 → 忙时窗口类别 → 在场联动 → 每日上限 → 冷却 → 放行
+```text
+[1. 专注模式检查] ──(开启中)──► 记 silent(focus-mode)，更新状态卡，0 开销直接返回
+       │
+[2. 单飞锁 & 45min Watchdog] ──► 若上一跳未结束则直接跳过；挂载 AbortController
+       │
+[3. 心事匣开格] ──► 推进 beat 序号（startup 跳不推进），清理上一跳已投递但未续写的旧便签
+       │
+[4. 阶段 A：桌面感知 & 聊天观察]
+       ├─► 若开启 screenVision：截屏 + 窗口标题 → 哈希未变则跳过；变化则调引擎室识图入 inbox
+       └─► 遍历 observe 会话：按 cursors.json 增量拉取用户发言 → 写入 inbox/YYYY-MM-DD.jsonl
+       │
+[5. 每周回顾检查] ──► 若开启 weekly 且跨过周日 20:00 锚点 → 调引擎室汇总本周素材/账本/画像生成周报
+       │
+[6. 阶段 B：被动数据源 & 自主闲逛]
+       ├─► B站历史源：若已登录且距上次拉取 ≥ 2h → 拉取新观看记录入素材池（无需引擎室）
+       ├─► 自主闲逛（Wander）：若在 browse.windows 时间窗内且距上次闲逛 ≥ minIntervalHours → 调引擎室搜索入池
+       └─► 画像整合（Consolidation）：若 inbox 积压 ≥ inboxBacklog 或距上次整合 ≥ minIntervalHours → 调引擎室更新画像
+       │
+[7. 阶段 C：无活动省流短路（Token Saver）]
+       └─► 若开启 tokenSaver 且自上次投递后所有观察会话均无用户新消息、也没有新采集信号 → 记 silent(no-activity-since-last-delivery) 返回
+       │
+[8. 阶段 D：硬门禁（Gate）]
+       └─► 依次检查：心跳总开关 → 安静时段（quietHours）→ 每日上限（maxDailySend）→ 冷却时间（cooldownMinutes）
+           （不通过则记 silent(<reason>) 返回）
+       │
+[9. 阶段 E：表达投递与报账闭环]
+       ├─► 过滤已归档（archived）的投递会话；检查目标会话自上次投递后是否有用户回复（无则记 silent(awaiting-user-reply)）
+       ├─► 组装投递包（候选素材 Top 3 + 账本未完项 + 心事匣引子 + 空闲模式下的画像话题）
+       ├─► 等待目标会话空闲（最多 10 分钟 EXPRESSION_IDLE_WAIT_MS），注入投递包
+       └─► 读取陪伴 Agent 调 seed_report 的回执 → 标记已用素材、记录话题偏好、更新 gate.json 计数
 ```
 
-- 忙时窗口用 live 前台探针优先，快照太旧就不采信（年龄阈值可配，见 §6）。
-- `confirmSend` **只在投递成功后调用**——失败不计数、不留冷却。这条语义是刻意的：一次没送出去的尝试不该消耗当天的额度。
-- 配置读失败 → 最保守的 SILENT（fail-closed）。
-- `canSend()` 是 `confirmSend` 与"投递前预检"共用的判定，抽出来是为了两边不再各写一遍、慢慢走偏。
+### 3.2 关键子系统约定
 
-### 4.6 seeds/ —— 素材池
-
-- 存储 `data/seeds.jsonl`（DPAPI），一行一条。字段：`{id, text, topic, tag, source, category, confidence, protected, used, bornAt, expiresAt, lastUsedAt, lastEvidenceAt, status, retireReason}`。
-- **两个品类**：`topic` 与 `chat`，各有容量上限；品类满只在自己池内按淘汰分挤人。
-- **四条淘汰规则**（`gcPool` + 入库时的容量挤出）：过期（按品类的 TTL 阶梯）、用尽（`retireAfterUsed`）、冷板凳（久未被选中）、容量挤出。淘汰 = **归档**（`--archived` 能翻回来），不删除。
-- 综合分 = 新鲜度 0.4 + 未用 0.3 + 置信度 0.3（手写与画像来源有额外保护）。
-- 同题合并：内容取最新、`used` 累计、证据时间取最大。
-- `isConsumed()` 是"这条素材算不算已经说过了"的唯一谓词，被"选中投递"和"回收"两处共用——以前两处各写一份，语义会漂。
-- `report.ts` 是**投递报账**：陪伴 agent 每次收到素材包都要调一次 `seed_report` 工具报账，落 `data/seed_report.jsonl`（DPAPI）。没报账的投递由引擎室兜底，并记一条 `report_missing`。
-
-### 4.7 profile/ —— 用户画像
-
-| 文件 | 职责 |
-|---|---|
-| `types.ts` | 四个分区（interest / projects / comm / psy）的条目结构：双时间戳 + evidence + 时效档位；操作只有四种：ADD / UPDATE / INVALIDATE / NOOP；journal 记录 `{v, ts, runId, applied, rejected, entries}`（v2 的 `entries` 是本轮写入 / 变更条目的**完整终态快照**，v1 老行没有） |
-| `schema.ts` | 白名单：分区 → topic → sub_topic 逐级限定，sub_topic 级还能规定"允许哪些档位 + 默认档"。**白名单外一概不收**。文件坏了走三级降级（用户层 → 出厂层 → 无白名单），并留 `profile_schema_fallback` |
-| `store.ts` | 守卫逐条裁决（白名单 / evidence 强制 / 置信度按来源封顶 / psy 门控 / 分区容量 / UPDATE 升级要二次确认 / INVALIDATE 的归属）+ 确定性老化（volatile 14 天失效、stable 180 天标"低活跃"但不删）+ **journal 唯一权威**（v2 记规范化之后的终态、重放按 id upsert，与实时路径是同一状态机；v1 老行走 `applyOpPermissive`）。**证据由代码生成**：模型只回观察编号（`o1`…），kind / at / ref 由 `shapes.ts` 从本批次观察里取——伪造引用、或自称 `hand` 把信心钉到 1.0，从构造上不再可达。`verify` 只报不修（坏行计入 `badRecords`）；`rebuild` 原子替换，撕裂尾会显式报告 |
-| `inbox.ts` | 观察收件箱：去重键 `kind + ref`（同一条观察重复投递只算一次）、note 截断到 120 字、**合并失败时收件箱保留**；成功时只删这一轮真正读过的条目（`inboxRemoveIds`），合并期间新到的观察留在箱里 |
-| `consolidate.ts` | 合并：触发（积压 ≥ 30 条，或距上次 ≥ 12 小时且积压不为 0）→ 排水分组（每条观察给一个编号 `o1`…）→ 拼裁决提示词 → 调模型 → 形状校验（`shapes.ts`）→ 证据绑定 → 守卫 → 应用 + 落 journal（老化也在内）+ 只删读过的观察。单飞锁防重入，模型调用由编排器注入 |
-| `digest.ts` | 处境摘要：三个切面（作息 + 沟通 + 窗口类别 / 高置信话题 top N / 高置信兴趣），v2.0 起总预算 6000 字符、三段各有上限、超预算按**整条**跳过并回报丢弃条数（`omitted`）；stable 但久未验证的条目会标"久未验证" |
-| `snapshot.ts` | journal 快照：累积到阈值就把当前状态定格，缩短重放路径 |
-
-**隐私边界**：送进模型的只有条目字段（四个分区、含 psy）与 ≤1 句观察引语——**不送对话原文、不送证据全量**。
-
-### 4.8 感知层：screen / env / rhythm
-
-- **`screen/`** —— `screenpulse.ps1` 采前台窗口、焦点、可见窗口列表与全屏原图；落在 `data/tmp` 的明文裸件**立刻加密**成 `screen.json` / `screen.jpg` 再焚掉裸件。`unlockShot` 用毕即焚。可见窗口上限读 `busy-rules.json` 的 `rules.visible_window_cap`。
-- **`vision.ts`** —— 见 C23。
-- **`env/`** —— `idle.ps1` 只输出空闲秒数；`presenceOf` 分三档（< 30 秒算活跃、看窗口类别 / 30–1200 秒 present / ≥ 1200 秒 away）。两档阈值读 `busy-rules.json` 的 `rules.idle_floor_seconds` 与 `rules.idle_away_seconds`，代码里的常量只作 fallback。`timeflow.ts` 是纯时间语义（时段名、节日表）。
-- **`rhythm/`** —— hour × weekday 的在场直方图，30 天滚动 + 指数衰减（τ ≈ 10 天）。**衰到 1e-3 以下归零；峰值要同时过"强度 ≥ 0.25"与"≥ 最高值的 5%"两道门。** 指数衰减永远不会真正到零，不设这两道门，一次偶发熬夜会被永久报成作息。纯统计、无内容，明文。
-
-### 4.9 browse/ —— 闲逛与兴趣
-
-- **闲逛裁决**（`adviseWander`）：窗口 + 最小间隔 + 焦点冷却三道闸，过了才调模型；**结果由代码入池**并 `completeWander` 登记节流（模型不碰登记）。
-- `resolveSchedule()` 是六个排程参数的统一出口：**用户层 `interests.json` 的 `_schedule` 优先，policy 里的 `browse.*` 作编译默认**。
-- `interests-edit.ts` 独占卡片编辑逻辑，口径见 C22。
-- `preference.ts` 是话题偏好加权：从报账记录里学"哪些话题值得再聊"，权重有夹逼区间、半衰期衰减和硬地板。
-
-### 4.10 statusbar/ —— 状态栏与时间注入
-
-- **`store.ts`**：每拍派生一个场景（`quiet-hours > just-spoke > wandering > busy > present > away`），写 `data/settings/status.json`（明文，**不含任何时间词**——这是设计红线，状态栏不该泄露"现在几点"）。`StatusReader` 按 mtime 缓存，供注入轨的热路径读。
-- **`time-inject.ts`**：自研时间注入。门控 = step 1 且用户发起，且距上次注入超过 `timeInjectMin` 分钟；节流状态按会话存在 `data/time-inject-state.json`，重启不丢。
-- **`track.ts`**：状态栏的两条轨道。读得到宿主系统提示的模型走 `heartbeat:status` 这个系统 section；其余模型在 pre-step 的时间消息尾部追加一行。**轨道钉在轮次起点**（step 1 时重钉），中途能力翻转不会把同一轮劈开。
-
-> **渲染纯性红线**：宿主对"逐字节相同"的文本零提交。所以渲染层不放高频变化的字段——note 只进状态文件与 UI，不进 section 文本。
-
-### 4.11 weekly/ —— 周报
-
-`collect.ts` 汇总一周的事实（开口次数、素材使用、账本待跟进、画像变化、报账统计），`report.ts` 交给模型写成人话，落 `data/weekly/report-<日期>.json`。触发锚点在 `data/weekly/state.json`——**文件缺失与文件损坏要分开处理**（损坏会记 `weekly_anchor_corrupt` 并用文件 mtime 兜底，否则一个坏文件会让周报永远不再生成）。v1.9.3 起由 `policy.weekly.keepReports`（默认 3）决定保留几期：存新一期时把更老的删掉并留痕 `weekly_pruned`，`weekly.list` 与设置卡都只给最近 N 期。
-
-### 4.12 ledger/ 与 notify/
-
-- **`ledger.ts`**：唯一账本，Markdown 行格式 `- [YYYY-MM-DD HH:MM][open|done][#id] 文本`；**手写乱行原样保留**（人可读是设计目标）。`pendingOlderThan` 供"待办挂太久了"的跟进时机用。`tool.ts` 把它注册成模型可调用的工具。
-- **`notify.ts`**：AUMID 自注册（HKCU + 开始菜单快捷方式，不需要管理员）。**只提示"有新消息"，不承载正文。**
-
-### 4.13 rpc.ts 与 client.js
-
-RPC 是卡片与宿主之间的唯一通道（协议细节见 C21）。端点用一张注册表描述，统一包一层错误归一与审计：
-
-| 分组 | 端点 |
-|---|---|
-| 状态 | `status`（带插件版本、当前场景、cap / 冷却摘要） |
-| 会话 | `sessions.list`、`bindings.get` / `add` / `remove` |
-| 素材 | `seeds.list` / `archive` / `restore` / `delete` |
-| 画像 | `profile.digest` / `profile.partitions` / `profile.export` |
-| 账本 | `ledger.open`（让宿主拉起编辑器） |
-| 摘抄本 | `excerpt.open`（让宿主拉起编辑器） |
-| 配置 | `config.get` / `config.set` |
-| 兴趣 | `interests.list` / `add` / `remove` / `setWindows` |
-| 周报 | `weekly.list` / `weekly.get` |
-| 维护 | `migrate.export` / `migrate.import` |
-
-`client.js` 是十个分区的卡片：心跳状态（30 秒轮询，默认展开）/ 会话绑定 / 素材池 / 兴趣范围 / 用户画像（只读）/ 账本 / 摘抄本 / 周报 / 换机迁移 / 节律配置（分区名与顺序见 `client.js:597`–`618`）。**每个分区独立报错**，一个分区挂了不影响别的。v1.9.3 起画像区改成四个分区按钮切换、每条一块、正文自动换行（另加一个只读的「引擎室输入」视图，看引擎室这一拍到底收到了什么），素材池改成话题 / 聊天 × 活跃 / 归档四个按钮，两处列表都补了滚动区。
-
-### 4.14 cli/
-
-`dist/cli/index.js` 是独立进程的运维入口，命令清单见 §7.3。结构是 `main()` + 一张 `VERBS` 表 + 每个 verb 一个函数。它直接读写 `data/`，所以**改不了运行中宿主的内存状态**——想改间隔请走设置页。
-
-### 4.15 notepad/ —— 心事匣
-
-一格便签，把没说完的话留给下一拍。**存储恒定**（不随拍数增长），落 `data/notepad.json`（加密）：`store.ts` 管状态机，`tool.ts` 把它注册成模型工具（与账本同一条路：plain object、ROOT context → 全局工具层，引擎室被预设遮住）。
-
-**生命周期靠两个序号判定，不靠时间戳**（时间戳会被新消息重置，算不出"搁了几拍"）：
-
-```
-dropped  <=>  note.shownAtBeat !== null && note.shownAtBeat > note.touchedAtBeat
-```
-
-- `beginBeat(guard, file, startup)` 在每拍开头跑（`beat_start` 之后）：非启动拍 `counters.beats += 1` 并套用上面的判据；**启动那一拍不加序号、也不丢任何东西**——DSH 每次启动都会先跑一拍，若它算数，"搁了几拍"会被重启污染。
-- `markDelivered` 在投递给目标会话之后跑（成功与 `spoke_late` 两条路都过，提前 return 的不过）：`counters.delivers += 1`，把便签盖上 `shownAtBeat = counters.beats`；**只有这一拍才诞生的便签**（`note.beatNo === counters.beats`）才把 `deliverNo` 锚到当前计数——否则"第一次被读到"会永远显示成"被叫醒过 1 次"。
-- 判据用**严格大于**：本拍才写下或才保留的便签，从没被读过，不能被刚送出它的那次投递吃掉（同拍时两个序号相等）。
-- `writeNote` 同文本 = **保留**（`leftAt` / `beatNo` / `deliverNo` 原样留着，只更新 `touchedAtBeat` 并清 `shownAtBeat`，返回 `{ note, kept }`）；写别的文本 = 换新的，年龄从头算。空文本抛错。
-
-**读在投递包里**：`deliverPackage` 调 `readNotepadSafe()`，把 `notepadView()` 的结果（`text` / `beatsAgo` / `wakesAgo` / `sinceMinutes`）交给 `buildMaterialPrompt()` 的 `notepad` 选项，由 `notepadLines()` 渲染成三行，插在 `PACKAGE_DECLARE` **之后、素材清单之前**。引擎室的反刍备料包（`buildRuminationPrompt`）里**没有**它。
-
-**软失败**：读写异常只记 `notepad_read_failed` / `notepad_write_failed`（带 `where`：`begin_beat` / `deliver_package`），不让一格便签把整拍弄挂；`notepad_dropped` 记下这一拍放掉了哪条。`beat()` 新增 `trigger` 参数（`startup` / `interval` / `retry` / `wake`）并写进 `beat_start`。
+- **素材池三层去重与配额（`src/seeds/pool.ts`）**
+  - 入池时依次比对近 30 天活跃+归档池：① URL 完全一致（`exact`）→ ② 标题归一化一致（`normalized`）→ ③ 标题字符二元组 Jaccard 相似度 `> 0.85`（`similar`）。命中任一则拒绝入池并记 `seed_duplicate`。
+  - **B 站源专属配额**：池内最多保留 **6 条**活跃 `bilibili` 素材（超出按最旧淘汰，记 `seed_retired(source_cap)`），单次投递包最多选入 **2 条**，有效期固定 **2 天**。
+- **四个陪伴 Agent 工具（仅注入陪伴会话，引擎室禁用）**
+  - `notepad`（心事匣）：`write` / `read` / `clear`，只有一格，写新盖旧。
+  - `ledger`（待办账本）：`add` / `list` / `done`，操作 `data/ledger.md`。
+  - `excerpt`（摘抄本）：`add` / `list` / `remove`，操作 `data/excerpt.md`。
+  - `seed_report`（素材报账）：每次收到投递包必须调用一次（`spoken: "material" | "heartfelt" | "silent"`），用于闭环统计素材命中率与话题偏好。
 
 ---
 
-### 4.16 excerpt/ —— 摘抄本
+## 4. 参数与配置去哪里查
 
-留句子和想记住的小事的地方。**只增不减**（除非主动 `remove`）：没有状态、不会过期、不参与任何判定。与账本 / 心事匣的分工写在 `tool.ts` 的 description 里，免得模型拿错。
+插件参数分为三层：**宿主插件配置**、**策略配置（Policy）**、以及 **源码内部常量**。
 
-- `excerpt.ts`（存储）：`excerptFilePath(dataDir)` = `data/excerpts.md`；行格式 `- [YYYY-MM-DD HH:MM][#xxxxxx] 正文`，认不出的行进 `rawLines` 原样保留（与账本同一套容忍式解析）；`appendExcerpt` / `removeExcerpt` / `recentExcerpts`。
-- `tool.ts`（模型工具）：`excerpt`，动作 `add` / `list` / `remove`，`MAX_TEXT = 300`、`LIST_LIMIT = 10`；与 `ledger` / `notepad` 同一条注册路径（plain object、ROOT context → 全局工具层），引擎室看不到。
-- **明文落盘**（`readText` / `writeText`）：与 `ledger.md` 同类——**给人看的文档、也可以被人手编**；其余明文文件都是机器状态（游标、计数、日志），没有人会去读。设置卡要能「一键打开」它，加密的笔记本没人能翻。`EXCERPT_HEADER` 兼作读缺省值与新文件头。
-- CLI `excerpt add|list [n]|remove|open`；RPC `excerpt.open`（缺文件时按 `EXCERPT_HEADER` 建）。
+### 4.1 第一层：宿主插件配置（`cordis.patch.yml` / 插件设置页）
 
----
+定义在 `src/index.ts:36-46`：
 
-## 5. 数据文件字典
+| 参数名 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `dataDir` | `string` | `""`（即 `~/.dsh/heartbeat-data`） | 自定义数据目录绝对路径。修改后下次启动会自动将旧目录全部文件迁移至新目录（记 `data_dir_relocated`） |
+| `installPreset` | `boolean` | `true` | 启动时是否自动在 `~/.dsh/agent-presets/kohaku-heartbeat/` 安装内置人设模板（已有同名目录时绝不覆盖） |
 
-下面所有路径都相对 **dataDir**（默认 `<DSH_HOME>/heartbeat-data`，可被环境变量 `HEARTBEAT_DATA_DIR` 或插件配置 `dataDir` 覆盖——解析链与自动搬迁见 §1 / C13b）。
+### 4.2 第二层：运行时开关（`data/settings/ui-config.json`，面板「设置」页即时生效）
 
-> **怎么判断一个文件是不是密文**：文件头是 ASCII 的 `KHBV2` 就是新一代容器（AES-256-GCM），`KHBV1` 是旧一代（DPAPI）；能直接 `type` 出人话就是明文。想知道某处该用哪种，看它调的是哪一对函数——`loadEncryptedText` / `saveEncryptedText`、`encryptFile` / `decryptFile`、`loadJson` / `saveJson` 都进加密通道；`readText` / `writeText` 是明文。
+定义在 `src/config/ui-config.ts`，可通过面板直接切换或调 RPC `config.set` 修改：
 
-### 5.1 素材与偏好
+| 字段名 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | 心跳表达总开关（关闭后仍可观察和闲逛，但门禁在 `disabled` 处拦截投递） |
+| `intervalMinutes` | `number` | `15` | 心跳基础间隔（分钟，范围 `1–1440`），修改后立即重设定时器 |
+| `screenVision` | `boolean` | `false` | 是否启用阶段 A 的桌面截图与窗口标题感知（仅 Windows 生效） |
+| `idleMode` | `boolean` | `true` | 闲着没事模式：素材池为空时，是否允许拿画像兴趣条目当话题搭话 |
+| `tokenSaver` | `boolean` | `true` | 无活动省流模式：用户一直没说话且无新采集信号时，跳过后续表达评估 |
 
-| 文件 | 内容 | 谁在写 |
-|---|---|---|
-| `seeds.jsonl` | 素材池，一行一条（活跃区） | `seeds/pool.ts` |
-| `seeds.*`（归档区） | 被淘汰的素材，`seeds --archived` 可查、`restore` 可捞回 | 同上 |
-| `seed_report.jsonl` | 投递报账流水，环形保留最近 400 条 | `seeds/report.ts` |
-| `preference.json` | 话题偏好权重（30 天半衰期，权重夹 0.5–2，14 天硬地板） | `browse/preference.ts` |
+### 4.3 第三层：策略参数（`config/policy.json` 与 `data/settings/policy.json`）
 
-### 5.2 用户画像
+- **去哪里查定义与校验**：`src/config/schema.ts`（`Policy` 接口与 `assertPolicy` 函数）
+- **去哪里看默认出厂值**：仓库根目录 `config/policy.json`（只读出厂层）
+- **怎么改**：在 `<dataDir>/data/settings/policy.json` 写入需要覆盖的字段（支持只写局部子字段，启动或每跳加载时通过 `deepMerge` 合并）。其中 `gate.quietHours` 和 `browse.windows` 可直接在面板「设置 / 兴趣」页修改。
 
-| 文件 | 内容 | 谁在写 |
-|---|---|---|
-| `profile.json` | 画像物化视图（四个分区的全部条目） | `profile/store.ts` |
-| `profile_journal.jsonl` | 事件流水（v2 记规范化之后的**最终事实**：add / update / invalidate / 老化都作为事件；v1 老行照旧能读），**重放它才是恢复真相的路径** | 同上 |
-| `profile_journal.archive-*` | 轮转出去的历史流水 | 同上（快照时） |
-| `profile_snapshot.json` | journal 轮转基线 | `profile/snapshot.ts` |
-| `vault.key` | 数据密钥（DPAPI 包着的 32 字节随机键）；换机**不随迁移包移动** | `vault/vault.ts` |
-| `profile_inbox.jsonl` | 观察收件箱（待合并的**观察**） | `profile/inbox.ts` |
-| `profile_rhythm.json` | 作息直方图（纯统计，不含内容） | `rhythm/rhythm.ts` |
-| `logs/rebuild-report.txt` | 上一次 `profile rebuild` 的校验报告 | 同上 |
+| 路径 | 默认值 | 合法范围 | 作用说明 |
+|---|---|---|---|
+| `heartbeat.intervalMin` | `15` | `[1, 1440]` | 出厂默认心跳间隔（被 `ui-config.json` 的 `intervalMinutes` 优先覆盖） |
+| `heartbeat.intervalJitterPct` | `20` | `[0, 50]` | 节律抖动百分比：每跳实际等待 `interval × (1 ± p%)` 均匀随机，防掐表机械感；设为 `0` 关闭抖动 |
+| `heartbeat.idleMode` | `true` | `boolean` | 出厂默认空闲模式开关 |
+| `heartbeat.archiveRotatedHome` | `true` | `boolean` | 引擎室旋转淘汰旧正身会话时，是否自动在宿主 `workspace.json` 中将其标记为归档 |
+| `gate.maxDailySend` | `8` | `>= 0` | 每日最多主动搭话次数（本地自然日 00:00 重置） |
+| `gate.cooldownMinutes` | `30` | `>= 0` | 两次主动搭话之间的最短冷却分钟数 |
+| `gate.quietHours` | `{start:"23:30", end:"08:00"}` | `HH:MM` | 安静时段（支持跨午夜，时段内门禁返回 `quiet-hours`） |
+| `browse.windows` | `09:00-11:30`, `14:00-17:30`, `20:00-22:30` | 非空 `HH:MM` 数组 | 允许触发自主闲逛的本地时间窗口 |
+| `browse.minIntervalHours` | `2.5` | `> 0` | 两次自主闲逛之间的最短间隔小时数 |
+| `browse.maxSeedsPerVisit` | `4` | `>= 1` | 单次闲逛最多允许入池的素材条数 |
+| `seeds.maxActive` | `30` | `>= 1` | 活跃素材池容量上限 |
+| `seeds.ttlDays` | `{news:2, fandom:14, scene:1, promise:30}` | `number` | 各标签素材的存活天数 |
+| `seeds.coldBenchDays` | `5` | `number` | 素材连续多少天未被选中则移入冷板凳归档 |
+| `seeds.archiveCap` | `100` | `>= 1` | 归档区最多保留多少条历史素材（超出按最旧裁剪） |
+| `seeds.retireAfterUsed` | `2` | `>= 1` | 同一条素材被陪伴 Agent 实际使用多少次后自动归档 |
+| `seeds.scoreWeights` | `{freshness:0.4, unused:0.35, confidence:0.25}` | 权重对象 | 投递前候选素材打分公式权重 |
+| `profile.consolidation.minIntervalHours` | `6` | `number` | 画像整合的最短时间间隔（小时） |
+| `profile.consolidation.inboxBacklog` | `20` | `number` | 收件箱积压多少条观测记录时提前触发画像整合 |
+| `profile.partitionCap` | `10` | `>= 1` | 每个画像分区最多保留多少条记录 |
+| `profile.maxOpsPerRun` | `5` | `>= 1` | 单次画像整合最多允许执行的增删改操作数 |
+| `profile.confidenceCap` | `{chat:0.95, screen:0.5, browse:0.6}` | `0–1` | 不同来源证据写入画像时的置信度天花板 |
+| `profile.volatileDays` | `7` | `>= 1` | `volatile`（短期状态）条目的过期天数 |
+| `profile.stableLowActivityDays` | `60` | `>= 1` | `stable` 条目多久未命中后打上 `lowActivity` 标记 |
+| `profile.psyEnabled` | `true` | `boolean` | 是否启用 `psy`（心理与情感倾向）分区 |
+| `observe.maxChars` | `500` | `[20, 2000]` | 单条用户发言摘录进 inbox 的最大字符数 |
+| `observe.perBeat` | `20` | `[1, 100]` | 单跳最多从单个观察会话消费多少条新用户发言 |
+| `weekly.enabled` | `true` | `boolean` | 是否在每周日 20:00 后自动生成周报 |
+| `weekly.keepReports` | `12` | `[1, 52]` | 最多保留最近多少周的周报文件 |
+| `retention.envPulseHours` | `24` | `number` | `data/env-pulse.jsonl` 保留最近多少小时的窗口记录 |
+| `retention.decisionLogDays` | `30` | `number` | `logs/heartbeat.jsonl` 保留最近多少天的审计日志 |
+| `sources.bilibili.enabled` | `true`（有凭据时） | `boolean` | 设为 `false` 可在不删凭据的情况下硬关闭 B 站观看历史源 |
+| `sources.bilibili.cookieFile` | `undefined` | `string` | 可选外部 Cookie 文件路径（未扫码登录时的回退凭据源） |
 
-### 5.3 感知与在场
+### 4.4 第四层：源码内部硬编码常量（调优时查这里）
 
-| 文件 | 内容 | 谁在写 |
-|---|---|---|
-| `screen.json` | 前台窗口、进程、标题、焦点、可见窗口列表（**密文**） | `screen/screenpulse.ts` |
-| `screen.jpg` | 屏幕截图（**密文**，视觉识别用完即从明文区焚毁） | 同上 |
-| `envpulse.json` | 环境温度计快照（空闲秒数、窗口类别、在场景） | `env/envpulse.ts` |
-| `settings/status.json` | 状态栏场景（明文，**不含时间词**） | `statusbar/store.ts` |
-| `settings/vision.json` | 视觉识别的 provider 与提示词覆盖 | 用户手改 |
-
-### 5.4 状态、节流与闸门
-
-| 文件 | 内容 | 谁在写 |
-|---|---|---|
-| `sent.json` | 表达记录（已送出的内容、时间戳），冷却与每日上限都看它 | `gate/gate.ts` |
-| `cursors.json` | 观察游标：每个绑定会话看到哪了（`{version: 2, cursors: {…}}`） | `core/orchestrator.ts` |
-| `time-inject-state.json` | 时间注入的节流状态（按会话记上次注入时刻） | `statusbar/time-inject.ts` |
-| `gate.json` | 正身会话 id（DPAPI 加密；**改它必须重启 DSH**） | `core/orchestrator.ts` |
-| `browse.json` | 闲逛状态（上次闲逛时刻、焦点冷却、当日次数、refill 次数） | `browse/browse.ts` |
-| `notepad.json` | 心事匣那一格便签 + 两个序号计数（`beats` / `delivers`）（**密文**） | `notepad/store.ts` |
-| `excerpts.md` | 摘抄本，一行一条（**明文**，给人的文档，可手编） | `excerpt/excerpt.ts` |
-| `weekly/state.json` | 周报的触发锚点 | `weekly/report.ts` |
-| `weekly/report-<日期>.json` | 已生成的周报正文 | 同上 |
-
-### 5.5 配置（三层，详见 §4.3 与 §6）
-
-| 路径 | 层级 | 说明 |
-|---|---|---|
-| `config/policy.json` | **出厂层**（包内只读） | 全部默认参数 |
-| `data/settings/policy.json` | 用户文件层 | 深合并覆盖出厂层；写错了 fail-closed |
-| `data/settings/ui.json` | UI 层 | 设置卡片写的六项（`intervalMin` / `maxDailySend` / `timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver`）；卡片上的 psy 开关是例外，落在 policy 用户层的 `profile.psyEnabled` |
-| `data/settings/interests.json` | 兴趣层 | 首次编辑时从出厂层复制过来，此后**整体取代**出厂层 |
-| `data/settings/profile-schema.json` | 白名单层 | 同上，整体取代出厂层 |
-| `data/settings/bindings.json` | 会话绑定 | 陪伴 / 观察目标的名单 |
-
-### 5.6 日志
-
-| 文件 | 内容 | 保留 |
-|---|---|---|
-| `logs/heartbeat.jsonl` | 主审计流（**排障第一现场**，见 §7） | 30 天 |
-| `logs/envpulse.jsonl` | 环境探针逐次记录 | 48 小时 |
-| `logs/consolidation.txt` | 上次画像合并的时间戳 | — |
-
-审计是 **JSONL，一行一个事件**，字段至少含 `ts`（UTC ISO）与 `event`。裁剪由 `pruneAuditFile` 按龄做（原子重写），在维护相里跑。
-
-### 5.7 临时区与导出区
-
-| 路径 | 说明 |
-|---|---|
-| `tmp/` | **唯一的明文临时窗**：加解密中间件、截图裸件、CLI 的临时产物都在这里，用完即焚 |
-| `exports/` | `migrate export` 的产物（换机迁移包） |
-
-`tmp/` 里的东西随时可以被删；除它之外，任何明文出现都是 bug。
+| 常量名 | 当前值 | 所在文件与行号 | 说明 |
+|---|---|---|---|
+| `HOME_ROTATE_EVENT_COUNT` | `3000` | `src/core/orchestrator.ts:242` | 引擎室主动旋转的事件数阈值 |
+| `TURN_TIMEOUT_MS` | `180_000` (3 min) | `src/core/orchestrator.ts:254` | 引擎室单轮模型调用超时时间 |
+| `IDLE_WAIT_TIMEOUT_MS` | `240_000` (4 min) | `src/core/orchestrator.ts:255` | 引擎室等待空闲的超时时间 |
+| `EXPRESSION_IDLE_WAIT_MS` | `600_000` (10 min) | `src/core/orchestrator.ts:262` | 向用户陪伴会话投递前等待会话空闲的最大时间 |
+| `BEAT_WATCHDOG_MS` | `2_700_000` (45 min) | `src/core/orchestrator.ts:299` | 单跳卡死强制 Abort 并释放单飞锁的看门狗阈值 |
+| `BILI_MIN_INTERVAL_MS` | `7_200_000` (2 h) | `src/sources/bilibili.ts:34` | B 站观看历史两次拉取的最短间隔 |
+| `BILI_ACTIVE_CAP` / `DELIVERY_CAP` | `6` / `2` | `src/seeds/pool.ts:51-55` | B 站素材在活跃池中的最大条数 / 单次投递包最大条数 |
+| `SIMILARITY_THRESHOLD` | `0.85` | `src/seeds/pool.ts:61` | 素材标题字符二元组 Jaccard 近似去重阈值 |
+| `BUDGET_CHARS` (Profile) | `5000` | `src/profile/store.ts:36` | 用户画像总字符预算上限 |
 
 ---
 
-## 6. 参数位置速查
+## 5. 错误日志怎么看、怎么查
 
-**先看 §4.3 的三层结构**：能热改的只有设置卡片上那几个开关（外加 psy——它落在 policy 用户层，保存同样立刻生效），其余都是"改文件 + 重启"。下面按"改哪儿"分组。
+### 5.1 日志位置与查看方式
 
-### 6.1 热参数 —— 设置卡片（落 `data/settings/ui.json`）
+所有运行轨迹、门禁拦截原因、模型超时与异常全部以 **JSON Lines** 格式追加在：
 
-| 字段 | 含义 | 取值 |
-|---|---|---|
-| `intervalMin` | 心跳间隔（分钟） | 1–1440 |
-| `maxDailySend` | 每日开口上限（条） | 1–50 |
-| `timeInjectMin` | 时间注入节流（分钟；0 = 关闭） | 0–1440 |
-| `statusbar` | 是否接管状态栏（v1.9.3 起出厂默认**关**；卡片打开后以卡片为准） | 布尔 |
-| `idleMode` | 闲人模式（更少打扰） | 布尔 |
-| `tokenSaver` | 用户离开或锁屏时暂停心跳（v1.9.3 起暂停期间每 3 分钟探一次闸门，不取 agent、不调模型；绑定会话里出现用户没消化的新消息就算他在场，立刻恢复） | 布尔 |
-
-保存即生效，不重启。**越界的值会被丢弃而不是夹逼**（写成 `0` 就等于没写），范围表在 `src/config/ui-config.ts:25-29`。
-
-`timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` 这四个字段在 plugin 配置 schema 里**不写默认值**（2026-10-17 改）。原因：写了默认值就分不出「用户明确设了」和「没设」，而启动时配置值会盖过 `ui.json`——默认值于是每次重载都悄悄把卡片的选择掀掉（实测症状：状态栏开关重启后自己变回关）。不设时按上表括号里的出厂值走；真在配置里填了值，就以配置为准。
-
-### 6.2 冷参数 —— `data/settings/policy.json`（或出厂 `config/policy.json`）
-
-深合并覆盖，改完重启。字段名就是 `config/policy.json` 里的点号路径：
-
-| 路径 | 含义 | 出厂值 |
-|---|---|---|
-| `heartbeat.intervalMin` | 心跳间隔（分钟） | 60 |
-| `heartbeat.idleMode` | 闲人模式 | false |
-| `heartbeat.archiveRotatedHome` | 家轮换时归档旧会话 | true |
-| `gate.maxDailySend` | 每日开口上限 | 10 |
-| `gate.cooldownMinutes` | 两次开口之间的最小间隔 | 30 |
-| `gate.quietHours.start` / `.end` | 静默时段 | 01:00 / 08:00 |
-| `browse.windows` | 闲逛窗口 | 11:00–15:00、17:00–21:00 |
-| `browse.minIntervalHours` | 两次闲逛的最小间隔 | 4 |
-| `browse.maxSeedsPerVisit` | 一次闲逛最多入池几条 | 2 |
-| `seeds.maxActive` | 活跃素材池上限 | 30 |
-| `seeds.ttlDays.*` | 分品类保质期（天）：news / fandom / scene / promise | 3 / 14 / 60 / 90 |
-| `seeds.coldBenchDays` | 多久没被选中算冷板凳 | 21 |
-| `seeds.archiveCap` | 归档区上限 | 50 |
-| `seeds.retireAfterUsed` | 用几次退休 | 2 |
-| `seeds.scoreWeights.*` | 淘汰分权重：freshness / unused / confidence | 0.4 / 0.3 / 0.3 |
-| `profile.consolidation.minIntervalHours` | 两次合并的最小间隔 | 12 |
-| `profile.consolidation.inboxBacklog` | 积压多少条强制合并 | 30 |
-| `profile.partitionCap` | 每个分区的条目上限 | 50 |
-| `profile.maxOpsPerRun` | 一次合并最多应用几条操作 | 10 |
-| `profile.confidenceCap.*` | 各来源置信度封顶：chat / screen / browse | 0.6 / 0.4 / 0.4 |
-| `profile.volatileDays` | volatile 条目的有效期（天） | 14 |
-| `profile.stableLowActivityDays` | stable 条目多久没验证标"低活跃" | 180 |
-| `profile.psyEnabled` | 是否启用 psy 分区（设置卡里那个 psy 开关写的就是这个字段） | false |
-| `observe.maxChars` | 一条观察摘录多少字 | 80 |
-| `observe.perBeat` | 每拍每会话最多观察几条 | 10 |
-| `weekly.enabled` | 是否生成周报 | true |
-| `weekly.keepReports` | 周报保留几期（存新一期时把更老的删掉并留痕 `weekly_pruned`，v1.9.3 起） | 3 |
-| `retention.envPulseHours` | 环境探针日志保留（小时） | 48 |
-| `retention.decisionLogDays` | 主审计保留（天） | 30 |
-
-### 6.3 忙时规则 —— `data/settings/busy-rules.json`（出厂 `config/busy-rules.json`）
-
-| 路径 | 含义 | 出厂值 |
-|---|---|---|
-| `rules.focus_stable_seconds` | 前台快照超过多久就不采信 | 15 |
-| `rules.idle_away_seconds` | 空闲多久算"离开" | 1200 |
-| `rules.idle_floor_seconds` | "活跃"与"在场"的分界 | 30 |
-| `rules.visible_window_cap` | 一次采集合几个可见窗口 | 20 |
-| `busy.groups` / `idle.groups` | 进程名到分类的规则 | 见出厂文件 |
-
-> 这四个阈值以前是硬编码的，v1.9.1 起真读了；代码里的常量只作 fallback。`busy` 与 `idle` 两组缺任意一组，整块配置会退回出厂值——**只改 `rules` 的话，其余三块要一起带上。**
-
-### 6.4 闲逛排程 —— `data/settings/interests.json` 的 `_schedule`
-
-| 字段 | 含义 | 出厂值 |
-|---|---|---|
-| `windows` | 闲逛窗口（**优先于** `browse.windows`） | noon 11:00–15:00、evening 17:00–21:00 |
-| `daily_sessions` | 每天最多几次（0 = 不限） | 2 |
-| `focus_per_session` | 一次考察几个焦点 | 1 |
-| `max_seeds_per_focus` | 每个焦点最多入池几条 | 2 |
-| `focus_cooldown_days` | 同一焦点几天内不重复 | 3 |
-| `min_interval_hours` | 两次闲逛的最小间隔 | 4 |
-
-这张表由 `resolveSchedule()` 统一读取：**这里填了就用这里的，没填才落到 `policy.browse.*`。**
-
-### 6.5 组合条目覆盖 —— profile 的 `cordis.patch.yml`
-
-在 `id: heartbeat` 那条的 `config` 里可以覆盖 `intervalMin` / `maxDailySend` / `dataDir` 等；**`0` 表示"不覆盖"**（沿用下层值）。改完需要重载插件——通常就是重启 DSH。
-
-### 6.6 编译期常量（改要重新构建）
-
-这些不值得做成配置项（要么是结构性假设，要么改错会出乱子），但排查问题时要知道它们卡在哪。表中的行号对应本版代码，**行号会随改动漂移，按常量名搜更稳**：
-
-| 常量 | 值 | 位置 |
-|---|---|---|
-| `BEAT_WATCHDOG_MS` | 45 分钟 | `src/core/orchestrator.ts:236` |
-| 四相超时（维护 / 采集 / 闲逛） | 10 / 5 / 15 分钟 | `src/core/orchestrator.ts:275-277` |
-| `TURN_TIMEOUT_MS` / `IDLE_WAIT_TIMEOUT_MS` | 3 / 4 分钟 | `src/core/orchestrator.ts:191-192` |
-| `HOME_ROTATE_EVENT_COUNT` | 3000 | `src/core/orchestrator.ts:179` |
-| `TOKEN_SAVER_IDLE_SECONDS` | 1800 | `src/core/orchestrator.ts:1739` |
-| 文件锁：判陈旧 / 等待 | 15 秒 / 3 秒 | `src/core/file-lock.ts` |
-| 作息：`TAU_DAYS` / `CELL_EPSILON` / 双门阈值 | 10 天 / 1e-3 / 0.25 与 5% | `src/rhythm/rhythm.ts` |
-| 摘要预算 `BUDGET_CHARS` | 6000 字符（v2.0；分区上限 `TACT_MAX_CHARS` 2500 / `WANDER_MAX_CHARS` 850 / 话题取剩余且 ≥`TOPIC_MIN_CHARS` 2400） | `src/profile/digest.ts` |
-| `MAX_CHAT_SEEDS_PER_RUN` | 3 | `src/profile/consolidate.ts` |
-| `REPORT_KEEP` | 400 条 | `src/seeds/report.ts` |
-| `GATE_SAFE_ENDPOINTS` | 五个只读端点（缺宿主闸门时唯一的放行名单） | `src/rpc.ts` |
-
----
-
-## 7. 诊断手册
-
-**排障第一现场永远是 `data/logs/heartbeat.jsonl`**：JSONL，一行一个事件，带 UTC 时间戳。先 `Get-Content -Tail 50`，再按事件名筛：
-
-```powershell
-# 在仓库根目录执行
-Get-Content .\data\logs\heartbeat.jsonl -Tail 200 |
-  Select-String 'beat_error|spoke_failed|consolidation_failed|rpc_host_gate_missing'
+```text
+<dataDir>/logs/heartbeat.jsonl
 ```
 
-**排查顺序**：有没有心跳（`beat_start`）→ 有没有报错（`beat_error`）→ 为什么没开口（`silent` 的 reason）→ 开口了有没有送到（`spoke` 后面跟没跟 `delivered`）。
+**常用查询命令**：
 
-### 7.1 事件字典
+```bash
+# 1. 用内置 CLI 看最近 30 条日志（推荐）
+node dist/cli/index.js logs --tail 30
 
-**启动与装载**
+# 2. 只看错误与失败事件
+grep -E '"event":"([^"]*_failed|[^"]*_error|beat_watchdog|beat_aborted)"' ~/.dsh/heartbeat-data/logs/heartbeat.jsonl | tail -n 20
 
-| 事件 | 含义 |
-|---|---|
-| `plugin_init` | 插件装载完成，记版本与生效配置 |
-| `preset_install` | 随包预设的安装结果（`created` / `repaired` / `exists` / `skipped-*`，见 C18） |
-| `preset_register` | 预设运行时注册的结果（`registered` / `skipped-no-api` / `skipped-disabled` / `error`，见 C13a） |
-| `data_dir_relocated` | 老数据已从包内搬到包外（带 `from` / `to` / `files` / `bytes` / `warnings` / `leftovers`，见 C13b） |
-| `data_dir_relocate_failed` | 搬迁失败，**继续用包内目录**（带 `stage` / `problems`，见 C13b） |
-| `orchestrator_started` / `orchestrator_disposed` | 编排器起停。**正常**——两条挨着出现说明插件在重载 |
-| `rpc_registered` | 数据通道挂上了（带 route） |
-| `rpc_host_gate_missing` | 宿主没有闸门钩子，危险端点已降级为拒绝（C24） |
-| `tool_policy` | 工具面自检（`restrict=ok` 是预设挂上的判据） |
+# 3. 看为什么今天一直没搭话（查所有 silent 与 spoke 事件）
+grep -E '"event":"(silent|spoke|spoke_failed|spoke_deferred)"' ~/.dsh/heartbeat-data/logs/heartbeat.jsonl | tail -n 20
 
-**每一拍**
+# 4. 查看当前工作区路径、门禁状态与策略摘要
+node dist/cli/index.js status
+```
 
-| 事件 | 含义 |
-|---|---|
-| `beat_start` | 一拍开始（带 `trigger`：startup / interval / retry / wake） |
-| `phase_done` | 某一相跑完（`phase`: maintenance / collect / wander / refill_wander） |
-| `beat_error` | **拍级异常**——整拍挂了，看 `error` |
-| `beat_watchdog` | 超时看门狗强制解锁（上一次拍卡死了 45 分钟以上） |
-| `beat_aborted` | 这一拍被取消（看门狗 / 超时 / 插件卸载），带 `stage` 与 `why` |
-| `vault_upgraded` | 维护相把一个长期没动的旧 `KHBV1` 容器就地改写成 `KHBV2`，带 `file` 相对路径 |
-| `notepad_dropped` | 这一拍放掉了上一条没被保留的心事（带 `beatNo`）——正常流程，不是错误 |
-| `notepad_read_failed` / `notepad_write_failed` | 心事匣读写失败（带 `where`），只留痕，不影响整拍 |
-| `beat_agentless` | 拿不到 agent，本拍只跑维护与采集 |
-| `silent` | 本拍不开口，`reason` 写原因（冷静期 / 上限 / 静默时段 / 没有候选…） |
+### 5.2 审计日志 `event` 全量速查字典
 
-**引擎室与 agent**
+每行 JSON 至少包含 `{"ts":"ISO8601","event":"..."}`。按生命周期分类如下：
 
-| 事件 | 含义 |
-|---|---|
-| `agent_resume_start` / `agent_create_start` | 正在尝试唤起或新建引擎室会话（长时间没动静时，看这一步有没有对应的成功事件） |
-| `agent_reuse_live` / `agent_resume_ok` / `agent_create_ok` | 三种获取路径成功（都带 `model`） |
-| `agent_resume_failed` / `agent_acquire_failed` | 获取失败，看 `error` |
-| `agent_deferred` | 失败后退避重试（退避 1 → 2 → 4… 分钟，封顶 30）。**只对暂时性失败**：除字符串不含 `not found` 外，还要过 `looksPermanentResumeFailure()`（会话格式迁移被拒一类的永久失败不走 defer，直接走创建路径；创建也失败则自愈到新会话——issue #2） |
-| `agent_cache_discarded` | 缓存的 agent 已失效，丢弃 |
-| `home_rotate_start` / `_done` / `_archive` / `_failed` | 引擎室轮换的四步 |
-| `home_reset` | 正身被移除（设置卡片操作），带 `oldSessionId` |
-| `turn_extraction_empty` | 一轮跑完了但没抽到文本 |
-| `interval_changed` / `ui_config_set` | 热参数被改（两条挨着出现是好迹象） |
-
-**观察**
-
-| 事件 | 含义 |
-|---|---|
-| `observed` | 某个绑定会话新增了几条观察（带 `cursor`） |
-| `observe_error` | 观察失败（会话读不到等） |
-| `cursor_format_discarded` | 游标格式不兼容，已丢弃并全量重扫——**升级后出现一次是正常的** |
-
-**闲逛与素材**
-
-| 事件 | 含义 |
-|---|---|
-| `wander` / `refill_wander` | 一次闲逛（带 `focus` 与 `registered`＝实际入池条数；0 条要查 C13） |
-| `wander_parse_error` | 模型输出解析失败 |
-| `seed_added` / `seed_retired` / `seed_restored` / `seed_deleted` / `seed_archive_trimmed` | 素材池的增删与淘汰（`seed_retired` 带 `reason`: completed / pool_cap / consumed / expired / cold_bench） |
-| `preference_record_failed` | 素材偏好权重没记上——不影响本次投递，只是少学一次 |
-
-**画像**
-
-| 事件 | 含义 |
-|---|---|
-| `consolidation` | 一次合并（`applied` / `rejected` / `chatSeeds`） |
-| `consolidation_failed` | 合并抛错（收件箱会保留，下次再来） |
-| `profile_schema_fallback` | 白名单走了降级（用户层 → 出厂层 → 无白名单） |
-| `profile_snapshot` / `profile_snapshot_failed` | journal 快照 |
-| `screen_vision` / `idle_fallback` | 视觉识别结果 / 视觉不可用退回窗口标题 |
-
-**表达与投递**
-
-| 事件 | 含义 |
-|---|---|
-| `spoke` | 说出口了（`text` 存前 80 字，另有 `seeds` / `profile_ids` / `source` / `spoken`） |
-| `spoke_fallback` / `spoke_late` / `spoke_deferred` / `spoke_failed` | 兜底 / 迟到确认 / 推迟 / 失败（看 `reason`） |
-| `decision_deferred` | 表达决策抛错，这一拍没开口（看 `reason`） |
-| `deliver_target_live` / `_resumed` / `_released` | 投递目标的取用与归还；`_released` 是**好迹象**（说明干净还回去了） |
-| `deliver_target_resume_failed` / `_release_failed` | 取用或归还失败，看 `error`；偶发无碍，连着出现要查绑定 |
-| `deliver_target_preset` | 投递目标那一轮有没有把会话自己的预设挂回去（`preset=ok(<id>)` / `none` / `no-api` / `threw(…)`，2026-10-17 起） |
-| `delivered` | 落进了用户会话 |
-| `report_missing` / `report_read_failed` | 投递包没报账 / 报账读不出来 |
-| `expression_dropped` / `_streak` | 输出被判不合格丢弃 / 连续丢弃计数 |
-| `status_written` / `status_write_failed` | 状态栏场景写盘 |
-| `token_saver_resumed` | 省 token 闸放开（`via` = wake / interval，`heldMin` = 挂了多久，`checks` = 唤醒检查次数） |
-| `pulse` / `time_injected` / `statusbar_track` | 探针脉冲 / 时间注入 / 状态栏走了哪条轨 |
-
-**周报与维护**
-
-| 事件 | 含义 |
-|---|---|
-| `weekly_generated` / `weekly_skipped` / `weekly_llm_failed` / `weekly_failed` | 周报四种结局 |
-| `weekly_anchored` / `weekly_anchor_corrupt` | 触发锚点正常 / 损坏（会退回 mtime 兜底） |
-| `weekly_pruned` | 存新一期时把更老的周报删掉了（`policy.weekly.keepReports`，v1.9.3 起；属正常自愈痕迹） |
-| `retention` | 日志裁剪跑了一次 |
-| `migrate_export` / `migrate_import` | 换机迁移 |
-| `BURN_EVENT` | 焚毁执行完毕 |
-
-### 7.2 症状 → 排查
-
-| 症状 | 先看 | 常见原因 |
+#### A. 启动、调度与单跳控制
+| `event` | 关键附加字段 | 含义与触发位置 |
 |---|---|---|
-| 完全没有心跳 | 有没有 `orchestrator_started` | 插件没装进 bundles / 定时器没起 |
-| 有 `beat_start` 就没下文 | `beat_error`、`beat_watchdog` | 某一相抛错；或真卡死了（看门狗会救回来） |
-| 每拍都 `beat_agentless` | `agent_acquire_failed` 的 `error` | 通常是模型路由没传（C12） |
-| 一直 `silent` | 那行的 `reason` | 冷静期 / 每日上限 / 静默时段 / `no candidates`（池子空） |
-| 说出口了但用户没收到 | `spoke` 后有没有 `delivered` | 投递目标绑定掉了，或投递 agent 缺模型路由（C12 那个坑） |
-| 设置卡片整块不见了 | 浏览器控制台有没有 "Failed to load plugins" | client 模块 id 与包名不一致（C15）；或只是没重启刷新 bundle（C16） |
-| 卡片在、保存不生效 | 有没有 `ui_config_set` | 通道没注册（C21）；或值越界被丢弃（§6.1） |
-| 状态栏不动 | `status_written` / `statusbar_track` | 状态文件没写；或轨道没钉上 |
-| 闲逛永远 0 条 | `wander` 那行的入池数 | 预设没挂 → 模型手上没有 `web_search`（C13） |
-| 画像永不更新 | `consolidation` / `consolidation_failed` | 合并没触发（间隔 + 积压两个条件）；或模型输出解析失败 |
-| 摘要里作息永远"样本不足" | `profile_rhythm.json` 的 `days` | 样本太少；或峰值没过双门（§4.8） |
-| 周报不生成 | `weekly_*` 系列 | 锚点损坏 / 被关 / 模型失败 |
-| 时间不注入 | `time_injected` | 节流没过；或状态栏开着（两条轨道二选一） |
+| `plugin_init` | `dataDir`, `customDataDir` | 插件启动完成工作区初始化（`src/index.ts:327`） |
+| `data_dir_relocated` / `_failed` | `from`, `to`, `moved` / `reason` | 修改 `dataDir` 后自动迁移旧目录数据成功或失败（`src/index.ts:337`） |
+| `orchestrator_started` / `_disposed` | `intervalMin` | 调度器启动或随宿主停机卸载（`src/core/orchestrator.ts:2381`） |
+| `interval_scheduled` | `baseMin`, `jitterPct`, `delayMs`, `nextAt` | 每次算好下一跳抖动延迟后记录下次触发时刻（`orchestrator.ts:2400`） |
+| `beat_start` | `trigger` (`startup`/`interval`/`wake`/`retry`) | 单跳正式开始（通过专注模式与单飞锁之后，`orchestrator.ts:2225`） |
+| `phase_done` | `phase` (`A`/`B`/`consolidate`/`E`), `ms` | 某阶段正常跑完及耗时（`orchestrator.ts:2303`） |
+| `beat_watchdog` | `reason` | **异常**：单跳运行超过 45 分钟未结束，Watchdog 触发 `AbortController` 取消任务并释放锁（`orchestrator.ts:2219`） |
+| `beat_aborted` | `reason` | 被 Watchdog 或宿主关闭信号中途取消的跳（`orchestrator.ts:2334`） |
+| `beat_error` | `error` | **异常**：未捕获的单跳顶层错误（`orchestrator.ts:2341`） |
 
-### 7.3 诊断 CLI
+#### B. 为什么没说话？（`silent` 与门禁 / 专注 / 省流）
+当发现心跳没有主动搭话时，查 `"event":"silent"` 的 `reason` 字段即可定位：
 
-`dist/cli/index.js` 是独立进程，直接读写 `data/`：
-
-```powershell
-node $env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat\dist\cli\index.js status
-```
-
-| 命令 | 用途 |
+| `silent` 的 `reason` 值 | 含义 |
 |---|---|
-| `status` | 当前 dataDir、间隔、每日上限、素材池容量、psy 开关 |
-| `sessions` | 列出可绑定的会话 |
-| `bind list` / `add` / `remove` | 会话绑定（**删会话后要核对这里的死绑定**） |
-| `seeds list` / `add` / `archive` / `restore` / `delete` | 素材池（`--archived` 看归档区） |
-| `ledger add` / `list` / `done` / `open` | 账本（**别手改 `ledger.md`**） |
-| `excerpt add` / `list` / `remove` / `open` | 摘抄本（明文，能手编） |
-| `profile verify` / `rebuild` / `export` / `wipe` / `snapshot` | 画像（`verify` 只报不修；`rebuild` 原子替换） |
-| `weekly` | 手动跑一次周报 |
-| `logs` | 审计尾部 |
-| `burn` / `burn --yes` / `burn --all` | 焚毁（不带 `--yes` 只是预演） |
-| `migrate export` / `import` | 换机迁移 |
-| `preset` | 预设的安装与校验 |
+| `focus-mode` | 正处于专注模式暂停期内（附带 `until` 到期时间） |
+| `disabled` | 面板「设置」里关闭了「启用心跳主循环」总开关 |
+| `quiet-hours` | 当前本地时间在安静时段（`gate.quietHours`）内 |
+| `daily-limit` | 今日主动搭话次数已达 `gate.maxDailySend` 上限 |
+| `cooldown` | 距上次主动搭话未满 `gate.cooldownMinutes` 分钟 |
+| `no-activity-since-last-delivery` | 开启了无活动省流（`tokenSaver`），且自上次投递后用户无新发言、后台也无新采集信号 |
+| `awaiting-user-reply` | 上次投递到该陪伴会话后，用户还没有回过话（防单方面刷屏） |
+| `nothing-to-say` | 候选素材池为空，且未开启 `idleMode`（或画像也为空） |
+| `model-declined` | 投递包已送达陪伴会话，陪伴 Agent 调 `seed_report(spoken:"silent")` 主动选择本跳保持安静 |
 
-> CLI 改不了运行中宿主的内存状态——想改间隔请走设置页。
-
----
-
-## 8. 安全与隐私模型
-
-### 8.1 信任边界
-
-| 界面 | 谁能碰 | 防线 |
+#### C. 投递与陪伴会话异常（`deliver_*` / `spoke_*`）
+| `event` | 关键附加字段 | 含义与排障指引 |
 |---|---|---|
-| 数据通道 `/api/heartbeat` | 本机浏览器页面 | 宿主 `/api` 的 admission（Host / Origin fence + 浏览器认证 secret）；插件自己**不做鉴权**，只自检闸门在不在（C24） |
-| `data/` 下的文件 | 本机、同一 Windows 用户 | AES-256-GCM 整文件加密，数据密钥由 DPAPI（CurrentUser 作用域）保管——换用户或换机器**解不开**，这是特性不是缺陷 |
-| 送进模型的文本 | 远端模型服务 | 只送画像条目字段与 ≤1 句观察引语，不送对话原文、不送证据全量 |
-| 屏幕内容 | 本地视觉桥（可能再转发给它配置的 provider） | 先解密再用、用完即焚，出去的只有识别摘要 |
-| 引擎室 agent 的工具面 | 只该是白名单 | `tools.restrict({ allow })` 把**全局层**收窄到 `web_search` + 压缩三件套；宿主注册在 agent **自身层**的工具不受它约束——完整的正常一跳是 9 个：`web_search`（预设）、`compress`/`decompress`/`acp_status`（billion-context）、`ops_bash`（dsh-ops）、四个 `schedule_*`（dsh-schedule）。**复用路径（2026-10-17 修）**：`ensureAgent` 取到已存在的活 agent 时跳过 `setup`，原先也就不套白名单——实测那一跳拿到全局层全量 62 个工具、决策轮 240s 超时；现在复用分支单独调 `pinEngineRoomTools` 重新钉一遍，记在带 `reuse` 前缀的 `tool_policy` 行 2026-10-17 实测确认：复用那一跳 `reuse restrict=ok`，模型拿到 9 个工具（修前同类场景 62 个） |
+| `delivered` / `spoke` | `sessionId`, `deliveryId`, `spoken`, `seedIds` | 投递包已送达陪伴会话，且陪伴 Agent 完成表达与报账（`orchestrator.ts:1835`） |
+| `deliver_target_skipped` | `sessionId`, `reason: "archived"` | 该绑定会话已在 DSH 中被归档，自动跳过（v2.2.0+，`orchestrator.ts:1656`） |
+| `spoke_deferred` | `sessionId`, `reason` | 目标陪伴会话正忙（如用户在跑超长回合），等待 10 分钟仍未空闲，本跳延后到下一跳重试 |
+| `spoke_failed` | `reason` | **投递失败**，常见 `reason`：<br>• `no deliver-bound session`：未绑定任何投递会话<br>• `all deliver targets archived`：绑定的投递会话全部被归档了<br>• `deliver session could not be resumed`：目标会话文件损坏或不存在 |
+| `report_missing` | `sessionId`, `deliveryId` | 陪伴 Agent 收到了投递包并回复了文字，但**漏调了 `seed_report` 工具** |
 
-**插件不开自己的网络客户端。** 出网只发生在三处：跑模型（宿主执行）、视觉识别（本机 modlens CLI）、闲逛时的 `web_search` 工具（宿主执行）。
-
-### 8.2 什么走加密
-
-**加密（AES-256-GCM，数据密钥由 DPAPI 保管）**：素材池与归档、观察收件箱、投递报账、画像视图 / 快照 / 流水、表达记录、闲逛状态、屏幕快照与截图、闸门状态（含正身 id）、周报正文。
-
-**有意保持明文**：
-
-- **账本**——人可读是它的设计目标，加密会毁掉这个价值（可以拿它去提醒用户）；
-- **作息直方图**——纯统计，没有内容；
-- **状态栏场景文件**——派生态，含场景 + ≤30 字的发言摘要，且**刻意不含任何时间词**（状态栏泄露"现在几点"是个隐私问题）；
-- **审计日志**——含她发言的前 80 字摘录（便于事后核对"当时说了什么"），不含对话原文。
-
-### 8.3 加密通道的实现
-
-- `vault.ts` 的写路径产出 `KHBV2`（AES-256-GCM，头做 AAD）；数据密钥 32 字节随机、由 DPAPI（CurrentUser）包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次——于是加解密不再需要**每文件起一次 PowerShell**（1.x 是这样做的，97 秒的全量测试里全是它的开销）。旧 `KHBV1` 容器仍能读，那条路走 `assets/vault.ps1` + `data/tmp` 明文窗；脚本保持 ASCII-only（PowerShell 5.1 的代码页坑）。旧容器不用手动清：写入即换代，维护相每跳再顺带换一个（§4.4）。
-- 加解密是**整文件**的，不是流式——所以没有"追加写"这回事。素材池与收件箱的每次写入都是"解密 → 改 → 重加密 → 原子替换"，这也是它们需要文件锁的原因（§4.1）。
-- **明文临时窗只允许出现在 `data/tmp/`**，用完即焚（`burnFileSync`）。别的地方出现明文一律当 bug 处理。崩溃遗留的残渣（>10 分钟）在进程首次用到密钥时清理，新鲜的留着（可能属于并发进程）。
-
-### 8.4 焚毁
-
-焚毁清单在 `src/vault/burn-list.ts`——**单一事实源**。以前它有两份硬编码副本，漂移过，漏掉了文件。
-
-| 模式 | 行为 |
-|---|---|
-| `burn` | 预演：列出将要删的东西，什么都不动 |
-| `burn --yes` | 对每个文件覆写三次再删除 |
-| `burn --all` | 连配置与日志一起清 |
-| 卸载时的 `--purge` | 复用同一套清除核心 |
-
-焚毁之后 journal 会重建，并写一条 `BURN_EVENT` 记录这次焚毁的范围。
-
-### 8.5 换机迁移的加密封装
-
-`migrate export` 产出一个**口令加密**的容器（`encryptContainer(entries, passphrase)`），导出的密文文件在目标机上用同一口令解开后按原样落盘。导入是两阶段的（先 staged 再改名），失败整体回滚，被替换的文件留 `.bak-migrate-<时间戳>`。
-
----
-
-## 9. 开发工作流
-
-### 9.1 环境与命令
-
-| 项 | 值 |
-|---|---|
-| 运行环境 | Windows（`os: ["win32"]`）、Node ≥ 22.19.0、PowerShell 7 |
-| 装依赖 | **`npm ci`**——只能用 npm，见下 |
-| 构建 | `npm run build`（tsup，产出 `dist/` 与 `.d.ts`） |
-| 类型检查 | `npm run typecheck`（`tsc --noEmit`） |
-| 测试 | `npm test` |
-
-> **为什么只能用 npm**：本地 `node_modules` 必须保持 npm 的扁平布局。用 pnpm 装出来的是符号链接布局，tsup 生成声明文件时会报
-> `TS2742: The inferred type of 'X' cannot be named without a reference to '.pnpm/...'`——
-> 类型解析不到真实路径。仓库只保留 `package-lock.json`，`pnpm-lock.yaml` 不入库。
-
-### 9.2 改了源码怎么让它生效
-
-`file:` 协议安装是**目录拷贝**（C10），所以改完源码要做两件事：**构建**，然后**把产物同步进 profile 的那份副本**。
-
-```powershell
-$repo = 'C:\code\dsh-heartbeat'
-$mir  = "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-heartbeat"
-
-npm run build
-robocopy "$repo\dist"   "$mir\dist"   /MIR
-robocopy "$repo\config" "$mir\config" /MIR
-robocopy "$repo\assets" "$mir\assets" /MIR
-Copy-Item "$repo\package.json","$repo\README.md","$repo\client.js" $mir -Force
-```
-
-**同步完要核对哈希**（逐个文件比 sha256），然后**重启 DSH**（bundle 是启动时读进内存的，C16）。
-
-改完没反应时，排查顺序永远是：**构建了吗 → 同步了吗 → 重启了吗 → 才是代码对不对**。忘了第二步是最常见的自坑方式。
-
-### 9.3 调试
-
-```powershell
-# 用一份单独的 data 目录跑 CLI，不碰正在运行的那份
-node dist\cli\index.js status
-```
-
-看审计尾部用 §7 开头的命令。调试期间可以把 `intervalMin` 调到 2 分钟看三拍，验完记得调回去。
-
----
-
-## 10. 测试与 CI
-
-**378 个测试**，跑在 `node:test` + tsx 上，全量约 17 秒。
-
-```powershell
-npm test                                          # 全部
-node --import tsx --test tests/browse.test.ts     # 单个文件
-```
-
-### 10.1 隔离与陷阱
-
-测试通过 `HEARTBEAT_DATA_DIR` 指到临时目录，跑完删掉。沙箱一律用 `tests/_sandbox.ts` 的 `sandboxDir(prefix)` 创建，**不要直接 `fs.mkdtempSync`**——它把目录登记进一个进程级集合，测试进程退出时整批 `rmSync`。「每个用例建一个、文件级 `after` 只删最后一个」的写法会持续泄漏：2026-09-06 到 10-07 之间 `%TEMP%\hb-*` 攒了 16028 个空目录、约 4.4 MB。
-
-**但 `workspace().configDir` 指向仓库里真实的 `config/`**——沙箱只隔离 `data/`。所以：
-
-> 任何写 `config/` 的测试，**必须自己备份并在 `t.after` 里还原**。踩过一次：一个测试往 `config/profile-schema.json` 里写了 `'not json'` 没还原，之后连着两个测试莫名失败。
-
-### 10.2 测试文件的分组
-
-| 组 | 文件 |
-|---|---|
-| core 地基 | `_sandbox`（沙箱工厂）/ `path-guard` / `atomic-fs` / `audit-log` / `material` / `bindings` |
-| 编排与通道 | `orchestrator`（引擎室、游标、文本抽取、正身）/ `rpc`（信封、端点、宿主闸门） |
-| 素材与偏好 | `seeds` / `seeds-report`（投递报账）/ `preference` / `burn-list` |
-| 画像 | `profile-store` / `profile-flow` / `profile-snapshot` |
-| 感知与节奏 | `envpulse` / `gate` / `browse` / `statusbar` / `track` / `vision` |
-| 配置 | `config-load` / `ui-config` / `preset-install` / `interests-edit` |
-| 会话与轮换 | `home-rotation` / `visible-sessions` |
-| 其余 | `vault` / `migrate` / `weekly` / `ledger` / `ledger-tool` / `time-inject` / `notepad` / `excerpt` |
-
-**新行为加在哪**：单模块逻辑就近加到同名的文件；跨模块的接线（相顺序、通道、事件流）放 `orchestrator.test.ts` 或 `rpc.test.ts`——这两个文件是回归网，动核心时先看它们有没有兜住。
-
-### 10.3 CI
-
-`.github/workflows/ci.yml`：在 **`windows-latest`** 上跑 `npm ci` → `npm run typecheck` → `npm test`。
-
-选 Windows 是因为插件本身 `os: ["win32"]`、加密依赖 DPAPI、探针是 PowerShell 脚本——换 Linux 跑等于测了个别的东西。
-
----
-
-## 11. 发布前检查清单
-
-1. `package.json` 的 `version` 递增——**最容易忘的一步**；
-2. `npm run typecheck` 干净；
-3. `npm test` 全绿；
-4. `npm run build` 成功，`dist/` 与 `.d.ts` 已重建；
-5. README 的**版本兼容表**加上新版本行，**版本更新章节**补一条；
-6. `docs/releases/v<新版本>.md` 建一份（更早的历史小节已归档在同目录的 `legacy-changelog.md`）；
-7. **同步镜像 + 重启 + 跑够三拍**，确认没有 `beat_error` / `spoke_failed`；
-8. `npm publish`；
-9. 装机或回滚之后，**必查三件事**：
-
-   - [ ] profile 的 `dsh.profile.bundles` 里**有 `dsh-heartbeat`**（只加 dependencies 的话卡片会整块消失）；
-   - [ ] `dataDir` **钉在预期位置**（钉错了会新建一个空引擎室往里投递，症状是"绑定和素材全没了"）；
-   - [ ] 镜像目录里**没有 `data/` 空壳残留**。
-
----
-
-## 12. 已知限制与后续方向
-
-### 12.1 明摆着的限制
-
-- **加密存储没有真正的"追加"**：素材池、收件箱、报账每次写入都是"整文件解密 → 改 → 重新加密 → 原子替换"。跨进程并发已经用文件锁兜住，但文件越大越慢。真正的 append-only 存储是 **v2.0 的主要欠账**。
-- **只跑 Windows**：DPAPI、PowerShell 探针、`os: ["win32"]`。换平台要同时换掉加密后端与这三个探针脚本。
-- **单机单用户**：正身是一个本机会话 id，没有多设备 / 多用户的概念；换机器靠迁移包。
-- **状态栏依赖宿主能力**：读得到宿主系统提示的模型走"系统 section"那条轨，其余模型只能走"消息尾部追加"，效果弱一档（§4.10）。
-- **周报只回顾不预测**：不做计划、不排日程。
-- **没有 lint / formatter 工具链**：只有类型检查与测试，这是有意的轻量取舍（§10）。
-- **家轮换会丢一点上下文**：轮换出来的是全新会话，归档的旧会话不会被读回——引擎室不爱回忆太久以前的事。
-- **素材去重是启发式的**：同题合并看 topic 与文本相似度，换种说法的重复可能并存。
-- **纯文本假定 UTF-8**：Windows 记事本打开账本可能显示异常，用 VS Code 之类的编辑器看更稳。
-- **墙钟窗口按进程时区判定**：安静时段与闲逛窗口都是"钟点"窗口，用进程本地时区解析（`minutesOfDay()` 取 `getHours()`）。本机部署下进程时区即用户时区，符合预期；但把宿主放进 UTC 容器这类环境里，窗口会整体偏移。实现本身没暴露时区参数，测试已把 `tests/gate.test.ts` 与 `tests/browse.test.ts` 钉死为 `Asia/Shanghai`。
-
-### 12.2 后续方向
-
-| 方向 | 说明 |
-|---|---|
-| append-only 存储 | 替掉"整文件重写 + 文件锁"，素材池与收件箱是主要受益者 |
-| 跨平台 | 加密与探针两层都要抽象 |
-| 更细的素材去重 | 语义级，而不是字符串级 |
-
----
-
-## 13. 附：随仓库的修复脚本
-
-`scripts/` 下有一次性与救火用的脚本，**不进构建产物**，只在本仓库里跑：
-
-| 脚本 | 干什么 | 怎么用 |
+#### D. 引擎室（Home Session）生命周期与旋转
+| `event` | 关键附加字段 | 含义与排障指引 |
 |---|---|---|
-| `repair-session.mjs` | 体检 / 修复单个会话文件 | `node scripts/repair-session.mjs inspect <会话目录>` 先只读体检，确认没问题再用 `fix <会话目录>`（修复前会备份） |
-| `repair-v0-members.mjs` | 扫全部会话，补历史代（v0）缺失的成员记录 | 直接跑 = 预检（只读）；`fix` = 备份 + 修复 + 复核；`--root <目录>` 换扫描根（默认 `~/.dsh/sessions`） |
-| `migrate-v1-seeds.mjs` | 把 v1 时代的素材池迁到现在的格式 | 一次性脚本 |
+| `agent_reuse_live` / `agent_resume_ok` / `agent_create_ok` | `sessionId` | 引擎室复用内存实例 / 从磁盘恢复 / 初次创建成功 |
+| `agent_resume_failed` / `agent_resume_permanent` | `sessionId`, `error` | 引擎室恢复失败（若匹配 `SessionFormatUnsupportedError` 则直接判定永久损坏并重建） |
+| `home_rotate_start` / `home_rotate_done` | `oldSessionId`, `newSessionId`, `reason` | 引擎室触发自动旋转（`reason`: `event-count>=3000` / `context-overflow` / `archived-in-workspace`） |
+| `home_rotate_failed` | `reason`, `error` | **异常**：引擎室旋转创建新会话失败，检查默认模型路由是否可用 |
+| `beat_agentless` | `reason` | **异常**：宿主无法创建或恢复引擎室 Agent，本跳降级为纯本地运行 |
 
-**什么时候需要它们**：宿主加载会话时报 `session event at seq N lacks an identified message`——说明某条消息是手写进会话的、缺了 id（C5 的反面教材）。先 `inspect` 看清是哪一条，再 `fix`。
-
-宿主升级到 0.1.5 以后，会话目录会变成**多代文件布局**（C20），`repair-v0-members.mjs` 只应该碰 v0 那一代。
+#### E. 素材池、闲逛、B 站源与画像整合
+| `event` | 关键附加字段 | 含义与排障指引 |
+|---|---|---|
+| `seed_added` / `seed_retired` | `id`, `source`, `tag` / `reason` | 素材入池 / 淘汰（`reason`: `ttl` 过期、`used_cap` 用满、`cold_bench` 冷板凳、`active_cap` 超池上限、`source_cap` 超 B 站 6 条上限） |
+| `seed_duplicate` | `reason` (`exact`/`normalized`/`similar`), `matchedId` | 采集到的素材因与近 30 天内已有素材重复被拦截 |
+| `wander_parse_error` | `reason`, `rawHead` | 引擎室闲逛返回的 JSON 格式不合法，未能解析出素材 |
+| `bili_login` | `outcome` (`0`=成功) | CLI 扫码登录 B 站完成 |
+| `consolidation` / `consolidation_failed` | `ops`, ` inboxConsumed` / `reason` | 画像整合成功或失败（失败时自动保持原画像不变） |
+| `weekly_generated` / `weekly_llm_failed` | `week`, `file` / `reason` | 周报生成成功，或引擎室 LLM 调用失败回退为确定性统计模板 |
 
 ---
 
-## 14. 变更日志
+## 6. 高频故障排查速查表（Troubleshooting）
 
-**当前版本 v2.0.0**（仓库已改、**尚未发版**）——心事匣 + 摘抄本 + 第二次全量代码审查的修复与结构整改（22 项主发现 + 一节低优先级观察，逐条证据见 [`CODE-REVIEW-2026-10-17.md`](CODE-REVIEW-2026-10-17.md)）：
-
-1. **加密换代**（`src/vault/vault.ts`）：写路径产出 `KHBV2`（AES-256-GCM，头做 AAD），数据密钥 32 字节随机、由 DPAPI 包成 `KHBV1` 存在 `data/vault.key`，进程启动解一次；读路径三代都认（`KHBV2` / `KHBV1` / 明文）。每文件一次 PowerShell 的开销随之消失（全量测试 97 s → 12 s）。旧容器在写入时自动换代，维护相每跳另换一个作兜底；CLI 提供 `vault status` / `vault upgrade`（一次全换）。**升级后不要退回 1.x**。
-2. **遗忘边界补全**（`src/profile/store.ts` / `src/vault/burn-list.ts`）：`wipe` 改为真遗忘（live 三文件 + 快照 + 归档分片 + 迁移备份 / 暂存残留），`burn` 清单新增 `match: RegExp` 支持那两族；`vault.key` 有意不烧。
-3. **迁移两端全或无**（`src/vault/migrate.ts` / `src/rpc.ts`）：白名单 `isMigratablePath` + 预算 5000 文件 / 64MB；暂存阶段任一文件被拒即整包不导入；RPC 侧带 `error` 的结果不再当成功返回。
-4. **流水事件化 + 证据由代码生成**（`src/profile/store.ts` / `src/profile/shapes.ts` / `src/profile/consolidate.ts`）：journal v2 记终态、重放按 id upsert，与实时同一状态机、老化也入流水；旧 v1 行照读；模型只回观察编号，kind / at / ref 由代码填。新增 `shapes.ts` 统一形状校验（模型输出 / 流水 / 迁移包 / RPC）。
-5. **锁失败关闭**（`src/core/file-lock.ts`）：等不到锁抛 `FileLockTimeoutError`（或 `tryWithFileLock` 返回 `null`），陈旧锁要「够老 + 持有进程确实不在」才回收。
-6. **取消链**（`src/core/orchestrator.ts` / `src/core/ps.ts` 等）：AbortController 贯穿所有阶段，超时 / 看门狗 / 卸载真正取消模型调用与子进程，记 `beat_aborted`。
-7. **画面不认旧图**（`src/screen/screenpulse.ts`）：新增 `screen.capture` 印章，采集失败烧旧图并取消本跳画面资格。
-8. **RPC 失败关闭**（`src/rpc.ts`）：缺宿主闸门时只放行 `GATE_SAFE_ENDPOINTS` 五个只读端点，端点表改 `Map`。
-9. **其余**：观察不再被整箱清空（只删读过的）、投递按说话时刻记账并复查全部条件、判「别说」的表述收紧、原子写先 `fsync`、摘要与账本块加上限、闲逛年份不再写死、CI 增加构建 / `dist` 一致性 / 客户端语法三查（重建了早已过期的 `dist`）。测试 304 → **344**。
-10. **心事匣**（`src/notepad/store.ts` / `src/notepad/tool.ts` / `src/core/material.ts` / `src/core/orchestrator.ts`）：一格加密便签（`data/notepad.json`），投递包里附带上一拍的心事与"搁了几拍 / 被叫醒过几次"，靠 `shownAtBeat` / `touchedAtBeat` 两个序号判定保留与放掉（**严格大于**，启动拍不计序号）；`writeNote` 同文本即保留、年龄不重算。新增模型工具 `notepad`（write / read / clear），`beat()` 新增 `trigger` 参数并写进 `beat_start`。测试 344 → **361**（新增 17 条）。
-11. **摘抄本**（`src/excerpt/excerpt.ts` / `src/excerpt/tool.ts` / `src/cli/index.ts` / `src/rpc.ts` / `client.js`）：留句子和小事的地方，落 `data/excerpts.md` **明文**（与账本同类：给人的文档、能手编）；行格式 `- [YYYY-MM-DD HH:MM][#id] 正文`，容忍式解析。新增模型工具 `excerpt`（add / list / remove）、CLI `excerpt add|list|remove|open`、RPC `excerpt.open` 与设置卡新区。测试 361 → **375**（新增 14 条）。
-12. **复用 agent 时重新钉工具白名单**（`src/core/orchestrator.ts`）：`ensureAgent` 取到已存在且活着的 agent 时（`agent_reuse_live`）跳过 `setup`，而白名单就钉在 `setup` 里——插件重启后的每一跳因此带着全局层全量跑（2026-10-17 实测 62 个工具）。把白名单那段抽成 `pinEngineRoomTools(deps, agentCtx, notes)`，复用分支也调一次（宿主 agent 对象带 `agent.ctx`），结果记进带 `reuse` 前缀的 `tool_policy` 行。测试 375 → **377**（新增 2 条）。
-13. **节律字段不再写 schema 默认值**（`src/index.ts`）：`timeInjectMin` / `statusbar` / `idleMode` / `tokenSaver` 原先带 `.default(...)`，而启动时 `applySettingsOverrides` 会拿配置值盖过 `ui.json`——默认值因此分不出「用户设了」和「没设」，每次重载都把卡片的选择掀掉（症状：状态栏开关重启后自己变回关）。改成不给默认值（未设 → 走 `ui.json` → 再落到出厂值），`statusbar` 的判据同步从 `!== false` 改成 `=== true`，保住 v1.9.3 的「出厂默认关」。
-14. **投递目标挂回自己的预设**（`src/core/orchestrator.ts`）：`acquireTargetAgent` 的 resume 没有 `setup`，拉起来的 agent 是裸的——工具按全局层解析、呈现模式退回 native，实测目标会话那一轮从 1 个 `run_code` 变成 61 个、且调不到 `run_code`。新增 `selectedPresetId(events)` 从会话事件流读 `agent-preset/selected`，`mountTargetPreset` 把同一个预设挂回去；读不到 / 无服务 / 被拒一律退回裸跑，并写 `deliver_target_preset` 留痕。测试 377 → **378**。
-
-**v1.9.3**（**尚未发版**）——素材包可留白 + 摘要预算分区 + 画像与素材池 UI 重做：
-
-1. **素材包可以留白了**（`src/core/material.ts`）：以前素材包默认"必须挑一条说"，agent 想沉默也得硬凑一条。现在改成先判断**要不要开口**——该说才选一条，不该说就把正文留空，只回一次"这轮没开口"和原因（新增一条常驻的 `SILENCE_DECLARE` 声明，`PACKAGE_DECLARE` 改判"要不要开口"）。沉默不再需要客套话。**留白依赖模型自己的指令遵循能力**——觉得效果不稳，可以在系统提示词或长期记忆里补一条规则。
-2. **摘要预算分区**（`src/profile/digest.ts`）：送进引擎室的画像摘要总预算 3200 → 6000 字符，并且 tact / topic / wander 三段各有上限（2500 / ≥2400 / 850）——超预算按**整条**跳过并回报丢弃条数（`omitted`），不再从句子中间切断。
-3. **出厂默认更省**（`config/policy.json` / `src/index.ts` / `client.js` 兜底）：心跳间隔 20 → 60 分钟、每日开口上限 3 → 10、状态栏默认关闭。都能在设置卡里改回来。
-4. **省 token 模式真能唤醒**（`src/core/orchestrator.ts`）：暂停期间每 3 分钟探一次闸门（不取 agent、不调模型）；绑定会话里出现用户还没被消化的新消息，就视为在场并立刻恢复（`token_saver_resumed` 的 `via` = wake）。暂停时状态栏场景说"你不在，心跳挂起"。
-5. **周报保留期数**（`src/weekly/report.ts`）：新增 `policy.weekly.keepReports`（默认 3）——保存新一期时删掉更老的并留痕 `weekly_pruned`；`weekly.list` 与设置卡只给最近 N 期。
-6. **设置卡重做两块**（`client.js` / `src/rpc.ts`）：画像区改成四个分区按钮切换、每条一块、正文自动换行，并新增只读的「引擎室输入」视图（新路由 `profile.partitions`）；素材池改成四个按钮——话题素材 / 聊天素材 / 话题·归档 / 聊天·归档，归档不再单列一块，点进去行内按钮变「恢复」。两处列表都补了滚动区，引擎室输入视图同样。
-
-**v1.9.2**（已发布 npm）——修 issue #2 的两条 bug：
-
-1. **预设改为运行时注册**（C13 / C13a）：`cordis.patch.yml` 不再声明 `@deepseek-ai/dsh-agent-preset`，定义搬进 `src/core/preset-definition.ts`，加载时经 `agentPresets.register()` 注册；服务缺失时只记一条 `preset_register` 审计、宿主照常启动。修掉「profile 解析不到宿主包 → 整个 DSH 起不来」与「手工补 peer 闭包 → 所有会话无法恢复」两种炸法。
-2. **resume 失败分类**（§7.1 的 `agent_deferred` 行）：新增 `looksPermanentResumeFailure()`，会话格式迁移被拒不再被当成暂时性错误无限退避，改走创建路径；创建也失败则自愈到新会话。
-3. **README 事实修正**：卸载节不再声称"`data/` 默认保留"（`dsh plugin add` 会替换包目录、数据一起没），并给出把 `dataDir` 钉到包外的做法；预设注册方式的描述同步改写。
-4. **数据目录默认移出包外**（C13b）：`dataDir` 默认改为 `<DSH_HOME>/heartbeat-data`；老版本装在包内的 `data/` 首次启动自动搬迁——备份 → 逐文件校验（清单 / size / sha256）→ 才删原件与备份，失败原地不动并留痕。新增 `src/core/data-relocate.ts` 与 10 条用例（测试 290 → 300）。
-
-**v1.9.1**（已发布 npm，`package.json` 同版）——在 v1.9.0 之上做的一次代码审查修复（86 项发现，分五批落地：静默失败类 → 数据完整性 → 边界与体验 → 工程基建 → 结构性重构）。
-
-历史版本的详细记录在 **`docs/releases/`**：v1.6.2 起每版一份，更早的（v1.4.x → v1.0.0、v0.x）合并进同目录的 `legacy-changelog.md`；README 的"版本更新"章节**只留最新一个大版本**（v1.9.x，插件市场详情页抓的就是那一节）；从 README 移出的 v1.5 – v1.8 记录收在仓库根 **`CHANGELOG.md`**。
-
-**v1.9.1 之前的整份设计文档**（旧结构，模块划分与参数位置都有变化）归档在 `docs/DESIGN-v1.9.0-and-earlier.md`。
-
-**这个文件什么时候要改**：结构性变更（模块拆分、宿主契约变化、参数位置移动、新增数据文件）必须同步改这里；只改行为、不动结构的补丁，更新 README 与 `docs/releases/` 就够了。
+| 现象 | 第一步查什么 | 根因判据与修复办法 |
+|---|---|---|
+| **心跳完全不说话** | `node dist/cli/index.js logs --tail 30` 看最新 `silent` 或 `spoke_failed` | • `reason:"no deliver-bound session"` → 去面板「会话」页勾选至少一个「允许投递」<br>• `reason:"all deliver targets archived"` → 之前绑定的会话被归档了，换绑当前活跃会话<br>• `reason:"awaiting-user-reply"` → 上次心跳说话后你还没在那个会话里回话<br>• `reason:"focus-mode"` → 专注模式没关，跑 `node dist/cli/index.js focus off` |
+| **左侧会话栏冒出很多心跳后台会话** | 查 `logs/heartbeat.jsonl` 中的 `home_rotate_start` 与 `home_rotate_archive` | • 确认 `policy.heartbeat.archiveRotatedHome` 为 `true`（默认开启）<br>• 若旧正身会话被手动归档，v2.2.1 起会自动检测 `archived-in-workspace` 并静默切换新正身 |
+| **B 站观看历史一直没进素材池** | 在面板「素材」页看 B 站状态，或查 `data/bilibili-source.json` | • 未登录或凭据过期 → 在面板点「扫码登录」或运行 `node dist/cli/index.js bili login`<br>• 距上次拉取未满 2 小时（`BILI_MIN_INTERVAL_MS = 2h`）→ 属正常节流<br>• 刚看的视频与 30 天内素材重名 → 查日志是否有 `seed_duplicate` |
+| **子代理（Subagent）被塞了时间提示词** | 查日志 `time_inject_skipped` / `time_injected` | • v2.2.0 起 `src/statusbar/time-inject.ts` 会自动识别子代理会话与非用户触发轮次并跳过（记 `time_inject_skipped`） |
+| **面板打不开或显示空白** | 浏览器控制台看是否有 RPC 报错；查日志 `rpc_registered` | • 插件使用双 bundle key（`dsh-heartbeat` 与 `@kanadego/dsh-heartbeat`）挂载面板；若刚改完源码，需先执行 `npm run build` 并重启 DSH |
+| **换电脑 / 重装后加密文件读不出** | 运行 `node dist/cli/index.js vault status` | • `vault.key` 绑定本机（Windows DPAPI）。跨机迁移必须在旧机用面板「设置 → 导出加密备份」或 `heartbeat migrate export --out backup.hbvault --passphrase <口令>`，再在新机导入 |
