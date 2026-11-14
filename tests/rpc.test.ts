@@ -47,6 +47,8 @@ const UI_DEFAULTS = {
   statusbar: true,
   idleMode: false,
   tokenSaver: false,
+  // v2.2.1-native.1: '' = follow data/settings/vision.json / built-in auto.
+  visionEngine: '',
   psyEnabled: false,
 };
 
@@ -238,6 +240,13 @@ test('config.set: an empty or unrecognised patch is a bad-request', async () => 
 
   const unknownKey = await result({ endpoint: 'config.set', nope: 1 });
   assert.equal(unknownKey.ok, false);
+});
+
+test('config.set: the card vision engine is a recognised field', async () => {
+  const r = await result({ endpoint: 'config.set', visionEngine: 'modlens' });
+  assert.equal(r.ok, true);
+  assert.equal(setCalls.length, 1);
+  assert.equal((r.value as { visionEngine: string }).visionEngine, 'modlens');
 });
 
 test('config.set: a recognised patch goes to the setter and is audited', async () => {
