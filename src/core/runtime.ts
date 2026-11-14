@@ -15,6 +15,10 @@ export interface HeartbeatRuntime {
     idleMode(): boolean;
     /** Token-saver (v1.7.0): pause the whole beat while the user is away. */
     tokenSaver(): boolean;
+    /** Vision engine from the plugin config (v2.2.1-native.1): `auto` /
+     *  `native` / `modlens`, or '' = follow data/settings/vision.json and then
+     *  the built-in default (auto). Re-read on every beat. */
+    visionEngine(): string;
   };
 }
 

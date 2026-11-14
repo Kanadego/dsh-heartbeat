@@ -235,6 +235,13 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     excerptTool: z<boolean, boolean, "defined">;
     /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
     extraTools: z<string, string, "defined">;
+    /**
+     * 视觉识别引擎（v2.2.1-native.1）：`auto` / `native` / `modlens`。
+     * 留空 = 跟随 `data/settings/vision.json` 的 engine，再回落到内置默认 auto。
+     * 这里给一个正式设置项，是为了让"默认走哪条路"可以不改代码就调——
+     * 例如想保守地维持 v2.2.1 行为（只用 ModLens）就填 `modlens`。
+     */
+    visionEngine: z<string, string, "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     /** Override the runtime data dir (workspace guard boundary). Empty = default (<packageRoot>/data). */
     dataDir: z<string, string, "defined">;
@@ -278,6 +285,13 @@ declare const Config: z<Schemastery.ObjectS<NoInfer<{
     excerptTool: z<boolean, boolean, "defined">;
     /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
     extraTools: z<string, string, "defined">;
+    /**
+     * 视觉识别引擎（v2.2.1-native.1）：`auto` / `native` / `modlens`。
+     * 留空 = 跟随 `data/settings/vision.json` 的 engine，再回落到内置默认 auto。
+     * 这里给一个正式设置项，是为了让"默认走哪条路"可以不改代码就调——
+     * 例如想保守地维持 v2.2.1 行为（只用 ModLens）就填 `modlens`。
+     */
+    visionEngine: z<string, string, "defined">;
 }>>, "plain">;
 interface HeartbeatConfig {
     dataDir?: string | null;
@@ -295,6 +309,8 @@ interface HeartbeatConfig {
     notepadTool?: boolean;
     excerptTool?: boolean;
     extraTools?: string;
+    /** v2.2.1-native.1: vision engine ('' = vision.json → built-in auto). */
+    visionEngine?: string;
 }
 declare function apply(ctx: OrchestratorDeps['ctx'] & {
     get(name: string): unknown;

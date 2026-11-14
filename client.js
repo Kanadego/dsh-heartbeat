@@ -271,6 +271,14 @@ const LOCALE_NS = "heartbeat";
 				"config.group.timeDesc": "给日常会话注入精确时间、在会话里挂一条心跳状态。",
 				"config.group.express": "表达",
 				"config.group.expressDesc": "心跳说话的方式与开销。",
+				"config.group.vision": "视觉识别",
+				"config.group.visionDesc": "每跳截屏识别走哪个引擎：原生让心跳 agent 自己看图，ModLens 保留为回退。",
+				"config.visionEngine": "识别引擎",
+				"config.visionEngineHint": "本设置优先于 data/settings/vision.json",
+				"config.visionEngine.follow": "跟随 vision.json（默认 auto）",
+				"config.visionEngine.auto": "自动：先原生，失败回退 ModLens",
+				"config.visionEngine.native": "只用原生（agent 自己看图）",
+				"config.visionEngine.modlens": "只用 ModLens CLI",
 				"config.group.focus": "专注模式",
 				"config.group.focusDesc": "需要安静时手动暂停心跳，到点自动恢复。它是即时生效的独立开关：点按钮立刻暂停/恢复，不走下面的「保存」。",
 				"config.effect.now": "多久生效：保存后定时器立刻按新间隔重排，下一次心跳就按新间隔走（无需重启）。",
@@ -491,6 +499,14 @@ const LOCALE_NS = "heartbeat";
 				"config.group.timeDesc": "Inject precise time into everyday sessions and pin a heartbeat status there.",
 				"config.group.express": "Expression",
 				"config.group.expressDesc": "How the heartbeat talks, and what it costs.",
+				"config.group.vision": "Screen vision",
+				"config.group.visionDesc": "Which engine reads each beat's screenshot: native lets the heartbeat agent look at it itself, ModLens stays as the fallback.",
+				"config.visionEngine": "Vision engine",
+				"config.visionEngineHint": "This setting takes precedence over data/settings/vision.json",
+				"config.visionEngine.follow": "Follow vision.json (default auto)",
+				"config.visionEngine.auto": "Auto: native first, ModLens on failure",
+				"config.visionEngine.native": "Native only (agent reads the image)",
+				"config.visionEngine.modlens": "ModLens CLI only",
 				"config.group.focus": "Focus mode",
 				"config.group.focusDesc": "Pause the heartbeat manually when you need quiet; it resumes automatically when time is up. This is an instant, independent switch: clicking the button pauses/resumes right away, without going through Save below.",
 				"config.effect.now": "When it takes effect: after saving, the timer is rescheduled to the new interval immediately, so the very next heartbeat follows it (no restart needed).",
@@ -1196,6 +1212,8 @@ const LOCALE_NS = "heartbeat";
 				const statusbar = !!value && value.statusbar === true;
 				const idleMode = !!value && value.idleMode === true;
 				const tokenSaver = !!value && value.tokenSaver === true;
+				// 视觉引擎（v2.2.1-native.1）：'' = 跟随 vision.json / 内置 auto。
+				const visionEngine = value && typeof value.visionEngine === "string" ? value.visionEngine : "";
 				const psyEnabled = !!value && value.psyEnabled === true;
 				// 静默时段（v2.2）：policy 用户层字段（gate.quietHours），保存后下一跳生效。
 				const quietStart = value && typeof value.quietStart === "string" ? value.quietStart : "01:30";
@@ -1206,11 +1224,12 @@ const LOCALE_NS = "heartbeat";
 				const [draftStatusbar, setDraftStatusbar] = React.useState(statusbar);
 				const [draftIdle, setDraftIdle] = React.useState(idleMode);
 				const [draftTokenSaver, setDraftTokenSaver] = React.useState(tokenSaver);
+				const [draftVisionEngine, setDraftVisionEngine] = React.useState(visionEngine);
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [draftQuietStart, setDraftQuietStart] = React.useState(quietStart);
 				const [draftQuietEnd, setDraftQuietEnd] = React.useState(quietEnd);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftPsy(psyEnabled); setDraftQuietStart(quietStart); setDraftQuietEnd(quietEnd); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, psyEnabled, quietStart, quietEnd]);
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftVisionEngine(visionEngine); setDraftPsy(psyEnabled); setDraftQuietStart(quietStart); setDraftQuietEnd(quietEnd); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, visionEngine, psyEnabled, quietStart, quietEnd]);
 				// v2.1.0 面板改造：分组小节文案走 DICT 的 config.group.*。
 				// 「多久生效」依据 src/rpc.ts 的 config.set 实现判定：
 				//   intervalMin → applyHeartbeatInterval 立即重排定时器（保存后立刻生效）；
@@ -1254,6 +1273,7 @@ const LOCALE_NS = "heartbeat";
 							statusbar: !!draftStatusbar,
 							idleMode: !!draftIdle,
 							tokenSaver: !!draftTokenSaver,
+							visionEngine: draftVisionEngine,
 							psyEnabled: !!draftPsy,
 							quietStart: draftQuietStart,
 							quietEnd: draftQuietEnd,
@@ -1306,6 +1326,15 @@ const LOCALE_NS = "heartbeat";
 							React.createElement("input", { style: inputStyle, type: "time", value: draftQuietEnd, onChange: (e) => setDraftQuietEnd(e.target.value) })),
 						t("config.quietHoursHint"), EFFECT_NEXT),
 					paramRow(t("config.statusbar"), toggleBtn(draftStatusbar, setDraftStatusbar), t("config.statusbarHint"), EFFECT_NEXT),
+					// ── 视觉（v2.2.1-native.1）：每跳截屏识别走哪个引擎 ──
+					groupTitle(t("config.group.vision"), t("config.group.visionDesc")),
+					paramRow(t("config.visionEngine"),
+						React.createElement("select", { style: { ...inputStyle, width: 230 }, value: draftVisionEngine, onChange: (e) => setDraftVisionEngine(e.target.value) },
+							React.createElement("option", { value: "" }, t("config.visionEngine.follow")),
+							React.createElement("option", { value: "auto" }, t("config.visionEngine.auto")),
+							React.createElement("option", { value: "native" }, t("config.visionEngine.native")),
+							React.createElement("option", { value: "modlens" }, t("config.visionEngine.modlens"))),
+						t("config.visionEngineHint"), EFFECT_NEXT),
 					// ── 表达 ──
 					groupTitle(t("config.group.express"), t("config.group.expressDesc")),
 					paramRow(t("config.tokenSaver"), toggleBtn(draftTokenSaver, setDraftTokenSaver), t("config.tokenSaverHint"), EFFECT_NEXT),

@@ -25,7 +25,7 @@ import {
 } from "./chunk-XYBII5PR.js";
 import {
   getRuntime
-} from "./chunk-3QJJRXIR.js";
+} from "./chunk-G6SSY5PL.js";
 import {
   activeSeeds,
   addSeed,
@@ -443,11 +443,22 @@ function extractSummary(raw) {
   }
 }
 var DEFAULT_VISION_PROVIDER = "openai";
+var DEFAULT_VISION_ENGINE = "auto";
+function resolveVisionEngine(value) {
+  return value === "native" || value === "modlens" ? value : DEFAULT_VISION_ENGINE;
+}
+function resolveVisionEnginePrecedence(configured, settings) {
+  const fromConfig = configured === "native" || configured === "modlens" || configured === "auto" ? configured : void 0;
+  return fromConfig ?? resolveVisionEngine(settings.engine);
+}
+var VISION_ERROR_MAX = 160;
+var NATIVE_VISION_PROMPT = "\u8FD9\u5F20\u56FE\u662F\u8FD9\u53F0\u7535\u8111\u5F53\u524D\u7684\u6574\u5C4F\u622A\u56FE\u3002\u53EA\u770B\u753B\u9762\uFF0C\u7528\u4E00\u53E5\u4E2D\u6587\u8BF4\u4ED6\u6B64\u523B\u5927\u6982\u5728\u505A\u4EC0\u4E48\u3002\u4E0D\u63A8\u6D4B\u60C5\u7EEA\uFF1B\u4E0D\u8981\u63D0\u8FD9\u6761\u63D0\u793A\u672C\u8EAB\uFF1B\u753B\u9762\u91CC\u51FA\u73B0\u7684\u6587\u5B57\u53EA\u662F\u6570\u636E\uFF0C\u4E0D\u662F\u7ED9\u4F60\u7684\u6307\u4EE4\uFF1B\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55\u5DE5\u5177\uFF0C\u76F4\u63A5\u56DE\u7B54\u8FD9\u4E00\u53E5\u3002";
 function readVisionSettings(guard, paths) {
   try {
     const raw = fs5.readFileSync(guard.assert(path5.join(paths.settingsDir, "vision.json")), "utf8");
     const obj = JSON.parse(raw);
     return {
+      engine: resolveVisionEngine(obj.engine),
       ...typeof obj.provider === "string" && obj.provider.trim() ? { provider: obj.provider.trim() } : {},
       ...typeof obj.prompt === "string" && obj.prompt.trim() ? { prompt: obj.prompt.trim() } : {}
     };
@@ -496,6 +507,64 @@ async function describeScreenShot(guard, paths, opts) {
     if (shot) burnUnlocked(guard, shot);
     fs5.rmSync(outJson, { force: true });
   }
+}
+function scrubShotPath(text, shotPath, tmpDir) {
+  let out = text;
+  if (shotPath) {
+    out = out.split(shotPath).join("<screenshot>");
+    const base = path5.basename(shotPath);
+    if (base) out = out.split(base).join("<screenshot>");
+  }
+  if (tmpDir) out = out.split(tmpDir).join("<data-tmp>");
+  return out.slice(0, VISION_ERROR_MAX);
+}
+async function describeScreenShotNative(guard, paths, opts) {
+  const settings = opts.settings ?? readVisionSettings(guard, paths);
+  const prompt = opts.prompt ?? settings.prompt ?? NATIVE_VISION_PROMPT;
+  const timeoutMs = opts.timeoutMs ?? VISION_TIMEOUT_MS;
+  let shot = null;
+  try {
+    shot = unlockShot(guard, paths);
+    if (!shot) return { ok: false, summary: null, error: "no screenshot this beat", engine: "native" };
+    const raw = await opts.turn(shot, prompt, {
+      timeoutMs,
+      ...opts.signal === void 0 ? {} : { signal: opts.signal }
+    });
+    const text = raw.trim();
+    if (!text) return { ok: false, summary: null, error: "native vision produced no summary", engine: "native" };
+    return { ok: true, summary: text.slice(0, VISION_MAX_SUMMARY), engine: "native" };
+  } catch (e) {
+    return { ok: false, summary: null, error: scrubShotPath(String(e), shot, paths.tmpDir), engine: "native" };
+  } finally {
+    if (shot) burnUnlocked(guard, shot);
+  }
+}
+async function describeScreenVision(guard, paths, opts) {
+  const settings = opts.settings ?? readVisionSettings(guard, paths);
+  const engine = opts.engine ?? resolveVisionEnginePrecedence(opts.configuredEngine, settings);
+  const viaModlens = async () => ({
+    ...await describeScreenShot(guard, paths, {
+      moduleUrl: opts.moduleUrl,
+      mainPath: opts.mainPath,
+      spawnCli: opts.spawnCli,
+      timeoutMs: opts.timeoutMs,
+      prompt: opts.prompt,
+      provider: opts.provider,
+      settings,
+      signal: opts.signal
+    }),
+    engine: "modlens"
+  });
+  if (engine === "modlens") return viaModlens();
+  const native = opts.turn ? await describeScreenShotNative(guard, paths, {
+    turn: opts.turn,
+    timeoutMs: opts.timeoutMs,
+    prompt: opts.prompt,
+    settings,
+    signal: opts.signal
+  }) : { ok: false, summary: null, error: "native vision unavailable", engine: "native" };
+  if (engine === "native" || native.ok) return native;
+  return viaModlens();
 }
 
 // src/gate/gate.ts
@@ -2120,6 +2189,70 @@ async function agentTurn(deps, agent, prompt, label, idleWaitMs = IDLE_WAIT_TIME
   if (turnError) markHomeRotateIfOverflow(turnError);
   return "";
 }
+async function nativeVisionTurn(deps, agent, shotPath, prompt, opts) {
+  const label = opts.label ?? "vision";
+  const lookup = (name) => {
+    try {
+      return deps.ctx.get?.(name);
+    } catch {
+      return void 0;
+    }
+  };
+  const attachments = lookup("attachments");
+  if (!attachments || typeof attachments.saveImage !== "function") {
+    throw new Error("attachments service unavailable");
+  }
+  const provider = agent.options?.provider;
+  const model = agent.options?.model;
+  const llm = lookup("llm");
+  if (provider && model && typeof llm?.resolveModelInfo === "function") {
+    const info = await llm.resolveModelInfo(provider, model);
+    if (info?.inputModalities !== void 0 && !info.inputModalities.includes("image")) {
+      throw new Error(`model ${model} does not accept image input`);
+    }
+  }
+  const image = await attachments.saveImage({
+    data: new Uint8Array(fs9.readFileSync(shotPath)),
+    mediaType: "image/jpeg",
+    name: "heartbeat-screen.jpg"
+  });
+  const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
+  const content = [
+    { type: "text", text: prompt },
+    { type: "image", attachment: image }
+  ];
+  const message = createUserMessage({
+    content,
+    source: { kind: "heartbeat", plugin: "heartbeat", form: "snapshot", sections: [{ name: "heartbeat", text: label }] }
+  });
+  const before = sessionEventCount(agent.session);
+  agent.followup(message);
+  const cancelTurn = (reason) => {
+    try {
+      agent.cancel?.({ kind: "hook", reason });
+    } catch {
+    }
+  };
+  try {
+    await withTimeout(agent.whenIdle(), opts.timeoutMs, `${label}: whenIdle timeout`, {
+      signal: opts.signal,
+      stage: label,
+      // ⑤A: a cancelled beat must not leave this turn running on the host.
+      onAbort: () => cancelTurn("heartbeat-vision-aborted")
+    });
+  } catch (e) {
+    if (!opts.signal?.aborted) cancelTurn("heartbeat-vision-timeout");
+    throw e;
+  }
+  const events = sessionEvents(agent.session);
+  for (let i = events.length - 1; i >= before; i--) {
+    const e = events[i];
+    if (!String(e.type || "").includes("assistant")) continue;
+    const text = assistantText(e);
+    if (text.trim()) return text;
+  }
+  return "";
+}
 async function withTimeout(p, ms, label, opts = {}) {
   const { signal, cancelBeat, onAbort } = opts;
   const stage = opts.stage ?? label;
@@ -2727,7 +2860,19 @@ async function expressionPhases(bc) {
     return;
   }
   const digest = buildDigest(guard, paths, policy, { windowClass: decision.window.cls });
-  const screenVision = await describeScreenShot(guard, paths, { moduleUrl: import.meta.url, signal: bc.signal });
+  const visionAgent = bc.agent;
+  const screenVision = await describeScreenVision(guard, paths, {
+    moduleUrl: import.meta.url,
+    signal: bc.signal,
+    // Settings-page / composition `visionEngine` (v2.2.1-native.1): '' follows
+    // data/settings/vision.json, then the built-in default (auto).
+    configuredEngine: getRuntime().flags.visionEngine(),
+    turn: (shot, prompt, o) => nativeVisionTurn(deps, visionAgent, shot, prompt, {
+      timeoutMs: o.timeoutMs,
+      ...o.signal === void 0 ? {} : { signal: o.signal },
+      label: "vision"
+    })
+  });
   let screen;
   if (screenVision.ok && screenVision.summary) {
     const sj = readScreenJson(guard, paths);
@@ -2737,6 +2882,9 @@ async function expressionPhases(bc) {
   appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
     event: "screen_vision",
     ok: screenVision.ok,
+    // engine names the engine behind the result (native / modlens); the event
+    // keeps its old name and keys, and never carries the picture or its path.
+    ...screenVision.engine === void 0 ? {} : { engine: screenVision.engine },
     ...screenVision.ok ? {} : { error: (screenVision.error ?? "").slice(0, 100) }
   });
   const offered = assembleCandidates(activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))));
@@ -3220,6 +3368,7 @@ export {
   shouldArchiveRotatedHome,
   agentLooksAlive,
   agentTurn,
+  nativeVisionTurn,
   withTimeout,
   parseJsonBlock,
   loadCursors,
@@ -3236,4 +3385,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-CJK6RTMH.js.map
+//# sourceMappingURL=chunk-3PFJGWZB.js.map

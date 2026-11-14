@@ -25,6 +25,7 @@ import {
   looksPermanentResumeFailure,
   makeHomeSetup,
   markHomeRotateIfOverflow,
+  nativeVisionTurn,
   parseJsonBlock,
   pauseFocus,
   pickSpokenLine,
@@ -44,9 +45,9 @@ import {
   userActiveInBoundSessions,
   waitForVisibleTool,
   withTimeout
-} from "./chunk-CJK6RTMH.js";
+} from "./chunk-3PFJGWZB.js";
 import "./chunk-XYBII5PR.js";
-import "./chunk-3QJJRXIR.js";
+import "./chunk-G6SSY5PL.js";
 import "./chunk-N6SMIGYJ.js";
 import "./chunk-LQKOYTRL.js";
 import "./chunk-KZLVR4J7.js";
@@ -81,6 +82,7 @@ export {
   looksPermanentResumeFailure,
   makeHomeSetup,
   markHomeRotateIfOverflow,
+  nativeVisionTurn,
   parseJsonBlock,
   pauseFocus,
   pickSpokenLine,
@@ -101,4 +103,4 @@ export {
   waitForVisibleTool,
   withTimeout
 };
-//# sourceMappingURL=orchestrator-5BHYQ77Y.js.map
+//# sourceMappingURL=orchestrator-JRDE7AT6.js.map

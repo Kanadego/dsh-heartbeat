@@ -24,7 +24,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-CJK6RTMH.js";
+} from "./chunk-3PFJGWZB.js";
 import {
   bilibiliSessionFilePath,
   createBiliLoginService,
@@ -61,7 +61,7 @@ import {
 import {
   getRuntime,
   setRuntime
-} from "./chunk-3QJJRXIR.js";
+} from "./chunk-G6SSY5PL.js";
 import {
   activeSeeds,
   addSeed,
@@ -126,6 +126,9 @@ function sanitize(raw) {
   if (typeof r.statusbar === "boolean") out.statusbar = r.statusbar;
   if (typeof r.idleMode === "boolean") out.idleMode = r.idleMode;
   if (typeof r.tokenSaver === "boolean") out.tokenSaver = r.tokenSaver;
+  if (r.visionEngine === "" || r.visionEngine === "auto" || r.visionEngine === "native" || r.visionEngine === "modlens") {
+    out.visionEngine = r.visionEngine;
+  }
   return out;
 }
 function uiConfigPath(settingsDir) {
@@ -535,7 +538,7 @@ function buildEndpoints(deps, isLive) {
       }
       let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
       try {
-        const { getRuntime: getRuntime2 } = await import("./runtime-W2OWJIHY.js");
+        const { getRuntime: getRuntime2 } = await import("./runtime-JC3OBRMZ.js");
         const f = getRuntime2().flags;
         flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
       } catch {
@@ -712,7 +715,7 @@ function buildEndpoints(deps, isLive) {
         return err("bad-request", "config.set needs a patch object");
       }
       const keys = Object.keys(patch).filter(
-        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "psyEnabled", "quietStart", "quietEnd"].includes(k)
+        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "visionEngine", "psyEnabled", "quietStart", "quietEnd"].includes(k)
       );
       if (keys.length === 0) return err("bad-request", "config.set has no recognized field");
       try {
@@ -1557,7 +1560,14 @@ var Config = z.object({
   /** v2.0.0 摘抄本工具：留句子和小事的地方（默认开）。 */
   excerptTool: z.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
-  extraTools: z.string().default("")
+  extraTools: z.string().default(""),
+  /**
+   * 视觉识别引擎（v2.2.1-native.1）：`auto` / `native` / `modlens`。
+   * 留空 = 跟随 `data/settings/vision.json` 的 engine，再回落到内置默认 auto。
+   * 这里给一个正式设置项，是为了让"默认走哪条路"可以不改代码就调——
+   * 例如想保守地维持 v2.2.1 行为（只用 ModLens）就填 `modlens`。
+   */
+  visionEngine: z.string().default("")
 });
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
@@ -1593,7 +1603,10 @@ function apply(ctx, config = {}) {
       statusbarEnabled: () => statusbarEnabledRef,
       timeInjectMin: () => timeInjectMinRef,
       idleMode: () => idleModeRef,
-      tokenSaver: () => tokenSaverRef
+      tokenSaver: () => tokenSaverRef,
+      // v2.2.1-native.1: card / composition engine choice ('' = vision.json).
+      // Lazy on purpose: the refs below are declared after this call.
+      visionEngine: () => effectiveVisionEngine()
     }
   });
   let presetRegistration;
@@ -1651,6 +1664,9 @@ function apply(ctx, config = {}) {
   let statusbarEnabledRef = ui.statusbar ?? config.statusbar === true;
   let idleModeRef = ui.idleMode ?? config.idleMode === true;
   let tokenSaverRef = ui.tokenSaver ?? config.tokenSaver === true;
+  let visionEngineConfigRef = config.visionEngine ?? "";
+  let visionEngineUiRef = ui.visionEngine ?? "";
+  const effectiveVisionEngine = () => visionEngineConfigRef.trim() || visionEngineUiRef.trim();
   const applyLiveSettings = (v) => {
     if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
     if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
@@ -1667,6 +1683,7 @@ function apply(ctx, config = {}) {
       const v = sectionSource?.();
       if (!v) return;
       applyLiveSettings(v);
+      visionEngineConfigRef = typeof v.visionEngine === "string" ? v.visionEngine : "";
       ctx.logger.info("heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)", v.intervalMin ?? "-", v.maxDailySend ?? "-", v.timeInjectMin ?? "-");
     } catch (e) {
       ctx.logger.warn("heartbeat: settings override failed (%s)", String(e).slice(0, 120));
@@ -1726,6 +1743,9 @@ function apply(ctx, config = {}) {
     statusbar: statusbarEnabledRef,
     idleMode: idleModeRef,
     tokenSaver: tokenSaverRef,
+    // card-stored choice ('' = follow vision.json); the effective engine also
+    // honours a composition-level config pin (see effectiveVisionEngine).
+    visionEngine: visionEngineUiRef,
     psyEnabled: getRuntime().policy.profile.psyEnabled,
     quietStart: getRuntime().policy.gate.quietHours.start,
     quietEnd: getRuntime().policy.gate.quietHours.end
@@ -1744,6 +1764,7 @@ function apply(ctx, config = {}) {
       q.end = next.end;
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
+    visionEngineUiRef = merged.visionEngine ?? "";
     applyLiveSettings(merged);
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
