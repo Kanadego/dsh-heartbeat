@@ -27,7 +27,7 @@ import { getRuntime } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
 import { isArchivedSession, loadArchivedSessionIds, splitDeliverTargets } from './archived-sessions.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
-import { describeScreenShot } from '../screen/vision.js';
+import { describeScreenVision } from '../screen/vision.js';
 import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
 import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
 import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
@@ -1013,6 +1013,115 @@ export async function agentTurn(
   return '';
 }
 
+/** Structural face of the host's attachment service (`ctx.attachments` from
+ *  @deepseek-ai/dsh-attachment): only the one call this plugin needs. The
+ *  package is deliberately not a dependency here. */
+interface HostImageAttachmentStore {
+  saveImage(input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }): Promise<unknown>;
+}
+
+/** Structural face of `ctx.llm`'s model resolution — only the modality probe. */
+interface HostModelInfoSource {
+  resolveModelInfo?(provider: string, model: string): Promise<{ inputModalities?: readonly string[] } | undefined>;
+}
+
+/**
+ * 原生看图（v2.2.1-native.1，engine=native/auto）：让本机心跳 agent 自己看这一跳的截图。
+ * 图片走宿主自己的通道——`attachments.saveImage` 换成持久图片引用，再
+ * `createUserMessage` 带 image 内容块、`agent.followup` 投给这个 agent——和用户
+ * 在会话里贴一张图完全同一条路，消息不手搓、会话记录不破坏。
+ *
+ * 失败就抛（调用方据此回退 ModLens），包括：
+ *   - 没有 attachments 服务 / 模型路由不吃图片输入（`inputModalities` 缺 image）——
+ *     后者必须提前拦：宿主会把图片换成一段"图片已省略"的占位文本，模型照样回话，
+ *     结果是一条"看起来成功"的编造画面；
+ *   - 这一轮报错 / 超时（超时与取消沿用 agentTurn 的 withTimeout + onAbort 契约）；
+ *   - 这一轮没有任何 assistant 文本。
+ */
+export async function nativeVisionTurn(
+  deps: OrchestratorDeps,
+  agent: HostAgent,
+  shotPath: string,
+  prompt: string,
+  opts: { timeoutMs: number; signal?: AbortSignal; label?: string },
+): Promise<string> {
+  const label = opts.label ?? 'vision';
+  const lookup = (name: string): unknown => {
+    try {
+      return deps.ctx.get?.(name);
+    } catch {
+      return undefined;
+    }
+  };
+  const attachments = lookup('attachments') as HostImageAttachmentStore | undefined;
+  if (!attachments || typeof attachments.saveImage !== 'function') {
+    throw new Error('attachments service unavailable');
+  }
+  // 能力闸门：宿主自己也这么查（session prompt 端点），否则 image 会被投影成
+  // "[image omitted because this model accepts text only ...]" 的占位文本。
+  const provider = agent.options?.provider;
+  const model = agent.options?.model;
+  const llm = lookup('llm') as HostModelInfoSource | undefined;
+  if (provider && model && typeof llm?.resolveModelInfo === 'function') {
+    const info = await llm.resolveModelInfo(provider, model);
+    if (info?.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+      throw new Error(`model ${model} does not accept image input`);
+    }
+  }
+  const image = await attachments.saveImage({
+    data: new Uint8Array(fs.readFileSync(shotPath)),
+    mediaType: 'image/jpeg',
+    name: 'heartbeat-screen.jpg',
+  });
+  const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
+  // dsh-attachment 不是本插件的依赖：图片引用在这里只是"宿主给的对象，原样交还"，
+  // 所以只在建消息这一处透传（类型由宿主包拥有，形状见 ImageBlock.attachment）。
+  const content = [
+    { type: 'text', text: prompt },
+    { type: 'image', attachment: image },
+  ] as unknown as Parameters<typeof createUserMessage>[0]['content'];
+  const message = createUserMessage({
+    content,
+    source: { kind: 'heartbeat', plugin: 'heartbeat', form: 'snapshot', sections: [{ name: 'heartbeat', text: label }] },
+  });
+  const before = sessionEventCount(agent.session);
+  agent.followup(message);
+  // issue #11 (2026-11-13): a bare agent.cancel() persists turn/end.reason as
+  // null, which makes the WHOLE session unopenable ("failed to project
+  // session: Cannot read properties of null"). The host wants an
+  // AgentCancelCause, so this call site names one instead of repeating the
+  // pre-existing bare calls. (The three older sites in agentTurn / the beat
+  // watchdog belong to that issue, not to this change.)
+  const cancelTurn = (reason: string): void => {
+    try {
+      (agent as { cancel?: (cause?: { kind: string; reason: string }) => unknown })
+        .cancel?.({ kind: 'hook', reason });
+    } catch { /* best effort */ }
+  };
+  try {
+    await withTimeout(agent.whenIdle(), opts.timeoutMs, `${label}: whenIdle timeout`, {
+      signal: opts.signal,
+      stage: label,
+      // ⑤A: a cancelled beat must not leave this turn running on the host.
+      onAbort: () => cancelTurn('heartbeat-vision-aborted'),
+    });
+  } catch (e) {
+    // onAbort already cancelled this turn when the BEAT signal fired; a plain
+    // vision TIMEOUT would otherwise leave the orphan turn burning tokens
+    // beside the next phase.
+    if (!opts.signal?.aborted) cancelTurn('heartbeat-vision-timeout');
+    throw e;
+  }
+  const events = sessionEvents(agent.session);
+  for (let i = events.length - 1; i >= before; i--) {
+    const e = events[i]!;
+    if (!String(e.type || '').includes('assistant')) continue;
+    const text = assistantText(e);
+    if (text.trim()) return text;
+  }
+  return '';
+}
+
 export interface TimeoutOpts {
   /** The beat's signal: when it fires the race rejects at once. */
   signal?: AbortSignal;
@@ -1865,10 +1974,27 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     return;
   }
   const digest = buildDigest(guard, paths, policy, { windowClass: decision.window.cls });
-  // spec ①② (2026-09-18): per-beat vision via ModLens. Only when vision
-  // SUCCEEDED do the screen summary and taskbar titles reach the rumination agent; on failure
-  // `screen` stays undefined — no image, no titles, no invented "我在干嘛".
-  const screenVision = await describeScreenShot(guard, paths, { moduleUrl: import.meta.url, signal: bc.signal });
+  // Native vision runs on this same agent (nativeVisionTurn); the guard above
+  // already proved it exists.
+  const visionAgent = bc.agent;
+  // spec ①② (2026-09-18): per-beat vision. v2.2.1-native.1: the agent reads the
+  // shot itself (`engine=native`, the default `auto`), ModLens stays the
+  // fallback (`engine=modlens`) — see data/settings/vision.json. Only when
+  // vision SUCCEEDED do the screen summary and taskbar titles reach the
+  // rumination agent; on failure `screen` stays undefined — no image, no titles,
+  // no invented "我在干嘛".
+  const screenVision = await describeScreenVision(guard, paths, {
+    moduleUrl: import.meta.url,
+    signal: bc.signal,
+    // Settings-page / composition `visionEngine` (v2.2.1-native.1): '' follows
+    // data/settings/vision.json, then the built-in default (auto).
+    configuredEngine: getRuntime().flags.visionEngine(),
+    turn: (shot, prompt, o) => nativeVisionTurn(deps, visionAgent, shot, prompt, {
+      timeoutMs: o.timeoutMs,
+      ...(o.signal === undefined ? {} : { signal: o.signal }),
+      label: 'vision',
+    }),
+  });
   let screen: { vision: string; windows: string[] } | undefined;
   if (screenVision.ok && screenVision.summary) {
     const sj = readScreenJson(guard, paths);
@@ -1877,6 +2003,9 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   }
   appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
     event: 'screen_vision', ok: screenVision.ok,
+    // engine names the engine behind the result (native / modlens); the event
+    // keeps its old name and keys, and never carries the picture or its path.
+    ...(screenVision.engine === undefined ? {} : { engine: screenVision.engine }),
     ...(screenVision.ok ? {} : { error: (screenVision.error ?? '').slice(0, 100) }),
   });
   // spec ③ (2026-09-18): candidates are assembled by code — topic random 4 +

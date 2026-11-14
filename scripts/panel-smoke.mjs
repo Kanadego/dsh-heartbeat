@@ -74,6 +74,9 @@ function render(node, out) {
 }
 
 // ── 假宿主 ──
+// 第二遍（v2.2.1-native.1）：config.get 返回真值时，设置页要能渲染出
+// 「识别引擎」这一组（下拉 + 四个选项）。第一遍保持 rpc 全失败，覆盖加载失败分支。
+let configValue = null;
 let captured = null;
 const sandbox = {
   window: { __ModuleLoader__: { load(o) { captured = o; } } },
@@ -87,7 +90,18 @@ let slotName = null, regOpts = null, regComp = null, injectErr = null;
 const ctx = {
   get(name) {
     if (name === "locale") return { register() { return () => {}; }, bind() { return (k) => k; } };
-    if (name === "connection") return { rpc: { call: async () => anyLeaf } };
+    if (name === "connection") {
+      return {
+        rpc: {
+          call: async (_route, _plugin, request) => {
+            if (request && request.endpoint === "config.get" && configValue) {
+              return { ok: true, value: configValue };
+            }
+            return anyLeaf;
+          },
+        },
+      };
+    }
     return undefined;
   },
   effect(fn) { try { fn(); } catch (e) { injectErr = injectErr || e; } },
@@ -142,6 +156,31 @@ try {
   summaryText = out.text.join("");
 } catch (e) { failures.push("summary 视图抛错：" + e.message); }
 check(summaryText.length > 0, "summary 视图没有输出文本");
+
+// ── 第二遍：设置页带真值渲染（覆盖 v2.2.1-native.1 的「识别引擎」下拉）──
+configValue = {
+  intervalMin: 60, maxDailySend: 10, timeInjectMin: 25,
+  statusbar: true, idleMode: false, tokenSaver: false,
+  visionEngine: "native", psyEnabled: false,
+  quietStart: "01:00", quietEnd: "08:00",
+};
+let configOut = { tags: [], text: [] };
+try {
+  st.cells = ["config"]; st.cursor = 0; st.effects = [];
+  render(regComp({ view: "page" }), { tags: [], text: [] });
+  for (const fn of st.effects) fn();
+  await sleep(20);
+  st.cursor = 0; st.effects = [];
+  render(regComp({ view: "page" }), configOut);
+} catch (e) {
+  failures.push("config 带真值渲染抛错：" + (e && (e.message || e)));
+}
+const configText = configOut.text.join(" ");
+check(configOut.tags.includes("select"), "设置页缺少「识别引擎」下拉（select）");
+check(configOut.tags.filter((t) => t === "option").length === 4, "识别引擎下拉应有 4 个选项，实际 " + configOut.tags.filter((t) => t === "option").length);
+check(configText.includes("config.group.vision"), "设置页缺少「视觉识别」分组");
+check(configText.includes("config.visionEngine"), "设置页缺少「识别引擎」行");
+check(configText.includes("config.visionEngine.modlens"), "识别引擎下拉缺少 ModLens 选项");
 
 if (failures.length) {
   console.log(JSON.stringify({ ok: false, failures }, null, 2));

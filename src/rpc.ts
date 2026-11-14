@@ -474,7 +474,7 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
         return err('bad-request', 'config.set needs a patch object');
       }
       const keys = Object.keys(patch).filter((k) =>
-        ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'psyEnabled', 'quietStart', 'quietEnd'].includes(k),
+        ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'visionEngine', 'psyEnabled', 'quietStart', 'quietEnd'].includes(k),
       );
       if (keys.length === 0) return err('bad-request', 'config.set has no recognized field');
       try {
