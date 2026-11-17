@@ -10,12 +10,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
+import { createPathGuard } from '../src/core/path-guard.js';
+import { resetRuntimeForTest, setRuntime } from '../src/core/runtime.js';
+import { savePool, seedsFilePath } from '../src/seeds/pool.js';
 import { runPowerShell } from '../src/core/ps.js';
+import type { Policy } from '../src/config/schema.js';
 import {
   agentTurn,
+  beat,
+  resetHomeAgent,
+  startOrchestrator,
   BeatAbortedError,
   throwIfAborted,
   withTimeout,
+  type AgentCancelCause,
   type OrchestratorDeps,
 } from '../src/core/orchestrator.js';
 
@@ -126,4 +134,186 @@ test('agentTurn: a cancelled beat cancels the host turn instead of waiting it ou
   await assert.rejects(p, isAbort('expression'));
   assert.equal(followed, 1, 'the prompt was handed to the host before cancellation');
   assert.equal(cancelled, true);
+});
+
+// ── issue #11: every cancel carries an AgentCancelCause ──────────────────
+//
+// A host that writes `turn/end.reason` from the cancel argument used to get
+// null here, and any history projection reading `reason.kind` then threw —
+// one bad record closed the whole session. These cases pin the three call
+// sites (agentTurn abort, orphan decision turn, plugin dispose) and the
+// backward-compatible path for a host whose cancel takes no argument.
+
+/** Full policy stub: the beat tests below run the real phase chain, so every
+ *  section the phases read must exist. Quiet hours are an empty window. */
+const CANCEL_POLICY: Policy = {
+  heartbeat: { intervalMin: 20, idleMode: false, archiveRotatedHome: false },
+  gate: { maxDailySend: 8, cooldownMinutes: 30, quietHours: { start: '00:00', end: '00:00' } },
+  browse: { windows: [], minIntervalHours: 4, maxSeedsPerVisit: 5 },
+  seeds: {
+    maxActive: 50,
+    ttlDays: { news: 7, fandom: 7, scene: 3, promise: 30 },
+    coldBenchDays: 7,
+    archiveCap: 100,
+    retireAfterUsed: 3,
+    scoreWeights: { freshness: 0.5, unused: 0.3, confidence: 0.2 },
+  },
+  profile: {
+    consolidation: { minIntervalHours: 24, inboxBacklog: 20 },
+    partitionCap: 80,
+    maxOpsPerRun: 6,
+    confidenceCap: { chat: 1, screen: 1, browse: 1 },
+    volatileDays: 7,
+    stableLowActivityDays: 14,
+    psyEnabled: false,
+  },
+  observe: { maxChars: 200, perBeat: 10 },
+  weekly: { enabled: false, keepReports: 4 },
+  retention: { envPulseHours: 24, decisionLogDays: 30 },
+};
+
+interface BeatHarness {
+  deps: OrchestratorDeps;
+  dispose: () => void;
+}
+
+/** Stub deps for one full beat: a live-looking agent handle, one active topic
+ *  seed (so expressionPhases reaches its decision turn) and a missing assets
+ *  directory, which makes every PowerShell probe degrade instantly instead of
+ *  touching the real screen. */
+function makeBeatHarness(agent: Record<string, unknown>): BeatHarness {
+  const paths = { ...workspace(), assetsDir: path.join(sandbox, 'missing-assets') };
+  const guard = createPathGuard(paths.dataDir);
+  // No interests: wander/refill stay out of the beat, so the only model turn
+  // is the expression decision turn these cases care about.
+  fs.writeFileSync(path.join(paths.settingsDir, 'interests.json'), '{"interests":[],"_schedule":{}}', 'utf8');
+  const now = Date.now();
+  savePool(guard, seedsFilePath(paths.dataDir), {
+    seq: 1,
+    seeds: [{
+      id: 's1',
+      text: '一条用于取消测试的素材',
+      topic: '取消测试',
+      tag: 'news',
+      source: 'browse',
+      category: 'topic',
+      confidence: 0.5,
+      protected: false,
+      used: 0,
+      bornAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 6 * 86_400_000).toISOString(),
+      lastUsedAt: null,
+      lastEvidenceAt: new Date(now).toISOString(),
+      status: 'active',
+    }],
+  });
+  let dispose: () => void = () => {};
+  const ctx = {
+    agents: {
+      create: async () => ({ agent }),
+      resume: async () => ({ agent }),
+      roots: () => [],
+      get: () => undefined,
+    },
+    logger: { info() {}, warn() {}, error() {} },
+    effect: (fn: () => unknown) => { dispose = fn() as () => void; return () => {}; },
+  };
+  const deps = { ctx, paths, guard, policy: CANCEL_POLICY } as unknown as OrchestratorDeps;
+  setRuntime({
+    paths,
+    guard,
+    policy: CANCEL_POLICY,
+    flags: {
+      statusbarEnabled: () => false,
+      timeInjectMin: () => 0,
+      idleMode: () => false,
+      tokenSaver: () => false,
+    },
+  });
+  return { deps, dispose: () => dispose() };
+}
+
+function stubAgent(cancel: (cause?: AgentCancelCause) => void, opts: { followup?: () => void; whenIdle?: () => Promise<void> } = {}) {
+  return {
+    id: 'hb-stub',
+    session: { id: 'session-hb-stub', events: [], snapshotEvents: () => [] },
+    options: { model: 'test-model' },
+    followup: opts.followup ?? (() => {}),
+    whenIdle: opts.whenIdle ?? (async () => {}),
+    cancel,
+  } as unknown as Record<string, unknown>;
+}
+
+test('agentTurn: the timeout cancel carries a hook cause (issue #11)', async () => {
+  const ctl = new AbortController();
+  const causes: (AgentCancelCause | undefined)[] = [];
+  const agent = stubAgent((cause) => { causes.push(cause); }, { whenIdle: () => new Promise<void>(() => {}) });
+  const deps = { paths: workspace() } as unknown as OrchestratorDeps;
+  const p = agentTurn(deps, agent as never, 'hello', 'expression', 60_000, ctl.signal);
+  ctl.abort('watchdog');
+  await assert.rejects(p, isAbort('expression'));
+  assert.deepEqual(causes, [{ kind: 'hook', reason: 'heartbeat-timeout' }]);
+});
+
+test('agentTurn: a host cancel declared without parameters still works (issue #11 compat)', async () => {
+  const ctl = new AbortController();
+  let cancelled = 0;
+  const agent = {
+    id: 'a-legacy',
+    session: { id: 's-legacy', events: [], snapshotEvents: () => [] },
+    followup: () => {},
+    whenIdle: () => new Promise<void>(() => {}),
+    // Explicitly zero-arity: the extra cause argument must be ignored, not thrown over.
+    cancel: (): void => { cancelled += 1; },
+  };
+  const deps = { paths: workspace() } as unknown as OrchestratorDeps;
+  const p = agentTurn(deps, agent as never, 'hello', 'expression', 60_000, ctl.signal);
+  ctl.abort('watchdog');
+  await assert.rejects(p, isAbort('expression'));
+  assert.equal(cancelled, 1);
+});
+
+test('beat: a failed decision turn cancels the orphan host turn with a hook cause (issue #11)', async () => {
+  resetHomeAgent();
+  const causes: (AgentCancelCause | undefined)[] = [];
+  const agent = stubAgent((cause) => { causes.push(cause); }, {
+    followup: () => { throw new Error('host refused the decision prompt'); },
+  });
+  const h = makeBeatHarness(agent);
+  try {
+    await beat(h.deps, 'interval');
+  } finally {
+    resetRuntimeForTest();
+  }
+  assert.deepEqual(causes, [{ kind: 'hook', reason: 'heartbeat-orphan-turn' }]);
+});
+
+test('dispose: an in-flight beat cancels the host turn with a disposed cause (issue #11)', async () => {
+  resetHomeAgent();
+  const causes: (AgentCancelCause | undefined)[] = [];
+  let markStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const agent = stubAgent((cause) => { causes.push(cause); }, {
+    followup: () => { markStarted(); },
+    whenIdle: () => new Promise<void>(() => {}),
+  });
+  const h = makeBeatHarness(agent);
+  startOrchestrator(h.deps);
+  const running = beat(h.deps, 'interval');
+  try {
+    await started;
+    h.dispose();
+    await running;
+  } finally {
+    resetRuntimeForTest();
+  }
+  // The host takes only the FIRST cancel cause: the dispose must win over the
+  // abort's onAbort cancel, or the goal round driver never sees `disposed`.
+  // The two hook causes after it are the redundant cancels of the already
+  // stopped turn (host-ignored; timeout/orphan semantics unchanged).
+  assert.deepEqual(causes, [
+    { kind: 'disposed' },
+    { kind: 'hook', reason: 'heartbeat-timeout' },
+    { kind: 'hook', reason: 'heartbeat-orphan-turn' },
+  ]);
 });

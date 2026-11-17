@@ -2094,7 +2094,7 @@ async function agentTurn(deps, agent, prompt, label, idleWaitMs = IDLE_WAIT_TIME
     // would keep burning tokens after the watchdog already called the beat off.
     onAbort: () => {
       try {
-        agent.cancel?.();
+        agent.cancel?.({ kind: "hook", reason: "heartbeat-timeout" });
       } catch {
       }
     }
@@ -2775,7 +2775,7 @@ async function expressionPhases(bc) {
       return await agentTurn(bc.deps, bc.agent, ruminationPrompt, "decision", IDLE_WAIT_TIMEOUT_MS, bc.signal);
     } catch (e) {
       try {
-        bc.agent.cancel?.();
+        bc.agent.cancel?.({ kind: "hook", reason: "heartbeat-orphan-turn" });
       } catch {
       }
       appendAuditLine(paths.logsDir + "/heartbeat.jsonl", {
@@ -2990,7 +2990,7 @@ async function beat(deps, trigger = "interval") {
     if (agent) {
       beatCancel = () => {
         try {
-          agent.cancel?.();
+          agent.cancel?.({ kind: "disposed" });
         } catch {
         }
       };
@@ -3142,11 +3142,11 @@ function startOrchestrator(deps) {
       const cancelledInFlight = beating || beatCancel !== void 0;
       clearBeatWatchdog();
       try {
-        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort("orchestrator disposed");
+        beatCancel?.();
       } catch {
       }
       try {
-        beatCancel?.();
+        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort("orchestrator disposed");
       } catch {
       }
       appendAuditLine(deps.paths.logsDir + "/heartbeat.jsonl", { event: "orchestrator_disposed", beatCancelled: cancelledInFlight });
@@ -3236,4 +3236,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-CJK6RTMH.js.map
+//# sourceMappingURL=chunk-XTAMNTIC.js.map

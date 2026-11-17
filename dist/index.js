@@ -24,7 +24,7 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-CJK6RTMH.js";
+} from "./chunk-XTAMNTIC.js";
 import {
   bilibiliSessionFilePath,
   createBiliLoginService,

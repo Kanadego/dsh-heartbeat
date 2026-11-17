@@ -177,6 +177,17 @@ export interface HostSession {
   events?: HostEvent[];
 }
 
+/** Why a host turn was cancelled (issue #11). The host writes this into
+ *  `turn/end.reason`; a null reason breaks history projection, so every
+ *  cancellation carries one. The union mirrors the host's closed set
+ *  (dsh-session types: user | parent | hook | disposed) — an unknown kind
+ *  hits the host's assertNever and throws, so do not widen it. */
+export type AgentCancelCause =
+  | { kind: 'user' }
+  | { kind: 'parent' }
+  | { kind: 'hook'; reason: string }
+  | { kind: 'disposed' };
+
 interface HostAgent {
   id: string;
   session: HostSession;
@@ -983,7 +994,7 @@ export async function agentTurn(
     stage: label,
     // ⑤A: a cancelled beat must not leave this turn running on the host — it
     // would keep burning tokens after the watchdog already called the beat off.
-    onAbort: () => { try { (agent as { cancel?: () => unknown }).cancel?.(); } catch { /* best effort */ } },
+    onAbort: () => { try { (agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'hook', reason: 'heartbeat-timeout' }); } catch { /* best effort */ } },
   });
   const events = sessionEvents(agent.session);
   // Scan backwards: the LAST assistant text wins (final step over reasoning).
@@ -1935,7 +1946,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
       // defer to the next beat, cancel the orphan turn so it stops burning
       // tokens, and surface as silence rather than an error.
       try {
-        (bc.agent as { cancel?: () => unknown }).cancel?.();
+        (bc.agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'hook', reason: 'heartbeat-orphan-turn' });
       } catch { /* best effort */ }
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
         event: 'decision_deferred', reason: String(e).slice(0, 160),
@@ -2242,7 +2253,7 @@ export async function beat(deps: OrchestratorDeps, trigger: BeatTrigger = 'inter
     if (agent) {
       beatCancel = () => {
         try {
-          (agent as { cancel?: () => unknown }).cancel?.();
+          (agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'disposed' });
         } catch { /* best effort — same semantics as the orphan-turn cancel */ }
       };
     }
@@ -2430,13 +2441,16 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
       // before it can exit (desktop update once stalled on exactly this).
       const cancelledInFlight = beating || beatCancel !== undefined;
       clearBeatWatchdog(); // H-03: the disposer must not leave a timer behind
-      // ⑤A: abort first so the phases stop at their next await (subprocesses are
-      // killed, writes are skipped), then cancel the turn that is still running.
-      try {
-        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort('orchestrator disposed');
-      } catch { /* never rethrow from the disposer */ }
+      // ⑤A: cancel the in-flight agent turn FIRST — the host takes only the
+      // first cancel cause, and a dispose must surface as `disposed` (the goal
+      // round driver disarms on it). Aborting afterwards still stops the
+      // phases at their next await (subprocesses killed, writes skipped); the
+      // cancel that abort's onAbort would raise is ignored by the host.
       try {
         beatCancel?.();
+      } catch { /* never rethrow from the disposer */ }
+      try {
+        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort('orchestrator disposed');
       } catch { /* never rethrow from the disposer */ }
       appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'orchestrator_disposed', beatCancelled: cancelledInFlight });
       // H-02: every piece of module-level orchestrator state dies with this
