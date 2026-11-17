@@ -103,7 +103,7 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 | `native`       | 只走原生：截图作为图片内容交给心跳 agent（与在会话里贴一张图走的是同一条通道），不装 ModLens 也能用         |
 | `modlens`      | 只走 ModLens CLI（v2.2.1 及更早的行为）                                                                   |
 
-原有的 `provider` / `prompt` 照旧有效（`prompt` 同时覆盖原生引擎的固定提示词）。三种取值之外的值一律按 `auto` 处理——写错不会让视觉整个失效。两点如实说明：原生引擎每跳多一轮 agent 调用；这张截图会作为图片附件存进 DSH 自己的附件库（`$DSH_HOME/attachments`，不经本插件的加密 vault），审计日志只记 `engine` 与成败，绝不记画面内容或图片路径。
+原有的 `provider` / `prompt` 照旧有效（`prompt` 同时覆盖原生引擎的固定提示词）。三种取值之外的值一律按 `auto` 处理——写错不会让视觉整个失效。三点如实说明：原生引擎每跳多一轮 agent 调用；这张截图会作为图片附件存进 DSH 自己的附件库（`$DSH_HOME/attachments/v1`，不经本插件的加密 vault），**且会作为图片内容随请求发给你配置的模型 provider**；附件库是内容寻址、只增不减的，同一画面只存一份，但不同画面每跳会多一份，插件这边没有清理接口——介意的话用 `native` 之外的引擎，或在 DSH 附件库处自行清理。审计日志只记 `engine` 与成败，绝不记画面内容或图片路径。
 
 <details>
 <summary><b>展开查看：CLI 命令速查与常见排错</b></summary>
