@@ -95,6 +95,13 @@ export const Config = z.object({
   excerptTool: z.boolean().default(true),
   /** v1.8.0 引擎室追加工具：逗号分隔的全局工具名，存在才加入白名单（bili 压缩工具自动探测，无需手填）。 */
   extraTools: z.string().default(''),
+  /**
+   * 视觉识别引擎（v2.2.1-native.1）：`auto` / `native` / `modlens`。
+   * 留空 = 跟随 `data/settings/vision.json` 的 engine，再回落到内置默认 auto。
+   * 这里给一个正式设置项，是为了让"默认走哪条路"可以不改代码就调——
+   * 例如想保守地维持 v2.2.1 行为（只用 ModLens）就填 `modlens`。
+   */
+  visionEngine: z.string().default(''),
 });
 
 export interface HeartbeatConfig {
@@ -113,6 +120,8 @@ export interface HeartbeatConfig {
   notepadTool?: boolean;
   excerptTool?: boolean;
   extraTools?: string;
+  /** v2.2.1-native.1: vision engine ('' = vision.json → built-in auto). */
+  visionEngine?: string;
 }
 
 export function apply(ctx: OrchestratorDeps['ctx'] & {
@@ -160,6 +169,9 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       timeInjectMin: () => timeInjectMinRef,
       idleMode: () => idleModeRef,
       tokenSaver: () => tokenSaverRef,
+      // v2.2.1-native.1: card / composition engine choice ('' = vision.json).
+      // Lazy on purpose: the refs below are declared after this call.
+      visionEngine: () => effectiveVisionEngine(),
     },
   });
 
@@ -258,6 +270,17 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   let statusbarEnabledRef = ui.statusbar ?? (config.statusbar === true);
   let idleModeRef = ui.idleMode ?? (config.idleMode === true);
   let tokenSaverRef = ui.tokenSaver ?? (config.tokenSaver === true);
+  // v2.2.1-native.1: vision engine has TWO inputs and one effective value.
+  //   · the card's setting (ui.json) is what the user edits — the normal path;
+  //   · the composition/plugin config can pin it for a deployment, and wins
+  //     over the card exactly like the rhythm fields above do;
+  //   · '' follows data/settings/vision.json, then the built-in default (auto).
+  // Invalid values are neutralised in resolveVisionEnginePrecedence, so a typo
+  // can never crash a beat or override a deliberate vision.json.
+  let visionEngineConfigRef = config.visionEngine ?? '';
+  let visionEngineUiRef = ui.visionEngine ?? '';
+  const effectiveVisionEngine = (): string =>
+    visionEngineConfigRef.trim() || visionEngineUiRef.trim();
 
   // H-48: ONE setter table for the live-settable fields. The settings section
   // and the RPC uiSet path used to carry a copy each of the same six ifs, so a
@@ -287,6 +310,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       const v = sectionSource?.();
       if (!v) return;
       applyLiveSettings(v);
+      visionEngineConfigRef = typeof v.visionEngine === 'string' ? v.visionEngine : '';
       ctx.logger.info('heartbeat: settings overrides live (interval %s, cap %s, timeInject %s)', v.intervalMin ?? '-', v.maxDailySend ?? '-', v.timeInjectMin ?? '-');
     } catch (e) {
       ctx.logger.warn('heartbeat: settings override failed (%s)', String(e).slice(0, 120));
@@ -372,6 +396,9 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     statusbar: statusbarEnabledRef,
     idleMode: idleModeRef,
     tokenSaver: tokenSaverRef,
+    // card-stored choice ('' = follow vision.json); the effective engine also
+    // honours a composition-level config pin (see effectiveVisionEngine).
+    visionEngine: visionEngineUiRef,
     psyEnabled: getRuntime().policy.profile.psyEnabled,
     quietStart: getRuntime().policy.gate.quietHours.start,
     quietEnd: getRuntime().policy.gate.quietHours.end,
@@ -392,6 +419,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       q.end = next.end;
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
+    visionEngineUiRef = merged.visionEngine ?? '';
     applyLiveSettings(merged);
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });

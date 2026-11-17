@@ -79,3 +79,16 @@ test('policy: updateUserPolicy merges into the user layer and flips psyEnabled o
   // untouched factory fields still come from the factory layer
   assert.equal(updated.heartbeat.intervalMin, policy.heartbeat.intervalMin);
 });
+test('ui-config: the card vision-engine choice persists, clears, and drops junk', () => {
+  // the card writes one of the three engines…
+  assert.equal(saveUiConfig(guard, paths.settingsDir, { visionEngine: 'native' }).visionEngine, 'native');
+  assert.equal(loadUiConfig(guard, paths.settingsDir).visionEngine, 'native');
+  assert.equal(saveUiConfig(guard, paths.settingsDir, { visionEngine: 'modlens' }).visionEngine, 'modlens');
+  // …or '' = "follow data/settings/vision.json", which must survive a reload
+  assert.equal(saveUiConfig(guard, paths.settingsDir, { visionEngine: '' }).visionEngine, '');
+  assert.equal(loadUiConfig(guard, paths.settingsDir).visionEngine, '');
+  // anything else is a junk value: drop it instead of persisting it
+  const junk = saveUiConfig(guard, paths.settingsDir, { visionEngine: 'NATIVE' as never });
+  assert.equal(junk.visionEngine, undefined);
+  assert.equal(loadUiConfig(guard, paths.settingsDir).visionEngine, undefined);
+});

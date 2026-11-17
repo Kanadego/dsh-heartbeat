@@ -20,6 +20,10 @@ export interface UiConfig {
   idleMode?: boolean;
   /** Token-saver (v1.7.0): pause beats while the user is away / locked. */
   tokenSaver?: boolean;
+  /** Vision engine picked in the card (v2.2.1-native.1). '' = follow
+   *  data/settings/vision.json and the built-in default (auto); the two
+   *  literal engines are the explicit choices. */
+  visionEngine?: '' | 'auto' | 'native' | 'modlens';
 }
 
 const RANGES = {
@@ -41,6 +45,9 @@ function sanitize(raw: unknown): UiConfig {
   if (typeof r.statusbar === 'boolean') out.statusbar = r.statusbar;
   if (typeof r.idleMode === 'boolean') out.idleMode = r.idleMode;
   if (typeof r.tokenSaver === 'boolean') out.tokenSaver = r.tokenSaver;
+  if (r.visionEngine === '' || r.visionEngine === 'auto' || r.visionEngine === 'native' || r.visionEngine === 'modlens') {
+    out.visionEngine = r.visionEngine;
+  }
   return out;
 }
 
