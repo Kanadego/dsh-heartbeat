@@ -14,10 +14,17 @@ import path from 'node:path';
 const dirs = new Set<string>();
 let hooked = false;
 
+// Hermetic host home: `$DSH_HOME` (default ~/.dsh) is where code like
+// src/core/archived-sessions.ts reads `<dshHome>/storages/workspace.json`.
+// Redirect it into each sandbox (and put the real value back on exit) so a
+// test run never opens the user's actual home.
+const originalDshHome = process.env.DSH_HOME;
+
 /** Create a temp sandbox directory that is removed when the test process exits. */
 export function sandboxDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   dirs.add(dir);
+  process.env.DSH_HOME = dir;
   if (!hooked) {
     hooked = true;
     process.on('exit', () => {
@@ -29,6 +36,8 @@ export function sandboxDir(prefix: string): string {
         }
       }
       dirs.clear();
+      if (originalDshHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = originalDshHome;
     });
   }
   return dir;

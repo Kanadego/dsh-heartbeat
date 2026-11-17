@@ -994,7 +994,15 @@ export async function agentTurn(
     stage: label,
     // ⑤A: a cancelled beat must not leave this turn running on the host — it
     // would keep burning tokens after the watchdog already called the beat off.
-    onAbort: () => { try { (agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'hook', reason: 'heartbeat-timeout' }); } catch { /* best effort */ } },
+    // The cause follows the abort text: a dispose that lands before beatCancel
+    // is wired must still surface as `disposed` (the goal round driver disarms
+    // on it), everything else is a hook-level timeout.
+    onAbort: () => {
+      const cause: AgentCancelCause = signal && abortText(signal) === 'orchestrator disposed'
+        ? { kind: 'disposed' }
+        : { kind: 'hook', reason: 'heartbeat-timeout' };
+      try { (agent as { cancel?: (cause: AgentCancelCause) => unknown }).cancel?.(cause); } catch { /* best effort */ }
+    },
   });
   const events = sessionEvents(agent.session);
   // Scan backwards: the LAST assistant text wins (final step over reasoning).
@@ -1946,7 +1954,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
       // defer to the next beat, cancel the orphan turn so it stops burning
       // tokens, and surface as silence rather than an error.
       try {
-        (bc.agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'hook', reason: 'heartbeat-orphan-turn' });
+        (bc.agent as { cancel?: (cause: AgentCancelCause) => unknown }).cancel?.({ kind: 'hook', reason: 'heartbeat-orphan-turn' });
       } catch { /* best effort */ }
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
         event: 'decision_deferred', reason: String(e).slice(0, 160),
@@ -2253,7 +2261,7 @@ export async function beat(deps: OrchestratorDeps, trigger: BeatTrigger = 'inter
     if (agent) {
       beatCancel = () => {
         try {
-          (agent as { cancel?: (cause?: AgentCancelCause) => unknown }).cancel?.({ kind: 'disposed' });
+          (agent as { cancel?: (cause: AgentCancelCause) => unknown }).cancel?.({ kind: 'disposed' });
         } catch { /* best effort — same semantics as the orphan-turn cancel */ }
       };
     }

@@ -2092,9 +2092,13 @@ async function agentTurn(deps, agent, prompt, label, idleWaitMs = IDLE_WAIT_TIME
     stage: label,
     // ⑤A: a cancelled beat must not leave this turn running on the host — it
     // would keep burning tokens after the watchdog already called the beat off.
+    // The cause follows the abort text: a dispose that lands before beatCancel
+    // is wired must still surface as `disposed` (the goal round driver disarms
+    // on it), everything else is a hook-level timeout.
     onAbort: () => {
+      const cause = signal && abortText(signal) === "orchestrator disposed" ? { kind: "disposed" } : { kind: "hook", reason: "heartbeat-timeout" };
       try {
-        agent.cancel?.({ kind: "hook", reason: "heartbeat-timeout" });
+        agent.cancel?.(cause);
       } catch {
       }
     }
@@ -3236,4 +3240,4 @@ export {
   jitteredIntervalMs,
   startOrchestrator
 };
-//# sourceMappingURL=chunk-XTAMNTIC.js.map
+//# sourceMappingURL=chunk-YUILHWR5.js.map

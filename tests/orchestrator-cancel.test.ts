@@ -255,6 +255,20 @@ test('agentTurn: the timeout cancel carries a hook cause (issue #11)', async () 
   assert.deepEqual(causes, [{ kind: 'hook', reason: 'heartbeat-timeout' }]);
 });
 
+test('agentTurn: an abort for orchestrator disposed carries the disposed cause (issue #11)', async () => {
+  // A dispose can land while agentTurn is waiting and before the beat has wired
+  // its cancel handle: the abort path itself must surface `disposed`, or the
+  // host records a hook cause and the goal round driver never disarms.
+  const ctl = new AbortController();
+  const causes: (AgentCancelCause | undefined)[] = [];
+  const agent = stubAgent((cause) => { causes.push(cause); }, { whenIdle: () => new Promise<void>(() => {}) });
+  const deps = { paths: workspace() } as unknown as OrchestratorDeps;
+  const p = agentTurn(deps, agent as never, 'hello', 'expression', 60_000, ctl.signal);
+  ctl.abort('orchestrator disposed');
+  await assert.rejects(p, isAbort('expression'));
+  assert.deepEqual(causes, [{ kind: 'disposed' }]);
+});
+
 test('agentTurn: a host cancel declared without parameters still works (issue #11 compat)', async () => {
   const ctl = new AbortController();
   let cancelled = 0;
@@ -309,11 +323,16 @@ test('dispose: an in-flight beat cancels the host turn with a disposed cause (is
   }
   // The host takes only the FIRST cancel cause: the dispose must win over the
   // abort's onAbort cancel, or the goal round driver never sees `disposed`.
-  // The two hook causes after it are the redundant cancels of the already
-  // stopped turn (host-ignored; timeout/orphan semantics unchanged).
-  assert.deepEqual(causes, [
-    { kind: 'disposed' },
-    { kind: 'hook', reason: 'heartbeat-timeout' },
-    { kind: 'hook', reason: 'heartbeat-orphan-turn' },
-  ]);
+  // Cancels of the already stopped turn after it are redundant (host-ignored):
+  // only their shape is pinned, so optimisations that stop re-cancelling do not
+  // turn this case red for the wrong reason.
+  assert.deepEqual(causes[0], { kind: 'disposed' });
+  for (const cause of causes) {
+    assert.ok(cause, 'every host cancel must carry a cause');
+    assert.ok(
+      ['user', 'parent', 'hook', 'disposed'].includes(cause.kind),
+      `unexpected cause kind: ${cause.kind}`,
+    );
+    if (cause.kind === 'hook') assert.ok(cause.reason.trim() !== '', 'hook cancels must name a reason');
+  }
 });
