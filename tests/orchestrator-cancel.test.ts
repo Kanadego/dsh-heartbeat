@@ -228,6 +228,9 @@ function makeBeatHarness(agent: Record<string, unknown>): BeatHarness {
       timeInjectMin: () => 0,
       idleMode: () => false,
       tokenSaver: () => false,
+      // v2.2.1-native.1: '' = follow vision.json (auto); the harness has no
+      // attachments service, so native fails fast and the beat proceeds.
+      visionEngine: () => '',
     },
   });
   return { deps, dispose: () => dispose() };
