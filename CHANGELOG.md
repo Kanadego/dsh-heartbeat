@@ -23,6 +23,7 @@ dsh-heartbeat 的完整版本历史，最新的在最上面。
 - **截屏识别走宿主原生看图**：优先用宿主的图片输入能力（`visionEngine: auto|native|modlens`），不可用或探测失败才回退 ModLens CLI；被中止的跳按「取消」记账（`beat_aborted`）而不是识图失败，回退原因保留在审计里（已脱敏、绝不写截图路径）；非法的引擎取值会被忽略并去重审计。
 - **面板更耐用**：RPC 通道晚注册的宿主不再一进来就报「RPC 不可用」，挂载时自动重探且只升不降；只读态的开关/输入框显示「—」而不是把兜底默认值当配置值摆出来，只读控件不可点击。
 - **文档**：DESIGN.md 审计事件字典补齐屏幕视觉（`screen_vision` / `vision_engine_invalid` / `vision_modality_probe_failed`）与会话闸门、状态栏、投递、账本归档等新事件，排查时按事件名即可定位。
+- **致谢**：截屏识别改用宿主原生看图由 [@LuoBingbing1145](https://github.com/LuoBingbing1145) 实现（[#12](https://github.com/Kanadego/dsh-heartbeat/pull/12)）；取消原因缺失导致会话写坏的问题由 [@lemonda05](https://github.com/lemonda05) 报出（[#11](https://github.com/Kanadego/dsh-heartbeat/issues/11)）。
 
 </details>
 
