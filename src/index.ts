@@ -15,8 +15,10 @@ import { loadPolicy, updateUserPolicy } from './config/load.js';
 import { loadUiConfig, saveUiConfig, type UiConfig } from './config/ui-config.js';
 import { resolveQuietHours } from './config/quiet-hours.js';
 import { deepMerge } from './config/schema.js';
-import { setRuntime, getRuntime } from './core/runtime.js';
+import { setRuntime, getRuntime, getCurrentDeliveryId } from './core/runtime.js';
 import { startOrchestrator, applyHeartbeatInterval, type OrchestratorDeps } from './core/orchestrator.js';
+import type { HostSession } from './core/orchestrator.js';
+import { checkDeliverySession, type DeliverySessionVerdict } from './core/session-gate.js';
 import { installHeartbeatRpc } from './rpc.js';
 import { registerTimeInjection } from './statusbar/time-inject.js';
 import { registerStatusbarSection, noteTrack, pinTrack } from './statusbar/track.js';
@@ -24,9 +26,10 @@ import { StatusReader } from './statusbar/store.js';
 import { renderStatusText } from './statusbar/track.js';
 import { installBundledPreset, userPresetRoot, describeInstall } from './core/preset-install.js';
 import { registerHeartbeatPreset } from './core/preset-definition.js';
-import { buildLedgerTool } from './ledger/tool.js';
+import { buildLedgerTool, buildCorrectionsTool } from './ledger/tool.js';
 import { buildSeedReportTool, reportFilePath } from './seeds/report.js';
-import { ledgerFilePath } from './ledger/ledger.js';
+import { correctionsFilePath, ledgerFilePath } from './ledger/ledger.js';
+import { runBookDoneMigrations } from './ledger/archive.js';
 import { buildNotepadTool } from './notepad/tool.js';
 import { notepadFilePath } from './notepad/store.js';
 import { buildExcerptTool } from './excerpt/tool.js';
@@ -34,6 +37,77 @@ import { excerptFilePath } from './excerpt/excerpt.js';
 import { startBilibiliSource } from './sources/bilibili.js';
 
 export const name = 'heartbeat';
+
+/** N3: the three engine literals a vision-engine setting may carry ('' = unset,
+ *  follows data/settings/vision.json → built-in auto). */
+const VISION_ENGINE_LITERALS = ['native', 'modlens', 'auto'] as const;
+export type VisionEngineChoice = (typeof VISION_ENGINE_LITERALS)[number] | '';
+
+export interface VisionEngineResolution {
+  /** The effective setting: one of the three literals, or '' (unset). */
+  value: VisionEngineChoice;
+  /** Non-empty inputs that are NOT one of the three literals, in the order
+   *  they were seen. An invalid value reads as unset — never as "has a value" —
+   *  and the caller is expected to audit it so a typo is visible on the
+   *  settings page's audit trail instead of silently ignored. */
+  invalid: { source: 'config' | 'card'; value: string }[];
+}
+
+/**
+ * N18: audit the invalid engine values once per distinct source:value pair.
+ * The resolver runs on every beat, so a typo must be reported exactly once.
+ * 口径 (rework 低3): after ui-config's sanitize the production chain feeds this
+ * at most ONE config-side invalid value, so the old single-slot memory
+ * (`invalidEngineAudited: string | undefined`) was adequate on that path —
+ * this keyed Set is a DEFENSIVE improvement (it also stays correct if a future
+ * caller ever feeds card-side values), not a fix for a reproducible production
+ * bug. The set is owned by the caller and survives across beats.
+ * 只增不减是故意的 (rework 低2): the audit records "this typo exists", not
+ * "it exists N times" — the same value fixed and later re-entered is
+ * deliberately NOT re-audited; if the settings page ever needs a re-break
+ * notification, reset the set on that edge there, not here.
+ */
+export function auditInvalidVisionEngines(
+  invalid: readonly { source: 'config' | 'card'; value: string }[],
+  alreadyAudited: Set<string>,
+  write: (entry: Record<string, unknown>) => boolean | void,
+): void {
+  for (const bad of invalid) {
+    const key = `${bad.source}:${bad.value}`;
+    if (alreadyAudited.has(key)) continue;
+    try {
+      // 低1 + a3 中3: mark ONLY after the write actually SUCCEEDED. Production
+      // writers are appendAuditLine, which NEVER throws — it reports a failed
+      // append as `false` — so the success check must cover both shapes: a
+      // `false` return (production) and a thrown write (test doubles). Either
+      // way the key stays unconsumed and the entry retries on the next beat;
+      // otherwise one silent failure would silence the typo for the whole
+      // process lifetime.
+      const ok = write({ event: 'vision_engine_invalid', source: bad.source, value: bad.value });
+      if (ok !== false) alreadyAudited.add(key);
+    } catch { /* audit must never break a beat — the key retries next beat */ }
+  }
+}
+
+/**
+ * N3: resolve the two vision-engine inputs (composition-entry config first,
+ * then the settings card) in precedence order, resolving EACH before picking.
+ * The old one-liner (`config.trim() || ui.trim()`) treated any non-empty value
+ * as "has a value": config='bogus' shadowed a deliberate card='modlens', and
+ * downstream coercion then silently ran it as auto. Here an invalid value is
+ * unset, so the next input in precedence applies.
+ */
+export function resolveVisionEngineSetting(configured: string, card: string): VisionEngineResolution {
+  const invalid: VisionEngineResolution['invalid'] = [];
+  const pick = (raw: string, source: 'config' | 'card'): VisionEngineChoice => {
+    const v = raw.trim();
+    if (!v) return '';
+    if ((VISION_ENGINE_LITERALS as readonly string[]).includes(v)) return v as VisionEngineChoice;
+    invalid.push({ source, value: v });
+    return '';
+  };
+  return { value: pick(configured, 'config') || pick(card, 'card'), invalid };
+}
 
 /**
  * Host services required by the orchestrator (verified present in
@@ -133,6 +207,25 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
 }, config: HeartbeatConfig = {}): void {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
   const guard = createPathGuard(paths.dataDir);
+
+  // 2.3.0 P0-2: one-time move of legacy inline done rows into the archives.
+  // Marker-guarded (data/settings/state.json), so restarts and CLI-only beats
+  // cannot replay it; a failure audits and leaves the books untouched.
+  try {
+    runBookDoneMigrations(guard, paths.dataDir, paths.settingsDir, (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+      } catch { /* audit must never break startup */ }
+    });
+  } catch (e) {
+    try {
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), {
+        event: 'book_done_migration_failed',
+        error: String(e).slice(0, 160),
+      });
+    } catch { /* same rule */ }
+  }
+
   let policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
 
   // Card-edited rhythm values (v1.7.0, data/settings/ui.json): the settings
@@ -172,6 +265,9 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
       // v2.2.1-native.1: card / composition engine choice ('' = vision.json).
       // Lazy on purpose: the refs below are declared after this call.
       visionEngine: () => effectiveVisionEngine(),
+      // 2.3.0 experimental (default off): silent report concludes the turn.
+      // Same lazy pattern as the refs above.
+      concludeSilentTurn: () => concludeSilentTurnRef,
     },
   });
 
@@ -279,8 +375,20 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // can never crash a beat or override a deliberate vision.json.
   let visionEngineConfigRef = config.visionEngine ?? '';
   let visionEngineUiRef = ui.visionEngine ?? '';
-  const effectiveVisionEngine = (): string =>
-    visionEngineConfigRef.trim() || visionEngineUiRef.trim();
+  // N3/N18: ONE dedup memory per distinct source:value, alive across beats —
+  // a typo is audited exactly once (see auditInvalidVisionEngines).
+  const invalidEnginesAudited = new Set<string>();
+  // 2.3.0 experimental: silent report concludes the turn. Card-only, default
+  // OFF; ui.json sanitize already maps unset/invalid to false.
+  let concludeSilentTurnRef = ui.concludeSilentTurn === true;
+  const effectiveVisionEngine = (): VisionEngineChoice => {
+    const resolved = resolveVisionEngineSetting(visionEngineConfigRef, visionEngineUiRef);
+    auditInvalidVisionEngines(resolved.invalid, invalidEnginesAudited, (entry) =>
+      // a3 中3: forward the success verdict — `false` means the line did NOT
+      // land and the typo must stay unconsumed for the next beat's retry.
+      appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry));
+    return resolved.value;
+  };
 
   // H-48: ONE setter table for the live-settable fields. The settings section
   // and the RPC uiSet path used to carry a copy each of the same six ifs, so a
@@ -399,6 +507,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     // card-stored choice ('' = follow vision.json); the effective engine also
     // honours a composition-level config pin (see effectiveVisionEngine).
     visionEngine: visionEngineUiRef,
+    concludeSilentTurn: concludeSilentTurnRef,
     psyEnabled: getRuntime().policy.profile.psyEnabled,
     quietStart: getRuntime().policy.gate.quietHours.start,
     quietEnd: getRuntime().policy.gate.quietHours.end,
@@ -420,15 +529,29 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
     visionEngineUiRef = merged.visionEngine ?? '';
+    // Saved-now-effective: a fresh snapshot from config.set already carries
+    // this value, and the next beat reads the same ref.
+    concludeSilentTurnRef = merged.concludeSilentTurn === true;
     applyLiveSettings(merged);
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
 
+  // 2.3.0 P0-3/P0-5: one delivery-session verdict shared by the notepad tool
+  // and both statusbar transports (session-gate + bindings.deliver).
+  const deliverySessionVerdict = (session: HostSession): DeliverySessionVerdict =>
+    checkDeliverySession({ sessionId: session.id, session, guard, settingsDir: paths.settingsDir });
+
   // H-49: the ledger (v1.8.0) and seed_report (v1.9.0) registrations were two
   // copies of one block — same audit closure, same try/catch, same degradation
   // to an audit line on a host without a registerable ToolRuntime. One factory
-  // now covers both; the audit event names are unchanged.
-  const registerGlobalTool = (name: string, build: () => unknown): void => {
+  // now covers both; the audit event names are unchanged. `when` (2.3.0) is the
+  // host's ToolRegistrationOptions condition — a failing predicate hides the
+  // tool's declaration entirely.
+  const registerGlobalTool = (
+    name: string,
+    build: () => unknown,
+    when?: (context: unknown) => boolean,
+  ): void => {
     ctx.inject(['tools'], (scoped: unknown) => {
       const audit = (entry: Record<string, unknown>): void => {
         try {
@@ -436,9 +559,22 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
         } catch { /* audit must never break startup */ }
       };
       try {
-        const tools = (scoped as { tools?: { register(definition: unknown): () => void } }).tools;
+        const tools = (scoped as {
+          tools?: { register(definition: unknown, options?: { when?: (context: unknown) => boolean }): () => void };
+        }).tools;
         if (!tools || typeof tools.register !== 'function') throw new Error('ToolRuntime.register unavailable on this host');
-        tools.register(build());
+        if (when) {
+          try {
+            tools.register(build(), { when });
+          } catch {
+            // Old host without ToolRegistrationOptions: register plainly; the
+            // tool's execute-time check enforces the same gate.
+            tools.register(build());
+            audit({ event: `${name}_tool_when_unsupported` });
+          }
+        } else {
+          tools.register(build());
+        }
         audit({ event: `${name}_tool_registered` });
       } catch (e) {
         audit({ event: `${name}_tool_register_failed`, error: String(e).slice(0, 160) });
@@ -453,7 +589,18 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // is a plain object (no dsh-tools import); a host without a registerable
   // ToolRuntime degrades to an audit line only.
   if (config.ledgerTool !== false) {
-    registerGlobalTool('ledger', () => buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
+    // N16①: the chat tools are the MAIN markDone path — a completion the
+    // archive dedupes away (retry window) must still leave an audit line.
+    const auditBookLine = (entry: Record<string, unknown>): void => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+      } catch { /* audit must never break the tool call */ }
+    };
+    registerGlobalTool('ledger', () => buildLedgerTool(guard, ledgerFilePath(paths.dataDir), auditBookLine));
+    // 错题本 as a model tool (v2.3.0) — same registration pattern and the SAME
+    // switch: a user who turns the ledger tool off expects no model-visible
+    // books, and this book is one of them. No new schema field.
+    registerGlobalTool('corrections', () => buildCorrectionsTool(guard, correctionsFilePath(paths.dataDir), auditBookLine));
   }
 
   // ── Seed report tool (v1.9.0): the persona files ONE report per delivery ─
@@ -461,17 +608,55 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   // that replaced containment-match attribution. Same global-layer pattern as
   // the ledger tool; the engine room never sees it.
   if (config.seedReportTool !== false) {
-    registerGlobalTool('seed_report', () => buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+    // The audit sink is passed in (rather than the file path) to match the other
+    // tools and to keep report.ts free of I/O beyond its own ring.
+    const auditReportLine = (entry: Record<string, unknown>): void => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + '/heartbeat.jsonl'), entry);
+      } catch {
+        // same rule as in the tool: an audit write must never fail the beat
+      }
+    };
+    registerGlobalTool('seed_report', () =>
+      buildSeedReportTool(
+        guard,
+        reportFilePath(paths.dataDir),
+        () => concludeSilentTurnRef,
+        auditReportLine,
+        () => getCurrentDeliveryId(),
+        // P1-1 (2.3.0, 账本 #d891e0): the lock is unconditional inside the
+        // tool — a self-invented or repeated delivery id is always rejected;
+        // this wiring only supplies the live-id getter and the audit sink.
+        { onRejected: auditReportLine },
+      ));
   }
 
   // ── 心事匣 (v2.0.0): one note she leaves for the next beat ──────────────
-  // Same global-layer pattern, and the same reason as above: the engine room
-  // never sees this tool. It does not need to — the note reaches the next beat
-  // through the delivery package (material.ts notepadLines), which the engine
-  // room builds but never authors. Storage is encrypted (it is more private
-  // than the ledger), so the module goes through the vault, not plain text.
+  // 2.3.0 P0-3: registered CONDITIONALLY — the host's `when` hides the tool's
+  // declaration outside delivery sessions (AGENTS.md §2.1's "deliver: true
+  // receives 4 tools"). The engine room never sees it either way (preset
+  // restrict stays). A host without `when` falls back to the execute-time
+  // check inside the tool. The note reaches the next beat through the delivery
+  // package (material.ts notepadLines), which the engine room builds but never
+  // authors. Storage is encrypted (it is more private than the ledger).
   if (config.notepadTool !== false) {
-    registerGlobalTool('notepad', () => buildNotepadTool(guard, notepadFilePath(paths.dataDir)));
+    const notepadAuditFile = paths.logsDir + '/heartbeat.jsonl';
+    const notepadAllowed = (session: { id?: string } | undefined): boolean => {
+      if (!session?.id) return false;
+      return deliverySessionVerdict(session as HostSession).allowed;
+    };
+    registerGlobalTool(
+      'notepad',
+      () => buildNotepadTool(guard, notepadFilePath(paths.dataDir), {
+        isDeliverySession: (session) => notepadAllowed(session),
+        onBlocked: (sessionId) => {
+          try {
+            appendAuditLine(guard.assert(notepadAuditFile), { event: 'notepad_blocked', sessionId });
+          } catch { /* audit must never break the tool */ }
+        },
+      }),
+      (context) => notepadAllowed((context as { agent?: { session?: { id?: string } } }).agent?.session),
+    );
   }
 
   // ── 摘抄本 (v2.0.0): a line worth keeping, kept in plain text ───────────
@@ -517,6 +702,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
   registerStatusbarSection(ctx, guard, paths, {
     enabled: () => statusbarEnabledRef,
     reader: statusReader,
+    isDeliverSession: deliverySessionVerdict,
   });
   ctx.effect(() => {
     registerTimeInjection(ctx, guard, paths.dataDir, {
@@ -537,6 +723,7 @@ export function apply(ctx: OrchestratorDeps['ctx'] & {
         }
         return track === 'pre-step' ? renderStatusText(statusReader.read(guard, paths)) : '';
       },
+      isDeliverSession: deliverySessionVerdict,
     });
     return undefined;
   }, 'heartbeat: time injection');

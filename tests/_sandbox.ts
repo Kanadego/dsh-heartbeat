@@ -28,17 +28,25 @@ export function sandboxDir(prefix: string): string {
   if (!hooked) {
     hooked = true;
     process.on('exit', () => {
-      for (const d of dirs) {
-        try {
-          fs.rmSync(d, { recursive: true, force: true });
-        } catch {
-          // A failed cleanup must not turn a green run red.
-        }
-      }
-      dirs.clear();
+      cleanupSandboxes();
       if (originalDshHome === undefined) delete process.env.DSH_HOME;
       else process.env.DSH_HOME = originalDshHome;
     });
   }
   return dir;
+}
+
+/** Remove every sandbox this process created so far (the exit hook is the
+ *  backstop). Files that create one sandbox per case can call this from their
+ *  file-level `after` so a run leaves %TEMP% at its pre-run level instead of
+ *  relying on process exit alone. Idempotent. */
+export function cleanupSandboxes(): void {
+  for (const d of dirs) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true });
+    } catch {
+      // A failed cleanup must not turn a green run red.
+    }
+  }
+  dirs.clear();
 }

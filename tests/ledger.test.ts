@@ -7,6 +7,7 @@ import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/pat
 import { createPathGuard } from '../src/core/path-guard.js';
 import {
   appendEntry,
+  ledgerDoneFilePath,
   ledgerFilePath,
   markDone,
   pendingOlderThan,
@@ -58,9 +59,11 @@ test('markDone works by id and by unique substring, tolerant to hand edits', () 
   const e2 = appendEntry(guard, file, '托付事项 beta', Date.parse('2026-09-04T10:00:00'));
   assert.ok(markDone(guard, file, 'beta'));
   assert.equal(scanPending(guard, file).length, 0);
-  // both entries present as done
+  // 2.3.0 live-only: the book is clean, the archive carries both completions
   const { entries } = readLedger(guard, file);
-  assert.equal(entries.filter((x) => x.status === 'done').length, 2);
+  assert.equal(entries.filter((x) => x.status === 'done').length, 0);
+  const archive = readLedger(guard, ledgerDoneFilePath(workspace().dataDir));
+  assert.equal(archive.entries.filter((x) => x.status === 'done').length, 2);
   void e2;
 });
 
@@ -90,7 +93,7 @@ test('a hand-written id parses like a generated one', () => {
   assert.equal(scanPending(guard, file).length, 1);
   assert.ok(markDone(guard, file, 'net-backup-20260914'));
   assert.equal(scanPending(guard, file).length, 0);
-  assert.ok(fs.readFileSync(file, 'utf8').includes('[done][#net-backup-20260914]'));
+  assert.ok(fs.readFileSync(ledgerDoneFilePath(workspace().dataDir), 'utf8').includes('[done][#net-backup-20260914]'));
 });
 
 test('pendingOlderThan flags stale open items (跟进时机)', () => {

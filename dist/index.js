@@ -3,6 +3,7 @@ import {
   applyHeartbeatInterval,
   buildDigest,
   buildSeedReportTool,
+  checkDeliverySession,
   clearNote,
   formatFocusClock,
   getFocusUntil,
@@ -10,6 +11,7 @@ import {
   homeSessionId,
   inQuietHours,
   isArchivedSession,
+  isSubagentSession,
   notepadFilePath,
   notepadView,
   parseArchivedSessionIds,
@@ -24,12 +26,12 @@ import {
   sessionEvents,
   startOrchestrator,
   writeNote
-} from "./chunk-GQRQJH3S.js";
+} from "./chunk-ABFO4QII.js";
 import {
   bilibiliSessionFilePath,
   createBiliLoginService,
   saveBiliSession
-} from "./chunk-SIY3YHFY.js";
+} from "./chunk-MMI6OBEC.js";
 import {
   EXCERPT_HEADER,
   appendExcerpt,
@@ -44,24 +46,35 @@ import {
   removeExcerpt,
   updateUserPolicy,
   userPresetRoot
-} from "./chunk-F2XVKX55.js";
+} from "./chunk-KGOC6EX4.js";
 import {
+  CORRECTIONS_DONE_HEADER,
+  CORRECTIONS_HEADER,
+  LEDGER_DONE_HEADER,
+  LEDGER_HEADER,
+  appendArchiveLines,
   appendEntry,
+  correctionsDoneFilePath,
+  correctionsFilePath,
+  ledgerDoneFilePath,
   ledgerFilePath,
   listWeeklyReports,
   localDayKey,
   markDone,
+  parseLedgerLine,
   readLedger,
   readWeeklyReport,
-  scanPending
-} from "./chunk-XYBII5PR.js";
+  scanPending,
+  seedBookFile
+} from "./chunk-HSTGRQLP.js";
 import {
   openPath
 } from "./chunk-OCBE2AKW.js";
 import {
+  getCurrentDeliveryId,
   getRuntime,
   setRuntime
-} from "./chunk-G6SSY5PL.js";
+} from "./chunk-5CVAW5AS.js";
 import {
   activeSeeds,
   addSeed,
@@ -71,35 +84,37 @@ import {
   loadPool,
   restoreSeed,
   seedsFilePath
-} from "./chunk-N6SMIGYJ.js";
-import {
-  clearFocusState,
-  readFocusState,
-  writeFocusState
-} from "./chunk-LQKOYTRL.js";
-import "./chunk-KZLVR4J7.js";
-import "./chunk-DLOYERAK.js";
-import {
-  appendAuditLine,
-  loadProfile,
-  profileFilePath
-} from "./chunk-ECXYNTEV.js";
-import {
-  dshHomeDir,
-  initWorkspace,
-  loadJson,
-  saveJson,
-  writeText
-} from "./chunk-M72T5MZU.js";
+} from "./chunk-QOLKUYQ3.js";
 import {
   addBinding,
   loadBindings,
   removeBinding
-} from "./chunk-3DNGY4DS.js";
+} from "./chunk-77UYDI2A.js";
+import {
+  clearFocusState,
+  readFocusState,
+  writeFocusState
+} from "./chunk-4OQXAHU5.js";
+import "./chunk-IPTNSXOY.js";
+import "./chunk-JIRQ36F7.js";
+import {
+  appendAuditLine,
+  loadProfile,
+  profileFilePath
+} from "./chunk-K47VV6IQ.js";
+import {
+  dshHomeDir,
+  initWorkspace,
+  loadJson,
+  readText,
+  saveJson,
+  withFileLock,
+  writeText
+} from "./chunk-GOLMRQRW.js";
 import {
   atomicWriteFileSync,
   atomicWriteJsonSync
-} from "./chunk-IBBAISSW.js";
+} from "./chunk-66IUDHCY.js";
 
 // src/index.ts
 import z from "@deepseek-ai/schemastery";
@@ -129,6 +144,7 @@ function sanitize(raw) {
   if (r.visionEngine === "" || r.visionEngine === "auto" || r.visionEngine === "native" || r.visionEngine === "modlens") {
     out.visionEngine = r.visionEngine;
   }
+  if (typeof r.concludeSilentTurn === "boolean") out.concludeSilentTurn = r.concludeSilentTurn;
   return out;
 }
 function uiConfigPath(settingsDir) {
@@ -273,6 +289,120 @@ function setWanderWindows(guard, paths, rawWindows) {
 // src/statusbar/time-inject.ts
 import fs3 from "fs";
 import path3 from "path";
+
+// src/statusbar/track.ts
+var capabilityCache = /* @__PURE__ */ new Map();
+function supportsInHistory(session) {
+  const key = session.id;
+  const len = sessionEventCount(session);
+  const hit = capabilityCache.get(key);
+  if (hit && hit.scannedUpTo === len) return hit.supported;
+  const from = hit && len >= hit.scannedUpTo ? hit.scannedUpTo : 0;
+  let supported = false;
+  if (from !== 0 && hit) supported = hit.supported;
+  const readTail = (fromSeq) => {
+    if (typeof session.snapshotEvents === "function") {
+      try {
+        const slice = session.snapshotEvents(fromSeq);
+        if (Array.isArray(slice)) return slice;
+      } catch {
+      }
+    }
+    return sessionEvents(session).slice(fromSeq);
+  };
+  for (const e of readTail(from)) {
+    if (e.type === "request/context") {
+      supported = e.data?.systemPromptUpdate === "in-history";
+    }
+  }
+  capabilityCache.set(key, { scannedUpTo: len, supported });
+  return supported;
+}
+var SCENE_LABELS = {
+  "quiet-hours": "\u9759\u9ED8\u65F6\u6BB5\uFF0C\u4E16\u754C\u7761\u4E86",
+  "just-spoke": "\u521A\u53BB\u548C\u4F60\u8BF4\u8FC7\u8BDD",
+  wandering: "\u6B63\u5728\u95F2\u901B\u770B\u65B0\u4E1C\u897F",
+  busy: "\u770B\u5230\u4F60\u5728\u5FD9\uFF0C\u4E0D\u53BB\u6253\u6270",
+  present: "\u5728\u573A\u5F85\u7740",
+  away: "\u4F60\u4E0D\u5728\uFF0C\u81EA\u5DF1\u5F85\u7740"
+};
+function renderStatusText(status, opts) {
+  if (!status) return "";
+  const label = SCENE_LABELS[status.scene] ?? "\u5728\u573A";
+  const note = opts?.withNote === false ? "" : status.note ? `\u2014\u2014${status.note}` : "";
+  return `\u5FC3\u8DF3\u6B64\u523B\uFF1A${label}${note}\u3002`;
+}
+var pinnedTrack = /* @__PURE__ */ new Map();
+function pinTrack(sessionId, session) {
+  const track = trackFor(session);
+  pinnedTrack.set(sessionId, track);
+  return track;
+}
+function pinnedTrackFor(sessionId, session) {
+  return pinnedTrack.get(sessionId) ?? trackFor(session);
+}
+var lastTrack = /* @__PURE__ */ new Map();
+function noteTrack(auditFile, sessionId, track) {
+  if (lastTrack.get(sessionId) === track) return;
+  lastTrack.set(sessionId, track);
+  try {
+    appendAuditLine(auditFile, { event: "statusbar_track", sessionId, track });
+  } catch {
+  }
+}
+var lastSkip = /* @__PURE__ */ new Map();
+function noteStatusbarSkip(auditFile, sessionId, reason) {
+  if (reason === null) {
+    lastSkip.delete(sessionId);
+    return;
+  }
+  if (lastSkip.get(sessionId) === reason) return;
+  lastSkip.set(sessionId, reason);
+  try {
+    appendAuditLine(auditFile, { event: "statusbar_skipped", sessionId, reason });
+  } catch {
+  }
+}
+function trackFor(session) {
+  return supportsInHistory(session) ? "system-prompt" : "pre-step";
+}
+function registerStatusbarSection(ctx, guard, paths, opts) {
+  ctx.inject(["systemPrompt"], (scoped) => {
+    const spCtx = scoped;
+    const section = spCtx.systemPrompt?.section;
+    if (typeof section !== "function") {
+      spCtx.logger?.warn("heartbeat: systemPrompt service has no section API, statusbar Track A unavailable");
+      return;
+    }
+    spCtx.effect(() => section.call(spCtx.systemPrompt, {
+      name: "heartbeat:status",
+      order: 5e3,
+      // between the persona prefix (0) and the harness block (10000)
+      text: (context) => {
+        if (!opts.enabled()) {
+          noteTrack(paths.logsDir + "/heartbeat.jsonl", context.agent?.session.id ?? "(none)", "off");
+          return "";
+        }
+        const agent = context.agent;
+        if (!agent?.session) return "";
+        if (opts.isDeliverSession) {
+          const delivery = opts.isDeliverSession(agent.session);
+          if (!delivery.allowed) {
+            noteStatusbarSkip(paths.logsDir + "/heartbeat.jsonl", agent.session.id, delivery.reason ?? "not-deliver");
+            return "";
+          }
+          noteStatusbarSkip(paths.logsDir + "/heartbeat.jsonl", agent.session.id, null);
+        }
+        const track = pinnedTrackFor(agent.session.id, agent.session);
+        noteTrack(paths.logsDir + "/heartbeat.jsonl", agent.session.id, track);
+        if (track !== "system-prompt") return "";
+        return renderStatusText(opts.reader.read(guard, paths), { withNote: false });
+      }
+    }), "heartbeat: statusbar section");
+  });
+}
+
+// src/statusbar/time-inject.ts
 function shouldInjectTime(input) {
   if (input.step !== 1) return false;
   if (!input.originIsUserSplice) return false;
@@ -295,13 +425,6 @@ function turnOriginIsUserSplice(session) {
     return inserted.some((m) => m?.source?.kind === "user");
   }
   return false;
-}
-function isSubagentSession(session) {
-  if (!session) return false;
-  const header = session.header;
-  if (header?.origin === "subagent") return true;
-  if (typeof header?.delegationDepth === "number" && header.delegationDepth > 0) return true;
-  return sessionEvents(session).slice(0, 8).some((e) => e?.type === "subagent/descriptor");
 }
 function formatElapsed(ms) {
   const minutes = Math.max(1, Math.round(ms / 6e4));
@@ -391,9 +514,15 @@ function registerTimeInjection(ctx, guard, dataDir, opts) {
         lastMessageTime: lastMessageTime(payload.agent.session)
       });
       if (opts.getStatusLine && track) {
-        const statusLine = opts.getStatusLine(payload.agent.session, track);
-        if (statusLine) text += `
+        const delivery = opts.isDeliverSession?.(payload.agent.session);
+        if (delivery && !delivery.allowed) {
+          noteStatusbarSkip(opts.paths.logsDir + "/heartbeat.jsonl", sessionId, delivery.reason ?? "not-deliver");
+        } else {
+          if (delivery) noteStatusbarSkip(opts.paths.logsDir + "/heartbeat.jsonl", sessionId, null);
+          const statusLine = opts.getStatusLine(payload.agent.session, track);
+          if (statusLine) text += `
 ${statusLine}`;
+        }
       }
       const message = createUserMessage({
         content: [{ type: "text", text }],
@@ -538,7 +667,7 @@ function buildEndpoints(deps, isLive) {
       }
       let flags = { statusbarEnabled: true, timeInjectMin: 25, idleMode: false };
       try {
-        const { getRuntime: getRuntime2 } = await import("./runtime-JC3OBRMZ.js");
+        const { getRuntime: getRuntime2 } = await import("./runtime-RGZKOFP3.js");
         const f = getRuntime2().flags;
         flags = { statusbarEnabled: f.statusbarEnabled(), timeInjectMin: f.timeInjectMin(), idleMode: f.idleMode() };
       } catch {
@@ -715,7 +844,7 @@ function buildEndpoints(deps, isLive) {
         return err("bad-request", "config.set needs a patch object");
       }
       const keys = Object.keys(patch).filter(
-        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "visionEngine", "psyEnabled", "quietStart", "quietEnd"].includes(k)
+        (k) => ["intervalMin", "maxDailySend", "timeInjectMin", "statusbar", "idleMode", "tokenSaver", "visionEngine", "concludeSilentTurn", "psyEnabled", "quietStart", "quietEnd"].includes(k)
       );
       if (keys.length === 0) return err("bad-request", "config.set has no recognized field");
       try {
@@ -778,7 +907,29 @@ function buildEndpoints(deps, isLive) {
     },
     "ledger.open"() {
       const f = ledgerFilePath(paths.dataDir);
-      if (!fs4.existsSync(guard.assert(f))) fs4.writeFileSync(f, "# \u8D26\u672C\n", "utf8");
+      seedBookFile(guard, f, LEDGER_HEADER);
+      openPath(f);
+      return ok({ path: f });
+    },
+    // 2.3.0: the live book only shows open rows; the archive is a read-only
+    // companion (same button row in the card). Missing archive = empty file.
+    "ledger.openDone"() {
+      const f = ledgerDoneFilePath(paths.dataDir);
+      seedBookFile(guard, f, LEDGER_DONE_HEADER);
+      openPath(f);
+      return ok({ path: f });
+    },
+    // 错题本 (v2.3.0): same two-button semantics as the ledger; `pending` is
+    // the count of unreviewed rows in the live book.
+    "corrections.open"() {
+      const f = correctionsFilePath(paths.dataDir);
+      seedBookFile(guard, f, CORRECTIONS_HEADER);
+      openPath(f);
+      return ok({ path: f, pending: scanPending(guard, f).length });
+    },
+    "corrections.openDone"() {
+      const f = correctionsDoneFilePath(paths.dataDir);
+      seedBookFile(guard, f, CORRECTIONS_DONE_HEADER);
       openPath(f);
       return ok({ path: f });
     },
@@ -798,7 +949,7 @@ function buildEndpoints(deps, isLive) {
     async "migrate.export"(p) {
       const passphrase = String(p.passphrase ?? "");
       if (!passphrase) return err("bad-request", "\u9700\u8981\u8BBE\u7F6E\u53E3\u4EE4");
-      const { collectMigrationEntries, encryptContainer } = await import("./migrate-XFZU5EBE.js");
+      const { collectMigrationEntries, encryptContainer } = await import("./migrate-6HH2ZARV.js");
       const { entries } = collectMigrationEntries(guard, paths);
       if (entries.length === 0) return err("bad-request", "\u6CA1\u6709\u53EF\u6253\u5305\u7684\u8BB0\u5FC6\u6587\u4EF6\uFF08data/ \u662F\u7A7A\u7684\uFF09");
       const out = path4.join(paths.exportsDir, `heartbeat-memory-${localDayKey()}.hbmig`);
@@ -810,7 +961,7 @@ function buildEndpoints(deps, isLive) {
       const passphrase = String(p.passphrase ?? "");
       const file = String(p.file ?? "");
       if (!passphrase || !file) return err("bad-request", "\u9700\u8981\u5BB9\u5668\u8DEF\u5F84\u4E0E\u53E3\u4EE4");
-      const { decryptContainer, applyMigrationEntries } = await import("./migrate-XFZU5EBE.js");
+      const { decryptContainer, applyMigrationEntries } = await import("./migrate-6HH2ZARV.js");
       let text;
       try {
         text = fs4.readFileSync(file, "utf8");
@@ -905,97 +1056,6 @@ function installHeartbeatRpc(ctx, deps) {
   });
 }
 
-// src/statusbar/track.ts
-var capabilityCache = /* @__PURE__ */ new Map();
-function supportsInHistory(session) {
-  const key = session.id;
-  const len = sessionEventCount(session);
-  const hit = capabilityCache.get(key);
-  if (hit && hit.scannedUpTo === len) return hit.supported;
-  const from = hit && len >= hit.scannedUpTo ? hit.scannedUpTo : 0;
-  let supported = false;
-  if (from !== 0 && hit) supported = hit.supported;
-  const readTail = (fromSeq) => {
-    if (typeof session.snapshotEvents === "function") {
-      try {
-        const slice = session.snapshotEvents(fromSeq);
-        if (Array.isArray(slice)) return slice;
-      } catch {
-      }
-    }
-    return sessionEvents(session).slice(fromSeq);
-  };
-  for (const e of readTail(from)) {
-    if (e.type === "request/context") {
-      supported = e.data?.systemPromptUpdate === "in-history";
-    }
-  }
-  capabilityCache.set(key, { scannedUpTo: len, supported });
-  return supported;
-}
-var SCENE_LABELS = {
-  "quiet-hours": "\u9759\u9ED8\u65F6\u6BB5\uFF0C\u4E16\u754C\u7761\u4E86",
-  "just-spoke": "\u521A\u53BB\u548C\u4F60\u8BF4\u8FC7\u8BDD",
-  wandering: "\u6B63\u5728\u95F2\u901B\u770B\u65B0\u4E1C\u897F",
-  busy: "\u770B\u5230\u4F60\u5728\u5FD9\uFF0C\u4E0D\u53BB\u6253\u6270",
-  present: "\u5728\u573A\u5F85\u7740",
-  away: "\u4F60\u4E0D\u5728\uFF0C\u81EA\u5DF1\u5F85\u7740"
-};
-function renderStatusText(status, opts) {
-  if (!status) return "";
-  const label = SCENE_LABELS[status.scene] ?? "\u5728\u573A";
-  const note = opts?.withNote === false ? "" : status.note ? `\u2014\u2014${status.note}` : "";
-  return `\u5FC3\u8DF3\u6B64\u523B\uFF1A${label}${note}\u3002`;
-}
-var pinnedTrack = /* @__PURE__ */ new Map();
-function pinTrack(sessionId, session) {
-  const track = trackFor(session);
-  pinnedTrack.set(sessionId, track);
-  return track;
-}
-function pinnedTrackFor(sessionId, session) {
-  return pinnedTrack.get(sessionId) ?? trackFor(session);
-}
-var lastTrack = /* @__PURE__ */ new Map();
-function noteTrack(auditFile, sessionId, track) {
-  if (lastTrack.get(sessionId) === track) return;
-  lastTrack.set(sessionId, track);
-  try {
-    appendAuditLine(auditFile, { event: "statusbar_track", sessionId, track });
-  } catch {
-  }
-}
-function trackFor(session) {
-  return supportsInHistory(session) ? "system-prompt" : "pre-step";
-}
-function registerStatusbarSection(ctx, guard, paths, opts) {
-  ctx.inject(["systemPrompt"], (scoped) => {
-    const spCtx = scoped;
-    const section = spCtx.systemPrompt?.section;
-    if (typeof section !== "function") {
-      spCtx.logger?.warn("heartbeat: systemPrompt service has no section API, statusbar Track A unavailable");
-      return;
-    }
-    spCtx.effect(() => section.call(spCtx.systemPrompt, {
-      name: "heartbeat:status",
-      order: 5e3,
-      // between the persona prefix (0) and the harness block (10000)
-      text: (context) => {
-        if (!opts.enabled()) {
-          noteTrack(paths.logsDir + "/heartbeat.jsonl", context.agent?.session.id ?? "(none)", "off");
-          return "";
-        }
-        const agent = context.agent;
-        if (!agent?.session) return "";
-        const track = pinnedTrackFor(agent.session.id, agent.session);
-        noteTrack(paths.logsDir + "/heartbeat.jsonl", agent.session.id, track);
-        if (track !== "system-prompt") return "";
-        return renderStatusText(opts.reader.read(guard, paths), { withNote: false });
-      }
-    }), "heartbeat: statusbar section");
-  });
-}
-
 // src/core/preset-definition.ts
 function heartbeatPresetDefinition(id = "heartbeat") {
   return {
@@ -1059,16 +1119,16 @@ function clean(v) {
 function fmtEntry(e) {
   return `#${e.id} [${e.status}] ${e.date} ${e.text}`;
 }
-function buildLedgerTool(guard, file) {
+function buildBookTool(guard, file, labels, audit) {
   return {
-    name: "ledger",
-    description: '\u5171\u4EAB\u8D26\u672C\u5DE5\u5177\uFF08\u5FC3\u8DF3\u63D2\u4EF6\u7684\u5F85\u529E\u4E0E\u4E8B\u9879\u8BB0\u5F55\uFF09\u3002\u5F53\u7528\u6237\u63D0\u5230\u8BA1\u5212\u3001\u5F85\u529E\u3001\u627F\u8BFA\u3001\u60F3\u505A\u7684\u4E8B\uFF0C\u6216\u8005\u67D0\u4EF6\u4E8B\u5DF2\u7ECF\u5B8C\u6210\u65F6\uFF0C\u4E3B\u52A8\u8C03\u7528\u672C\u5DE5\u5177\u767B\u8BB0\u6216\u52FE\u6389\u2014\u2014\u4E0D\u9700\u8981\u7B49\u7528\u6237\u660E\u786E\u8BF4"\u8BB0\u4E00\u4E0B"\u3002action=add \u767B\u8BB0\u65B0\u4E8B\u9879\uFF08text \u5FC5\u586B\uFF09\uFF1Baction=list \u67E5\u770B\u5F53\u524D\u672A\u5B8C\u6210\u4E8B\u9879\uFF1Baction=done \u52FE\u6389\u4E00\u6761\uFF08key \u4E3A #id \u6216\u6587\u672C\u5B50\u4E32\uFF09\u3002',
+    name: labels.name,
+    description: labels.description,
     parameters: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["add", "list", "done"], description: "add=\u767B\u8BB0\uFF0Clist=\u67E5\u672A\u5B8C\u6210\uFF0Cdone=\u52FE\u6389" },
-        text: { type: "string", description: "action=add \u65F6\u5FC5\u586B\uFF1A\u4E8B\u9879\u5185\u5BB9\uFF08\u4E00\u53E5\u8BDD\uFF09" },
-        key: { type: "string", description: "action=done \u65F6\u5FC5\u586B\uFF1A#id \u6216\u4E8B\u9879\u6587\u672C\u7684\u552F\u4E00\u5B50\u4E32" }
+        text: { type: "string", description: labels.textHint },
+        key: { type: "string", description: labels.keyHint }
       },
       required: ["action"],
       additionalProperties: false
@@ -1089,7 +1149,7 @@ function buildLedgerTool(guard, file) {
       }
     },
     timeoutMs: 5e3,
-    // Ledger writes go through read-modify-write on one file; never parallel.
+    // Both books write through read-modify-write on one file; never parallel.
     isConcurrencySafe: () => false,
     async execute(args) {
       const a = args ?? {};
@@ -1097,25 +1157,141 @@ function buildLedgerTool(guard, file) {
       if (action === "add") {
         const text = clean(a.text);
         if (!text) return { ok: false, message: "add \u9700\u8981\u975E\u7A7A text" };
-        const e = appendEntry(guard, file, text);
-        return { ok: true, message: `\u5DF2\u767B\u8BB0 ${fmtEntry(e)}` };
+        const e = appendEntry(guard, file, text, Date.now(), labels.header);
+        return { ok: true, message: `${labels.addedVerb} ${fmtEntry(e)}` };
       }
       if (action === "done") {
         const key = clean(a.key);
-        if (!key) return { ok: false, message: "done \u9700\u8981 key\uFF08#id \u6216\u6587\u672C\u5B50\u4E32\uFF09" };
-        const e = markDone(guard, file, key);
-        if (!e) return { ok: false, message: `\u6CA1\u6709\u627E\u5230\u5339\u914D\u300C${key}\u300D\u7684\u672A\u5B8C\u6210\u4E8B\u9879\uFF08\u5148\u7528 list \u67E5\uFF09` };
-        return { ok: true, message: `\u5DF2\u5B8C\u6210 ${fmtEntry(e)}` };
+        if (!key) return { ok: false, message: `done \u9700\u8981 key\uFF08#id \u6216\u6587\u672C\u5B50\u4E32\uFF09` };
+        const e = markDone(guard, file, key, Date.now(), void 0, void 0, audit);
+        if (!e) return { ok: false, message: `\u6CA1\u6709\u627E\u5230\u5339\u914D\u300C${key}\u300D\u7684${labels.listNoun}\uFF08\u5148\u7528 list \u67E5\uFF09` };
+        return { ok: true, message: `${labels.doneVerb} ${fmtEntry(e)}` };
       }
       if (action === "list") {
         const items = scanPending(guard, file).map(fmtEntry);
-        return { ok: true, message: items.length > 0 ? `\u5F53\u524D\u672A\u5B8C\u6210 ${items.length} \u9879\uFF1A
-${items.join("\n")}` : "\u8D26\u672C\u91CC\u6CA1\u6709\u672A\u5B8C\u6210\u4E8B\u9879" };
+        return {
+          ok: true,
+          message: items.length > 0 ? `${labels.listTitle} ${items.length} \u9879\uFF1A
+${items.join("\n")}` : `${labels.bookName}\u91CC\u6CA1\u6709${labels.listNoun}`
+        };
       }
       const total = readLedger(guard, file).entries.length;
-      return { ok: false, message: `\u672A\u77E5 action\uFF0C\u8D26\u672C\u5171 ${total} \u6761` };
+      return { ok: false, message: `\u672A\u77E5 action\uFF0C${labels.bookName}\u5171 ${total} \u6761` };
     }
   };
+}
+var LEDGER_LABELS = {
+  name: "ledger",
+  header: LEDGER_HEADER,
+  description: '\u5171\u4EAB\u8D26\u672C\u5DE5\u5177\uFF08\u5FC3\u8DF3\u63D2\u4EF6\u7684\u5F85\u529E\u4E0E\u4E8B\u9879\u8BB0\u5F55\uFF09\u3002\u5F53\u7528\u6237\u63D0\u5230\u8BA1\u5212\u3001\u5F85\u529E\u3001\u627F\u8BFA\u3001\u60F3\u505A\u7684\u4E8B\uFF0C\u6216\u8005\u67D0\u4EF6\u4E8B\u5DF2\u7ECF\u5B8C\u6210\u65F6\uFF0C\u4E3B\u52A8\u8C03\u7528\u672C\u5DE5\u5177\u767B\u8BB0\u6216\u52FE\u6389\u2014\u2014\u4E0D\u9700\u8981\u7B49\u7528\u6237\u660E\u786E\u8BF4"\u8BB0\u4E00\u4E0B"\u3002action=add \u767B\u8BB0\u65B0\u4E8B\u9879\uFF08text \u5FC5\u586B\uFF09\uFF1Baction=list \u67E5\u770B\u5F53\u524D\u672A\u5B8C\u6210\u4E8B\u9879\uFF1Baction=done \u52FE\u6389\u4E00\u6761\uFF08key \u4E3A #id \u6216\u6587\u672C\u5B50\u4E32\uFF09\u3002',
+  addedVerb: "\u5DF2\u767B\u8BB0",
+  doneVerb: "\u5DF2\u5B8C\u6210",
+  listTitle: "\u5F53\u524D\u672A\u5B8C\u6210",
+  listNoun: "\u672A\u5B8C\u6210\u4E8B\u9879",
+  bookName: "\u8D26\u672C",
+  textHint: "action=add \u65F6\u5FC5\u586B\uFF1A\u4E8B\u9879\u5185\u5BB9\uFF08\u4E00\u53E5\u8BDD\uFF09",
+  keyHint: "action=done \u65F6\u5FC5\u586B\uFF1A#id \u6216\u4E8B\u9879\u6587\u672C\u7684\u552F\u4E00\u5B50\u4E32"
+};
+var CORRECTIONS_LABELS = {
+  name: "corrections",
+  header: CORRECTIONS_HEADER,
+  description: '\u9519\u9898\u672C\u5DE5\u5177\uFF08\u8BB0\u5F55\u7528\u6237\u5BF9\u4F60\u7684\u7EA0\u6B63\uFF09\u3002\u5F53\u7528\u6237\u6307\u51FA\u4F60\u8BF4\u9519\u4E86\u3001\u505A\u9519\u4E86\u3001\u8BB0\u9519\u4E86\uFF0C\u6216\u8005\u7EA0\u6B63\u4F60\u7684\u8BF4\u6CD5\u4E0E\u505A\u6CD5\u65F6\uFF0C\u4E3B\u52A8\u8C03\u7528\u672C\u5DE5\u5177\u8BB0\u4E00\u6761\u2014\u2014\u4E0D\u9700\u8981\u7B49\u7528\u6237\u8BF4"\u8BB0\u4E00\u4E0B"\u3002action=add \u8BB0\u4E00\u6761\u7EA0\u6B63\uFF08text \u5FC5\u586B\uFF0C\u4E00\u53E5\u8BDD\u5199\u6E05\u7528\u6237\u7EA0\u6B63\u4E86\u4EC0\u4E48\uFF09\uFF1Baction=list \u67E5\u770B\u8FD8\u6CA1\u590D\u76D8\u7684\u6761\u76EE\uFF1Baction=done \u52FE\u6389\u4E00\u6761\uFF08key \u4E3A #id \u6216\u6587\u672C\u5B50\u4E32\uFF09\u2014\u2014\u52FE\u6389\u8868\u793A\u8FD9\u6761\u6559\u8BAD\u5DF2\u7ECF\u5199\u8FDB\u4EBA\u8BBE\u5361\u6216\u957F\u671F\u8BB0\u5FC6\u3002',
+  addedVerb: "\u5DF2\u8BB0\u4E0B",
+  doneVerb: "\u5DF2\u590D\u76D8",
+  listTitle: "\u5F85\u590D\u76D8",
+  listNoun: "\u5F85\u590D\u76D8\u6761\u76EE",
+  bookName: "\u9519\u9898\u672C",
+  textHint: "action=add \u65F6\u5FC5\u586B\uFF1A\u7528\u6237\u7EA0\u6B63\u4E86\u4EC0\u4E48\uFF08\u4E00\u53E5\u8BDD\uFF09",
+  keyHint: "action=done \u65F6\u5FC5\u586B\uFF1A#id \u6216\u7EA0\u6B63\u6587\u672C\u7684\u552F\u4E00\u5B50\u4E32"
+};
+function buildLedgerTool(guard, file, audit) {
+  return buildBookTool(guard, file, LEDGER_LABELS, audit);
+}
+function buildCorrectionsTool(guard, file, audit) {
+  return buildBookTool(guard, file, CORRECTIONS_LABELS, audit);
+}
+
+// src/ledger/archive.ts
+import fs5 from "fs";
+import path5 from "path";
+var STATE_FILE = "state.json";
+function stateFilePath(settingsDir) {
+  return path5.join(settingsDir, STATE_FILE);
+}
+function readState(guard, settingsDir) {
+  try {
+    const raw = readText(guard, stateFilePath(settingsDir), "");
+    if (!raw.trim()) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function writeState(guard, settingsDir, state) {
+  writeText(guard, stateFilePath(settingsDir), JSON.stringify(state, null, 2) + "\n");
+}
+function bookSpecs(dataDir) {
+  return [
+    {
+      label: "ledger",
+      marker: "ledgerDoneMigrated",
+      mainFile: ledgerFilePath(dataDir),
+      doneFile: ledgerDoneFilePath(dataDir),
+      mainHeader: LEDGER_HEADER,
+      doneHeader: LEDGER_DONE_HEADER
+    },
+    {
+      label: "corrections",
+      marker: "correctionsDoneMigrated",
+      mainFile: correctionsFilePath(dataDir),
+      doneFile: correctionsDoneFilePath(dataDir),
+      mainHeader: CORRECTIONS_HEADER,
+      doneHeader: CORRECTIONS_DONE_HEADER
+    }
+  ];
+}
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+function backupPathFor(guard, file, now) {
+  const d = new Date(now);
+  const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const base = `${file}.bak-${stamp}`;
+  let out = base;
+  for (let i = 1; fs5.existsSync(guard.assert(out)); i += 1) out = `${base}-${i}`;
+  return out;
+}
+function migrateBookDone(guard, spec, settingsDir, audit, now = Date.now()) {
+  return withFileLock(spec.mainFile, () => {
+    const state = readState(guard, settingsDir);
+    if (state[spec.marker] === true) return { skipped: true, count: 0, backup: null };
+    const doneLines = [];
+    const keptLines = [];
+    const exists = fs5.existsSync(guard.assert(spec.mainFile));
+    if (exists) {
+      for (const line of readText(guard, spec.mainFile, spec.mainHeader).split("\n")) {
+        const entry = parseLedgerLine(line);
+        if (entry && entry.status === "done") doneLines.push(line);
+        else keptLines.push(line);
+      }
+    }
+    let backup = null;
+    let appended = 0;
+    if (doneLines.length > 0) {
+      backup = backupPathFor(guard, spec.mainFile, now);
+      fs5.copyFileSync(guard.assert(spec.mainFile), guard.assert(backup));
+      appended = appendArchiveLines(guard, spec.doneFile, spec.doneHeader, doneLines, now);
+      writeText(guard, spec.mainFile, keptLines.join("\n").replace(/\n*$/, "\n"));
+    }
+    state[spec.marker] = true;
+    writeState(guard, settingsDir, state);
+    audit({ event: `${spec.label}_done_migrated`, count: appended, found: doneLines.length });
+    return { skipped: false, count: appended, backup };
+  });
+}
+function runBookDoneMigrations(guard, dataDir, settingsDir, audit, now = Date.now()) {
+  return bookSpecs(dataDir).map((spec) => migrateBookDone(guard, spec, settingsDir, audit, now));
 }
 
 // src/notepad/tool.ts
@@ -1136,7 +1312,7 @@ function fmtView(v) {
   return `\u5FC3\u4E8B\u5323\u91CC\u73B0\u5728\u6709\uFF1A${v.text}
 \uFF08\u7559\u4E8E${beats}\uFF0C\u5DF2\u6401 ${fmtMinutes(v.sinceMinutes)}\uFF0C${wakes}\uFF09`;
 }
-function buildNotepadTool(guard, file) {
+function buildNotepadTool(guard, file, gate = {}) {
   return {
     name: "notepad",
     description: '\u5FC3\u4E8B\u5323\uFF08\u5FC3\u8DF3\u63D2\u4EF6\u7684"\u7559\u7ED9\u4E0B\u4E00\u8DF3\u7684\u81EA\u5DF1"\u4FBF\u7B7E\uFF09\u3002\u53EA\u6709\u4E00\u683C\uFF1A\u5199\u4E0B\u65B0\u7684\u5C31\u76D6\u6389\u65E7\u7684\u3002\u5F53\u4F60\u6709\u8BDD\u60F3\u7559\u5230\u4E0B\u6B21\u5FC3\u8DF3\u518D\u8BF4\u3001\u6216\u8005\u6709\u4E00\u4EF6\u653E\u4E0D\u4E0B\u7684\u4E8B\u65F6\uFF0C\u7528 action=write \u7559\u4E0B\u4E00\u53E5\u5F15\u5B50\u2014\u2014\u4E0D\u8981\u5199\u6574\u6BB5\uFF0C\u4E0B\u6B21\u8DF3\u7531\u90A3\u65F6\u7684\u4F60\u91CD\u65B0\u5C55\u5F00\u3002\u60F3\u7559\u4F4F\u539F\u6765\u7684\u5C31\u7167\u539F\u6837\u518D\u5199\u4E00\u904D\uFF08\u5B57\u6837\u4E00\u81F4\u7B97\u4FDD\u7559\uFF0C\u5B83\u7684\u5E74\u9F84\u4E0D\u4F1A\u91CD\u7B97\uFF09\uFF1B\u5199\u522B\u7684\u5C31\u662F\u6362\u6389\u5B83\u3002action=read \u770B\u73B0\u5728\u683C\u5B50\u91CC\u662F\u4EC0\u4E48\uFF1Baction=clear \u4E3B\u52A8\u653E\u6389\u3002\u6295\u9012\u5305\u8BFB\u8FC7\u4E4B\u540E\uFF0C\u4EC0\u4E48\u90FD\u4E0D\u505A\u5B83\u5C31\u4E0B\u4E00\u8DF3\u6CA1\u4E86\u3002\u7559\u4E0D\u7559\u90FD\u884C\uFF0C\u6CA1\u8BDD\u5C31\u7A7A\u7740\u3002',
@@ -1174,7 +1350,15 @@ function buildNotepadTool(guard, file) {
     timeoutMs: 5e3,
     // Read-modify-write on one file, and the note's lifecycle depends on it.
     isConcurrencySafe: () => false,
-    async execute(args) {
+    async execute(args, exec) {
+      const session = exec?.agent?.session;
+      if (gate.isDeliverySession && session?.id && !gate.isDeliverySession(session)) {
+        try {
+          gate.onBlocked?.(session.id);
+        } catch {
+        }
+        return { ok: false, message: "\u5FC3\u4E8B\u5323\u53EA\u5728\u6295\u9012\u5BF9\u8BDD\u91CC\u7528" };
+      }
       const a = args ?? {};
       const action = String(a.action ?? "");
       try {
@@ -1274,8 +1458,8 @@ ${items.join("\n")}` };
 }
 
 // src/sources/bilibili.ts
-import fs5 from "fs";
-import path5 from "path";
+import fs6 from "fs";
+import path6 from "path";
 var BILI_HISTORY_URL = "https://api.bilibili.com/x/web-interface/history/cursor?ps=8";
 var BILI_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 var BILI_SESSION_FILE = "bilibili-session.json";
@@ -1298,7 +1482,7 @@ function readVaultSessdata(guard, dataDir) {
   try {
     const session = loadJson(
       guard,
-      path5.join(dataDir, BILI_SESSION_FILE)
+      path6.join(dataDir, BILI_SESSION_FILE)
     );
     const field = session?.sessdata;
     if (typeof field !== "string") return null;
@@ -1313,7 +1497,7 @@ function readVaultSessdata(guard, dataDir) {
 function readCookieFileSessdata(file) {
   if (!file) return null;
   try {
-    const raw = fs5.readFileSync(file, "utf8");
+    const raw = fs6.readFileSync(file, "utf8");
     if (!raw) return null;
     const v = parseSessdata(raw);
     return v || null;
@@ -1363,7 +1547,7 @@ function emptyBiliState() {
   return { lastFetchAt: 0, bvids: [] };
 }
 function bilibiliStatePath(dataDir) {
-  return path5.join(dataDir, BILI_STATE_FILE);
+  return path6.join(dataDir, BILI_STATE_FILE);
 }
 function normalizeBiliState(raw) {
   const out = emptyBiliState();
@@ -1517,6 +1701,29 @@ function stopBilibiliSource() {
 
 // src/index.ts
 var name = "heartbeat";
+var VISION_ENGINE_LITERALS = ["native", "modlens", "auto"];
+function auditInvalidVisionEngines(invalid, alreadyAudited, write) {
+  for (const bad of invalid) {
+    const key = `${bad.source}:${bad.value}`;
+    if (alreadyAudited.has(key)) continue;
+    try {
+      const ok2 = write({ event: "vision_engine_invalid", source: bad.source, value: bad.value });
+      if (ok2 !== false) alreadyAudited.add(key);
+    } catch {
+    }
+  }
+}
+function resolveVisionEngineSetting(configured, card) {
+  const invalid = [];
+  const pick = (raw, source) => {
+    const v = raw.trim();
+    if (!v) return "";
+    if (VISION_ENGINE_LITERALS.includes(v)) return v;
+    invalid.push({ source, value: v });
+    return "";
+  };
+  return { value: pick(configured, "config") || pick(card, "card"), invalid };
+}
 var inject = ["agents"];
 var Config = z.object({
   /** Override the runtime data dir (workspace guard boundary). Empty = default (<packageRoot>/data). */
@@ -1572,6 +1779,22 @@ var Config = z.object({
 function apply(ctx, config = {}) {
   const paths = initWorkspace(config.dataDir ? { dataDir: config.dataDir } : {});
   const guard = createPathGuard(paths.dataDir);
+  try {
+    runBookDoneMigrations(guard, paths.dataDir, paths.settingsDir, (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+      } catch {
+      }
+    });
+  } catch (e) {
+    try {
+      appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), {
+        event: "book_done_migration_failed",
+        error: String(e).slice(0, 160)
+      });
+    } catch {
+    }
+  }
   let policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
   const ui = loadUiConfig(guard, paths.settingsDir);
   if (ui.intervalMin && ui.intervalMin >= 1) {
@@ -1606,7 +1829,10 @@ function apply(ctx, config = {}) {
       tokenSaver: () => tokenSaverRef,
       // v2.2.1-native.1: card / composition engine choice ('' = vision.json).
       // Lazy on purpose: the refs below are declared after this call.
-      visionEngine: () => effectiveVisionEngine()
+      visionEngine: () => effectiveVisionEngine(),
+      // 2.3.0 experimental (default off): silent report concludes the turn.
+      // Same lazy pattern as the refs above.
+      concludeSilentTurn: () => concludeSilentTurnRef
     }
   });
   let presetRegistration;
@@ -1666,7 +1892,17 @@ function apply(ctx, config = {}) {
   let tokenSaverRef = ui.tokenSaver ?? config.tokenSaver === true;
   let visionEngineConfigRef = config.visionEngine ?? "";
   let visionEngineUiRef = ui.visionEngine ?? "";
-  const effectiveVisionEngine = () => visionEngineConfigRef.trim() || visionEngineUiRef.trim();
+  const invalidEnginesAudited = /* @__PURE__ */ new Set();
+  let concludeSilentTurnRef = ui.concludeSilentTurn === true;
+  const effectiveVisionEngine = () => {
+    const resolved = resolveVisionEngineSetting(visionEngineConfigRef, visionEngineUiRef);
+    auditInvalidVisionEngines(resolved.invalid, invalidEnginesAudited, (entry) => (
+      // a3 中3: forward the success verdict — `false` means the line did NOT
+      // land and the typo must stay unconsumed for the next beat's retry.
+      appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry)
+    ));
+    return resolved.value;
+  };
   const applyLiveSettings = (v) => {
     if (v.intervalMin && v.intervalMin >= 1) applyHeartbeatInterval(deps, v.intervalMin);
     if (v.maxDailySend && v.maxDailySend >= 1) getRuntime().policy.gate.maxDailySend = v.maxDailySend;
@@ -1746,6 +1982,7 @@ function apply(ctx, config = {}) {
     // card-stored choice ('' = follow vision.json); the effective engine also
     // honours a composition-level config pin (see effectiveVisionEngine).
     visionEngine: visionEngineUiRef,
+    concludeSilentTurn: concludeSilentTurnRef,
     psyEnabled: getRuntime().policy.profile.psyEnabled,
     quietStart: getRuntime().policy.gate.quietHours.start,
     quietEnd: getRuntime().policy.gate.quietHours.end
@@ -1765,10 +2002,12 @@ function apply(ctx, config = {}) {
     }
     const merged = saveUiConfig(guard, paths.settingsDir, patch);
     visionEngineUiRef = merged.visionEngine ?? "";
+    concludeSilentTurnRef = merged.concludeSilentTurn === true;
     applyLiveSettings(merged);
   };
   installHeartbeatRpc(ctx, { paths, guard, policy, ui: { get: uiGet, set: uiSet } });
-  const registerGlobalTool = (name2, build) => {
+  const deliverySessionVerdict = (session) => checkDeliverySession({ sessionId: session.id, session, guard, settingsDir: paths.settingsDir });
+  const registerGlobalTool = (name2, build, when) => {
     ctx.inject(["tools"], (scoped) => {
       const audit = (entry) => {
         try {
@@ -1779,7 +2018,16 @@ function apply(ctx, config = {}) {
       try {
         const tools = scoped.tools;
         if (!tools || typeof tools.register !== "function") throw new Error("ToolRuntime.register unavailable on this host");
-        tools.register(build());
+        if (when) {
+          try {
+            tools.register(build(), { when });
+          } catch {
+            tools.register(build());
+            audit({ event: `${name2}_tool_when_unsupported` });
+          }
+        } else {
+          tools.register(build());
+        }
         audit({ event: `${name2}_tool_registered` });
       } catch (e) {
         audit({ event: `${name2}_tool_register_failed`, error: String(e).slice(0, 160) });
@@ -1787,13 +2035,53 @@ function apply(ctx, config = {}) {
     });
   };
   if (config.ledgerTool !== false) {
-    registerGlobalTool("ledger", () => buildLedgerTool(guard, ledgerFilePath(paths.dataDir)));
+    const auditBookLine = (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+      } catch {
+      }
+    };
+    registerGlobalTool("ledger", () => buildLedgerTool(guard, ledgerFilePath(paths.dataDir), auditBookLine));
+    registerGlobalTool("corrections", () => buildCorrectionsTool(guard, correctionsFilePath(paths.dataDir), auditBookLine));
   }
   if (config.seedReportTool !== false) {
-    registerGlobalTool("seed_report", () => buildSeedReportTool(guard, reportFilePath(paths.dataDir)));
+    const auditReportLine = (entry) => {
+      try {
+        appendAuditLine(guard.assert(paths.logsDir + "/heartbeat.jsonl"), entry);
+      } catch {
+      }
+    };
+    registerGlobalTool("seed_report", () => buildSeedReportTool(
+      guard,
+      reportFilePath(paths.dataDir),
+      () => concludeSilentTurnRef,
+      auditReportLine,
+      () => getCurrentDeliveryId(),
+      // P1-1 (2.3.0, 账本 #d891e0): the lock is unconditional inside the
+      // tool — a self-invented or repeated delivery id is always rejected;
+      // this wiring only supplies the live-id getter and the audit sink.
+      { onRejected: auditReportLine }
+    ));
   }
   if (config.notepadTool !== false) {
-    registerGlobalTool("notepad", () => buildNotepadTool(guard, notepadFilePath(paths.dataDir)));
+    const notepadAuditFile = paths.logsDir + "/heartbeat.jsonl";
+    const notepadAllowed = (session) => {
+      if (!session?.id) return false;
+      return deliverySessionVerdict(session).allowed;
+    };
+    registerGlobalTool(
+      "notepad",
+      () => buildNotepadTool(guard, notepadFilePath(paths.dataDir), {
+        isDeliverySession: (session) => notepadAllowed(session),
+        onBlocked: (sessionId) => {
+          try {
+            appendAuditLine(guard.assert(notepadAuditFile), { event: "notepad_blocked", sessionId });
+          } catch {
+          }
+        }
+      }),
+      (context) => notepadAllowed(context.agent?.session)
+    );
   }
   if (config.excerptTool !== false) {
     registerGlobalTool("excerpt", () => buildExcerptTool(guard, excerptFilePath(paths.dataDir)));
@@ -1817,7 +2105,8 @@ function apply(ctx, config = {}) {
   const statusReader = new StatusReader();
   registerStatusbarSection(ctx, guard, paths, {
     enabled: () => statusbarEnabledRef,
-    reader: statusReader
+    reader: statusReader,
+    isDeliverSession: deliverySessionVerdict
   });
   ctx.effect(() => {
     registerTimeInjection(ctx, guard, paths.dataDir, {
@@ -1837,7 +2126,8 @@ function apply(ctx, config = {}) {
           return "";
         }
         return track === "pre-step" ? renderStatusText(statusReader.read(guard, paths)) : "";
-      }
+      },
+      isDeliverSession: deliverySessionVerdict
     });
     return void 0;
   }, "heartbeat: time injection");
@@ -1858,8 +2148,10 @@ function apply(ctx, config = {}) {
 export {
   Config,
   apply,
+  auditInvalidVisionEngines,
   deepMerge,
   inject,
-  name
+  name,
+  resolveVisionEngineSetting
 };
 //# sourceMappingURL=index.js.map

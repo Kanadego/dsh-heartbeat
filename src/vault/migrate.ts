@@ -49,6 +49,12 @@ export const MIGRATE_FILES = [
   'browse.json',
   'seeds.jsonl',
   'ledger.md',
+  // 2.3.0: books are live-only, so the archives (and the corrections book)
+  // carry memory the main rows used to. Leaving them out moves a user and
+  // silently drops the completions / the whole corrections book.
+  'ledger-done.md',
+  'corrections.md',
+  'corrections-done.md',
   'cursors.json',
   // v1.9.0: persona report log + topic preference stats
   'seed_report.jsonl',

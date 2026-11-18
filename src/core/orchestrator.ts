@@ -23,14 +23,15 @@ import { appendAuditLine } from './audit-log.js';
 import { gcPool, activeSeeds, addSeed, surfaceSeed, seedsFilePath, loadPool } from '../seeds/pool.js';
 import { scanPending, ledgerFilePath } from '../ledger/ledger.js';
 import { collectPulse, readPulse, probeIdleSeconds, probeWorkstationLocked } from '../env/envpulse.js';
-import { getRuntime } from './runtime.js';
+import { getRuntime, setCurrentDeliveryId, getCurrentDeliveryId } from './runtime.js';
 import { loadBusyRules } from '../gate/busy-rules.js';
-import { isArchivedSession, loadArchivedSessionIds, splitDeliverTargets } from './archived-sessions.js';
+import { isArchivedSession, loadArchivedSessionIds } from './archived-sessions.js';
+import { gateBoundSession, clearBrokenStrikes, recordUnreachableStrike } from './session-gate.js';
 import { collectScreen, readScreenJson } from '../screen/screenpulse.js';
 import { describeScreenVision } from '../screen/vision.js';
 import { runGate, canSendLive, confirmSend, readSentState, sentFilePath, inQuietHours } from '../gate/gate.js';
-import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileDelivery, type DeliveryAccount, type DeliveryReportInput, type MaterialInput } from './material.js';
-import { readSeedReportsSince, reportFilePath } from '../seeds/report.js';
+import { buildMaterialPrompt, buildRuminationPrompt, assembleCandidates, pickReport, reconcileReply, pickSpokenLine, deliveryVerdict, TURN_END_SILENCE_KIND, type DeliveryAccount, type DeliveryReportInput, type DeliveryVerdict, type MaterialInput, type SpokenKind } from './material.js';
+import { readSeedReportsSince, reportFilePath, wasConcludeRequested, resetConcludeRequested } from '../seeds/report.js';
 import { beginBeat, markDelivered, notepadFilePath, notepadView, readNotepad } from '../notepad/store.js';
 import { preferenceFilePath, recordDelivery } from '../browse/preference.js';
 import { writeStatus, deriveScene, clampNote } from '../statusbar/store.js';
@@ -964,6 +965,12 @@ function terminalTurnError(events: HostEvent[], from: number): string | undefine
   return undefined;
 }
 
+/** #65e679: the abort reason the orchestrator disposer writes into the beat's
+ *  signal. `agentTurn`'s onAbort matches on this exact text to surface a
+ *  `disposed` cause (not `hook`) to the host — both sides must stay the same
+ *  literal, so it lives in one constant. */
+export const DISPOSE_ABORT_TEXT = 'orchestrator disposed';
+
 /** Strict host message factory. Throws if dsh-llm is unavailable — we NEVER
  * splice hand-rolled messages: they lack message ids and corrupt the
  * persisted session (r5: SessionPersistenceCorruptionError root cause). */
@@ -998,7 +1005,7 @@ export async function agentTurn(
     // is wired must still surface as `disposed` (the goal round driver disarms
     // on it), everything else is a hook-level timeout.
     onAbort: () => {
-      const cause: AgentCancelCause = signal && abortText(signal) === 'orchestrator disposed'
+      const cause: AgentCancelCause = signal && abortText(signal) === DISPOSE_ABORT_TEXT
         ? { kind: 'disposed' }
         : { kind: 'hook', reason: 'heartbeat-timeout' };
       try { (agent as { cancel?: (cause: AgentCancelCause) => unknown }).cancel?.(cause); } catch { /* best effort */ }
@@ -1017,6 +1024,31 @@ export async function agentTurn(
     type: e.type,
     dataKeys: e.data && typeof e.data === 'object' ? Object.keys(e.data as object).slice(0, 6) : [],
   }));
+  // P15-2 (2.3.0): with concludeSilentTurn ON, a silent EXPRESSION turn ends
+  // NORMALLY with zero body text — the seed_report conclude request replaced
+  // speech. That is the expected shape, not a failure. GATED FOUR WAYS
+  // (review a1 / B2 中1+中2 / B2 rework 低1): ① the switch is on (default off);
+  // ② this is the delivery turn's label ('expression'); ③ the end kind is the
+  // completed allowlist value (aborted/interrupted/max-tokens/forked/... are
+  // cut-short replies, never conclusions); ④ a conclude was ACTUALLY requested
+  // this turn (seed_report called the host's concludeTurn — B2 rework 低1:
+  // ownership of the id is judged by the id check in report.ts, not by this
+  // label, and a reasoning-only zero-text turn must stay a fault line).
+  // Runtime unset reads as off.
+  const concludeSilentOn = (() => {
+    try {
+      return getRuntime().flags.concludeSilentTurn?.() === true;
+    } catch {
+      return false; // runtime not initialized — no live flags, default off
+    }
+  })();
+  const endKind = turnEndKindSince(agent.session, before);
+  if (concludeSilentOn && label === 'expression' && endKind === TURN_END_SILENCE_KIND && wasConcludeRequested()) {
+    appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+      event: 'turn_concluded', label, kind: endKind, window: shapes.slice(0, 12),
+    });
+    return '';
+  }
   // A turn that dies on a provider/adapter/prompt-assembly error logs NO
   // assistant message at all, so the shapes alone never explain it. Surface the
   // terminal reason alongside them (2026-09-09: turns 46-48 were NO_ADAPTER and
@@ -1039,9 +1071,11 @@ interface HostImageAttachmentStore {
   saveImage(input: { data: Uint8Array; mediaType: 'image/jpeg'; name?: string }): Promise<unknown>;
 }
 
-/** Structural face of `ctx.llm`'s model resolution — only the modality probe. */
+/** Structural face of `ctx.llm`'s model resolution — only the modality probe.
+ *  `signal` (N6) is forwarded so the probe can share the beat's cancellation:
+ *  a host that ignores the extra argument is unaffected. */
 interface HostModelInfoSource {
-  resolveModelInfo?(provider: string, model: string): Promise<{ inputModalities?: readonly string[] } | undefined>;
+  resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<{ inputModalities?: readonly string[] } | undefined>;
 }
 
 /**
@@ -1065,6 +1099,9 @@ export async function nativeVisionTurn(
   opts: { timeoutMs: number; signal?: AbortSignal; label?: string },
 ): Promise<string> {
   const label = opts.label ?? 'vision';
+  // N5: a turn that was already cancelled (dispose landed before this call, the
+  // beat aborted between phases) must not spend a model round.
+  throwIfAborted(opts.signal, label);
   const lookup = (name: string): unknown => {
     try {
       return deps.ctx.get?.(name);
@@ -1082,16 +1119,42 @@ export async function nativeVisionTurn(
   const model = agent.options?.model;
   const llm = lookup('llm') as HostModelInfoSource | undefined;
   if (provider && model && typeof llm?.resolveModelInfo === 'function') {
-    const info = await llm.resolveModelInfo(provider, model);
+    // N6: the registry is a host service and CAN throw (model list still
+    // loading, registry jitter). The old code let that escape untyped and
+    // unaudited, so every hop fell back to ModLens silently. Probe failures
+    // are now visible, and — because an unverified route must never carry an
+    // image — still fail the native read, which keeps the fallback talk-only.
+    let info: { inputModalities?: readonly string[] } | undefined;
+    try {
+      info = await llm.resolveModelInfo(provider, model, opts.signal);
+    } catch (e) {
+      // N18: a cancellation that lands during the probe is not a probe FAILURE
+      // — rethrow the original error untouched (it is the beat unwinding);
+      // labelling it here wrote a misleading audit line for a healthy cancel.
+      if (opts.signal?.aborted) throw e;
+      appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', {
+        event: 'vision_modality_probe_failed', provider, model, error: String(e).slice(0, 160),
+      });
+      throw new Error(`model ${model}: modality probe failed (${String(e).slice(0, 120)})`);
+    }
     if (info?.inputModalities !== undefined && !info.inputModalities.includes('image')) {
       throw new Error(`model ${model} does not accept image input`);
     }
   }
+  // N18-a3 低5: the probe awaited above is a real await window — an abort that
+  // lands there must stop BEFORE the screenshot is written into the home's
+  // durable attachment store (an orphan picture nobody will ever read).
+  throwIfAborted(opts.signal, label);
   const image = await attachments.saveImage({
     data: new Uint8Array(fs.readFileSync(shotPath)),
     mediaType: 'image/jpeg',
     name: 'heartbeat-screen.jpg',
   });
+  // A6 低2: saveImage is itself an await window. An abort landing inside it used
+  // to sail on into agent.followup and leave a cancelled heartbeat user message
+  // referencing the fresh attachment. (The durable host copy already exists and
+  // has no delete API; this guard keeps it out of the session.)
+  throwIfAborted(opts.signal, label);
   const { createUserMessage } = await import('@deepseek-ai/dsh-llm');
   // dsh-attachment 不是本插件的依赖：图片引用在这里只是"宿主给的对象，原样交还"，
   // 所以只在建消息这一处透传（类型由宿主包拥有，形状见 ImageBlock.attachment）。
@@ -1111,10 +1174,12 @@ export async function nativeVisionTurn(
   // AgentCancelCause, so this call site names one instead of repeating the
   // pre-existing bare calls. (The three older sites in agentTurn / the beat
   // watchdog belong to that issue, not to this change.)
-  const cancelTurn = (reason: string): void => {
+  // N5: the parameter is the host's real AgentCancelCause union — the wide
+  // `{ kind: string; reason: string }` shape used to let any kind slip through
+  // to the host's assertNever.
+  const cancelTurn = (cause: AgentCancelCause): void => {
     try {
-      (agent as { cancel?: (cause?: { kind: string; reason: string }) => unknown })
-        .cancel?.({ kind: 'hook', reason });
+      (agent as { cancel?: (cause: AgentCancelCause) => unknown }).cancel?.(cause);
     } catch { /* best effort */ }
   };
   try {
@@ -1122,13 +1187,13 @@ export async function nativeVisionTurn(
       signal: opts.signal,
       stage: label,
       // ⑤A: a cancelled beat must not leave this turn running on the host.
-      onAbort: () => cancelTurn('heartbeat-vision-aborted'),
+      onAbort: () => cancelTurn({ kind: 'hook', reason: 'heartbeat-vision-aborted' }),
     });
   } catch (e) {
     // onAbort already cancelled this turn when the BEAT signal fired; a plain
     // vision TIMEOUT would otherwise leave the orphan turn burning tokens
     // beside the next phase.
-    if (!opts.signal?.aborted) cancelTurn('heartbeat-vision-timeout');
+    if (!opts.signal?.aborted) cancelTurn({ kind: 'hook', reason: 'heartbeat-vision-timeout' });
     throw e;
   }
   const events = sessionEvents(agent.session);
@@ -1267,6 +1332,10 @@ async function collectPhase(bc: BeatContext): Promise<{ envFgProcess: string | n
   const { guard, paths } = deps;
   const rules = loadBusyRules(paths.configDir);
   // H-68: the window cap is a configured threshold, not a collector constant.
+  // N2 口径: 「池空不取图」省的是给模型看的那一份（expressionPhases 的
+  // runScreenVision，随开口才解锁截图）；这里的 collectScreen 抓屏是每拍固定
+  // 采集（加密 screen.jpg + screen.json），喂状态栏/环境脉冲，与视觉引擎无关，
+  // 不随素材池为空而跳过。
   const screen = await collectScreen(guard, paths, now, rules.rules.visible_window_cap, bc.signal);
   throwIfAborted(bc.signal, 'collect');
   const sj = readScreenJson(guard, paths);
@@ -1314,14 +1383,10 @@ export function loadCursors(file: string): { sessions: Record<string, number>; d
  * H-67: strip thinking blocks and tool-call trailing tags, then take the last
  * line carrying Chinese — the target agent's turn may end on a tool call, so
  * the sentence she actually spoke sits further up.
+ * (Moved to material.ts so the whole silence/reconcile chain can be tested as
+ * one pure function; re-exported here for existing importers.)
  */
-export function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
-  const lines = raw.replace(/<\/?thinking[\s\S]*?<\/think>/gi, '').trim()
-    .split('\n').map((l) => l.trim()).filter((l) => l && !/^<\/?tool_calls?>$/i.test(l));
-  const cnLine = [...lines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
-  const text = (cnLine ?? lines[lines.length - 1] ?? '').slice(0, 200);
-  return { text, spokeText: Boolean(text && /[\u4e00-\u9fff]/.test(text)) };
-}
+export { pickSpokenLine } from './material.js';
 
 /**
  * H-67: the objective record of "she actually said something". The delivery
@@ -1359,13 +1424,103 @@ export function turnEndKindSince(session: HostSession | undefined, fromSeq: numb
   return kind;
 }
 
-/** Three-state reason for a delivery that produced no speakable text. Order
- *  matters: blocked outranks everything (no model request was ever made), then
- *  a literally empty output, then the legacy non-Chinese discard. */
+/** Turn/end kinds the DSH host emits that are NOT a normal stop (B2 中2,
+ *  2.3.0). Only 'completed' may carry a fact-silence (material's
+ *  {@link TURN_END_SILENCE_KIND}); each failure kind gets its own spoke_failed
+ *  reason, and a kind this codebase does not know fails closed with a generic
+ *  string — never silence. Exported so the dictionary itself is test-pinned
+ *  (B2 self-check ②: dropping an entry from this map must go red). */
+export const TURN_END_FAILURE_REASONS: Record<string, string> = {
+  blocked: 'target turn blocked',
+  error: 'target turn failed',
+  aborted: 'target turn aborted',
+  interrupted: 'target turn interrupted',
+  'max-tokens': 'target turn hit max tokens',
+  forked: 'target turn forked',
+};
+
+/** Reason for a delivery that produced no speakable text. Order matters: a
+ *  known failure kind outranks everything (N15①/B2 中2 — none of these is "she
+ *  chose silence"; blocked never asked, aborted is watchdog/host cancellation,
+ *  max-tokens may be reasoning eating the whole budget), then the blind spot
+ *  (B2 rework 低4: NO turn/end in the window means we cannot even claim the
+ *  model produced nothing — name the unknown, don't blame the model), then the
+ *  text states. 'completed' is consulted through the material.ts allowlist
+ *  constant (B2 rework 低3), so retyping the allowlist moves BOTH callers. */
 export function classifySilentReason(raw: string, turnEndKind: string | null): string {
-  if (turnEndKind === 'blocked') return 'target turn blocked';
+  if (turnEndKind !== null) {
+    const failure = TURN_END_FAILURE_REASONS[turnEndKind];
+    if (failure) return failure;
+    if (turnEndKind !== TURN_END_SILENCE_KIND) return `target turn ${turnEndKind}`;
+  }
+  // B2 rework 低4: with no turn/end in the window, empty output and a hidden
+  // end are indistinguishable — the old 'empty model output' sent排障 chasing
+  // a model that may have spoken. Text that exists is still a fact about the
+  // text itself, so the non-Chinese discard keeps its own string.
+  if (turnEndKind === null && !raw.trim()) return 'turn end unknown';
   if (!raw.trim()) return 'empty model output';
   return 'non-Chinese output discarded';
+}
+
+/** B2 中5 (2.3.0): the fact-silence audit line, pure and exported so the N15①
+ *  fields (reportedSpoken + turnEndKind riding along) have a regression test
+ *  without running a full delivery beat. deliverPackage appends exactly this.
+ *  `noOutputFault` (B2 rework 低2): TRUE when the turn_extraction_empty fault
+ *  line ALSO fired for this beat (switch off, or no conclude was requested) —
+ *  an empty body then gets suffixed so the two co-occurring lines read as one
+ *  story instead of "statusbar silent vs audit fault". A silence-LINE body
+ *  never gets the suffix: text existed, so no fault line fired. */
+export function silentAuditLine(
+  verdict: DeliveryVerdict,
+  reportedSpoken: SpokenKind | null,
+  turnEndKind: string | null,
+  noOutputFault = false,
+): { event: 'silent'; reason: string; reportedSpoken?: string; turnEndKind?: string } {
+  const base = verdict.silentReason ?? '正文为空';
+  return {
+    event: 'silent',
+    reason: noOutputFault && verdict.bodyEmpty ? `${base}（回合无输出）` : base,
+    ...(reportedSpoken ? { reportedSpoken } : {}),
+    ...(turnEndKind ? { turnEndKind } : {}),
+  };
+}
+
+/** 2.3.0 P0-4: drop one binding after the gate's policy said so. Only
+ *  data/settings/bindings.json is touched — never the session itself. */
+async function autoRemoveBinding(deps: OrchestratorDeps, sessionId: string, reason: string | null): Promise<void> {
+  const auditFile = deps.paths.logsDir + '/heartbeat.jsonl';
+  try {
+    const { removeBinding } = await import('./bindings.js');
+    if (removeBinding(deps.guard, deps.paths.settingsDir, sessionId)) {
+      // The entry answered its question (binding gone); a later re-bind must
+      // start its streak at zero, not inherit the old session's count.
+      clearBrokenStrikes(deps.guard, deps.paths.settingsDir, sessionId);
+      appendAuditLine(auditFile, { event: 'binding_auto_removed', sessionId, reason });
+    }
+  } catch (e) {
+    appendAuditLine(auditFile, { event: 'binding_auto_remove_failed', sessionId, error: String(e).slice(0, 120) });
+  }
+}
+
+/** 2.3.0 P0-4: unified session gate for observe/deliver. Returns true when the
+ *  session may be used this beat; otherwise audits the skip (the gate does that
+ *  once per TTL) and drops the binding per the auto-removal policy. */
+async function gateBoundTarget(
+  deps: OrchestratorDeps,
+  sessionId: string,
+  session: HostSession | undefined,
+): Promise<boolean> {
+  const verdict = gateBoundSession({
+    sessionId,
+    session,
+    guard: deps.guard,
+    settingsDir: deps.paths.settingsDir,
+    auditFile: deps.paths.logsDir + '/heartbeat.jsonl',
+    now: Date.now(),
+  });
+  if (verdict.allowed) return true;
+  if (verdict.removeBinding) await autoRemoveBinding(deps, sessionId, verdict.reason);
+  return false;
 }
 
 async function observeBoundSessions(bc: BeatContext): Promise<void> {
@@ -1391,6 +1546,7 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
     try {
       const agent = ctx_getAgent(deps, b.sessionId);
       if (!agent) continue; // not live: nothing to observe this beat
+      if (!(await gateBoundTarget(deps, b.sessionId, agent.session))) continue;
       const cursor = Math.max(cursors[b.sessionId] ?? 0, 0);
       // Depth knobs (v1.8.0): perBeat caps messages per session per beat,
       // maxChars caps the note kept per message (first sentence).
@@ -1435,6 +1591,9 @@ async function observeBoundSessions(bc: BeatContext): Promise<void> {
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observed', sessionId: b.sessionId, added, cursor: seq });
       }
     } catch (e) {
+      // N18-a3 中2: a cancellation is not an observation error — stop the
+      // whole observe phase and let the beat unwind as cancelled.
+      if (bc.signal.aborted) throw e;
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'observe_error', sessionId: b.sessionId, error: String(e).slice(0, 120) });
     }
   }
@@ -1475,6 +1634,9 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
       text = (await agentTurn(deps, agent, buildWeeklyPrompt(facts), 'weekly', IDLE_WAIT_TIMEOUT_MS, bc.signal)).trim();
       if (text) source = 'llm';
     } catch (e) {
+      // N18-a3 中2: a cancelled beat must not fall through to the template
+      // report — the abort unwinds, it does not generate anything.
+      if (bc.signal.aborted) throw e;
       audit({ event: 'weekly_llm_failed', error: String(e).slice(0, 160) });
     }
     if (!text) text = renderTemplateReport(facts); // plain report beats no report
@@ -1498,6 +1660,9 @@ async function weeklyPhase(bc: BeatContext): Promise<void> {
       } catch { /* toast is best-effort */ }
     }
   } catch (e) {
+    // N18-a3 中2: the rethrown cancellation from the weekly turn must not be
+    // swallowed here either — let it reach the beat boundary.
+    if (bc.signal.aborted) throw e;
     audit({ event: 'weekly_failed', error: String(e).slice(0, 160) });
   }
 }
@@ -1770,39 +1935,80 @@ async function deliverPackage(
   const homeId = bc.agent?.session?.id ?? null;
   const { loadBindings, deliverTargets } = await import('./bindings.js');
   const data = loadBindings(guard, paths.settingsDir);
-  // H-archived: an archived session resumes fine, but DSH's ArchivedSessionGate
-  // rejects its pre-step — the turn ends `blocked` with zero output, and the
-  // audit used to misfile that as a language failure. Check the disk truth for
-  // archived ids BEFORE bringing any target live; the filter lives at the call
-  // site, `deliverTargets` itself stays unfiltered (bindings keeps its
-  // single-purpose semantics).
-  const archived = loadArchivedSessionIds();
-  const all = deliverTargets(data).filter((b) => b.sessionId !== homeId);
-  const { usable: targets, skipped } = splitDeliverTargets(all, archived);
-  if (skipped.length > 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-      event: 'deliver_target_skipped', reason: 'archived',
-      targets: skipped.map((t) => t.sessionId).join(','),
+  const auditFile = paths.logsDir + '/heartbeat.jsonl';
+  // 2.3.0 P0-4: one gate replaces the archived-only filter. The pre-pass can
+  // only judge the archived registry (no session is live yet — and H-archived
+  // says an archived target must not be brought live at all); the post-resume
+  // pass below completes the verdict with subagent/broken. Removals follow the
+  // same policy as observe: archived/subagent first sight, broken after 3 beats.
+  // N17: a hand-edited bindings.json can carry the same sessionId twice —
+  // deliverTargets passes both through, and the pre-pass / post-resume loops
+  // below would then gate, resume and strike the SAME session twice in one
+  // beat (two strikes from one beat broke the "removed on the third" contract).
+  // De-duplicate; the first entry wins.
+  const seenTargets = new Set<string>();
+  const all = deliverTargets(data).filter((b) => {
+    if (b.sessionId === homeId || seenTargets.has(b.sessionId)) return false;
+    seenTargets.add(b.sessionId);
+    return true;
+  });
+  const candidates: typeof all = [];
+  for (const b of all) {
+    const verdict = gateBoundSession({
+      sessionId: b.sessionId,
+      guard,
+      settingsDir: paths.settingsDir,
+      auditFile,
+      now,
     });
+    if (verdict.allowed) candidates.push(b);
+    else if (verdict.removeBinding) await autoRemoveBinding(deps, b.sessionId, verdict.reason);
   }
-  if (targets.length === 0 && all.length > 0) {
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-      event: 'spoke_failed', reason: 'all deliver targets archived',
-    });
-    noteBeat('spoke_failed', { reason: 'all deliver targets archived' });
+  if (candidates.length === 0 && all.length > 0) {
+    appendAuditLine(auditFile, { event: 'no_deliver_target', targets: all.map((t) => t.sessionId).join(',') });
+    appendAuditLine(auditFile, { event: 'spoke_failed', reason: 'no deliver target' });
+    noteBeat('spoke_failed', { reason: 'no deliver target' });
     return;
   }
   let liveTarget: { sessionId: string; agent: HostAgent; release: () => void } | null = null;
-  for (const b of targets) {
+  for (const b of candidates) {
     const acquired = await acquireTargetAgent(deps, b.sessionId);
-    if (acquired) { liveTarget = { sessionId: b.sessionId, ...acquired }; break; }
+    if (!acquired) {
+      // A resume was really attempted and failed: a session whose log cannot be
+      // read can never pass the post-resume health probe, so this is the only
+      // place its binding can ever accrue strikes. Observe's "not live right
+      // now" is normal and stays uncounted.
+      const strike = recordUnreachableStrike({
+        sessionId: b.sessionId,
+        guard,
+        settingsDir: paths.settingsDir,
+        now,
+      });
+      if (strike.removeBinding) await autoRemoveBinding(deps, b.sessionId, 'unreachable');
+      continue;
+    }
+    const verdict = gateBoundSession({
+      sessionId: b.sessionId,
+      session: acquired.agent.session,
+      guard,
+      settingsDir: paths.settingsDir,
+      auditFile,
+      now,
+    });
+    if (!verdict.allowed) {
+      acquired.release();
+      if (verdict.removeBinding) await autoRemoveBinding(deps, b.sessionId, verdict.reason);
+      continue;
+    }
+    liveTarget = { sessionId: b.sessionId, ...acquired };
+    break;
   }
-  if (!liveTarget && targets.length > 0) {
+  if (!liveTarget && candidates.length > 0) {
     // Never silently reroute: an un-live target is the difference between
     // "she spoke to him" and "she spoke in her own room".
-    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+    appendAuditLine(auditFile, {
       event: 'spoke_fallback', reason: 'no deliver target could be brought live',
-      targets: targets.map((t) => t.sessionId).join(','),
+      targets: candidates.map((t) => t.sessionId).join(','),
     });
   }
   const voiceAgent = liveTarget?.agent ?? bc.agent;
@@ -1812,6 +2018,9 @@ async function deliverPackage(
     return;
   }
   const voiceSessionId = voiceAgent.session?.id ?? null;
+  // B2 rework a3 低2: the finally's ownership check needs THIS beat's delivery
+  // id in scope — the id itself is const inside the try, so carry it here.
+  let openedDeliveryId = '';
   // 投递全程包在 try 里：无论成功、沉默还是中途 return，都要把我们 resume 出来的
   // agent 还回去（acquireTargetAgent 的注释里写了为什么不能留）。
   try {
@@ -1824,11 +2033,22 @@ async function deliverPackage(
     // 想说的话；觉得没什么可说的可以沉默。
     // 本次投递编号（v1.9.0）：报账把它带回来，这一包的账才不会被上一包或下一包认领。
     const deliveryId = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    openedDeliveryId = deliveryId; // a3 低2: visible to the finally's ownership check
+    // 2.3.0 experimental: seed_report is global, so it can only conclude the
+    // turn when the id it reports matches the package currently being
+    // delivered (B2 rework 低6: the id check proves the caller HOLDS the id —
+    // it does not prove the reporting turn is ours; see the early clear below).
+    setCurrentDeliveryId(deliveryId);
+    // B2 rework 低1: a fresh delivery turn starts with no conclude request.
+    resetConcludeRequested();
     // 心事匣 (v2.0.0): the note left for this beat rides in the package, so the
     // engine room neither reads it nor needs to know it exists.
     const notepad = readNotepadSafe(deps, 'deliver_package');
     const phrasePrompt = buildMaterialPrompt(materials, {
       deliveryId,
+      // 2.3.0 experimental (default off): switches the silence line between
+      // "reply 本轮沉默" and "no body text at all, the plugin ends the turn".
+      concludeSilent: getRuntime().flags.concludeSilentTurn?.() === true,
       // spec ②: the "我在干嘛" line rides on every delivery when vision
       // produced one this beat; absent otherwise (never invented).
       ...(typeof opts.doing === 'string' && opts.doing.trim()
@@ -1861,6 +2081,10 @@ async function deliverPackage(
     try {
       spokenRaw = await agentTurn(bc.deps, voiceAgent, phrasePrompt, 'expression', EXPRESSION_IDLE_WAIT_MS, bc.signal);
     } catch (e) {
+      // N18-a3 中2: a cancellation is not a busy target — the spoke_deferred /
+      // spoke_failed booking (and the late-text confirm path below it) made a
+      // cancelled beat close as an ordinary silence. Let it unwind.
+      if (bc.signal.aborted) throw e;
       // H-67: a timed-out idle wait is not proof she stayed silent — the answer
       // may already have been streamed into the session. Only defer when the
       // session really gained nothing.
@@ -1878,15 +2102,27 @@ async function deliverPackage(
       });
       spokenRaw = late;
     }
+    // B2 rework 低6: the id's guard duty ends the moment THIS delivery turn
+    // settles — seed_report can only fire DURING a model turn, and this one is
+    // done. Clearing here (not only in the finally below) closes the
+    // millisecond window where a USER chat turn opening between this point and
+    // the sendNewMessageHint await could replay the historical id — it sits in
+    // that session's context from the package — and, with the switch on,
+    // conclude the USER's turn with a silent report. The duplicate clear in
+    // the finally stays as the early-return safety net.
+    // B2 rework a2 fix: the silent booking further down must judge "was the
+    // turn concluded" from a SNAPSHOT taken BEFORE this clear — reading the
+    // module flag after resetting it made noConclude always true, suffixing
+    // the conclude path's silent line and contradicting DESIGN.md §B's
+    // "收尾路径不带后缀". The snapshot dies with this local scope.
+    const concludedThisTurn = wasConcludeRequested();
+    setCurrentDeliveryId('');
+    resetConcludeRequested();
     // 心事匣 (v2.0.0): the package did reach her turn, so this note now counts
     // as shown — the next beat will let it go unless she rewrites it. Placed
     // here on purpose: the two early returns above (quiet-hours refusal, a
     // deferred busy target) never handed her anything, and must not age it.
     markDeliveredSafe(deps, 'deliver_package');
-    // 表达文本：剥离思考块、过滤工具调用收尾标签（agentTurn 拼接 text 段时会把
-    // '</tool_calls>' 这类 ASCII 标记带进来），然后优先取最后一个含中文的行——
-    // 目标 agent 回合以工具调用收尾时，末行是 '</tool_calls>' 而真正要说的在更前面。
-    const { text, spokeText } = pickSpokenLine(spokenRaw);
     // 报账对账（2026-10-06）：陪伴 agent 的 seed_report 优先，决策轮 D23 seed_ids
     // 作后备，都没有就记零——宁可漏记不假记（包含匹配已删）。
     // v1.9.0：按投递编号取本次的那条（同窗口里点名了别的包的报账一律不用），
@@ -1898,27 +2134,65 @@ async function deliverPackage(
     } catch (e) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'report_read_failed', error: String(e).slice(0, 120) });
     }
-    const account = reconcileDelivery(materials, report, opts.seedIds, spokeText);
+    // 沉默判定看整段原始输出，不是只看 pickSpokenLine 挑出的最后一行：先说了真话
+    // 再补一行「本轮沉默」仍然是说话（那句真话已经显示在他的会话里），只有每一
+    // 条非空行都只是这行字才算沉默。取行/判沉默/有效发声位/对账整条链在
+    // material.reconcileReply（rework R-C），这里不再自己算中间量。
+    const reply = reconcileReply(spokenRaw, report, opts.seedIds, materials);
+    const { text, effectiveSpokeText, account, reportedSpoken, spokenMismatch } = reply;
+    // P1-2 (2.3.0): the report's spoken is a REFERENCE — the facts settled the
+    // account. One audit line when they disagree, zero noise when they match.
+    if (spokenMismatch) {
+      appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+        event: 'spoken_mismatch', reported: spokenMismatch.reported, actual: spokenMismatch.actual,
+        ...(report?.deliveryId ? { deliveryId: report.deliveryId } : {}),
+      });
+    }
     // 兜底闸：陪伴者说中文；整段完全没有中文才判为泄漏的思考，不投递。
-    // 例外：本人报账 spoken=silent 是合法沉默（带原因），不再算失败。
-    if (!spokeText) {
-      if (account.source === 'report' && account.spoken === 'silent') {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-          event: 'silent', reason: `报账沉默:${account.reason ?? '未说明'}`,
+    // P1-2 (2.3.0, attempt 3): 事实（正文为空 / 只有沉默行）直接判 silent，不以
+    // 「有没有报账」为前提——报账被拒或缺 id 的沉默跳同样是沉默，不能记成
+    // spoke_failed。N15①/B2 中2：只有 completed 的结束才可能是发声事实，
+    // blocked/error/aborted/interrupted/max-tokens/forked 全部走 spoke_failed。
+    const turnEndKind = turnEndKindSince(voiceAgent.session, beforeSeq);
+    const verdict = deliveryVerdict(reply, turnEndKind);
+    if (!effectiveSpokeText) {
+      if (verdict.factSilent) {
+        // N15①/B2 中5: built by the exported silentAuditLine so the
+        // reportedSpoken + turnEndKind fields stay test-pinned.
+        // B2 rework 低2: turn_extraction_empty co-occurs exactly when the turn
+        // was NOT concluded — switch off, or no conclude request reached the
+        // host this turn. Suffix the silent reason so the audit reads as one
+        // story (DESIGN.md pins the co-occurrence); the conclude path itself
+        // stays unsuffixed.
+        const noConclude = (() => {
+          try {
+            // B2 rework a2 fix: judged from the SNAPSHOT taken before the early
+            // clear (the module flag is already reset by now), never re-read.
+            return getRuntime().flags.concludeSilentTurn?.() !== true || !concludedThisTurn;
+          } catch {
+            return true;
+          }
+        })();
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', silentAuditLine(verdict, reportedSpoken, turnEndKind, noConclude));
+        noteBeat('silent', {
+          reason: report?.spoken === 'silent'
+            ? '本人报账沉默'
+            : verdict.bodyEmpty ? '正文为空，按事实记沉默' : '正文只有沉默行，按事实记沉默',
         });
-        noteBeat('silent', { reason: '本人报账沉默' });
-        // 沉默也是投递结果：reason=素材不搭 时把这一包记成 offered/未采用
-        // （recordDeliveryFromAccount 内部会把无关原因的沉默滤掉）。
-        try {
-          recordDeliveryFromAccount(deps, materials, account);
-        } catch (e) {
-          appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
+        // 沉默也是投递结果，但偏好记账只在有报账时才做：reason=素材不搭 时把
+        // 这一包记成 offered/未采用（recordDeliveryFromAccount 内部滤无关原因）。
+        if (report) {
+          try {
+            recordDeliveryFromAccount(deps, materials, account);
+          } catch (e) {
+            appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'preference_record_failed', error: String(e).slice(0, 120) });
+          }
         }
       } else {
         // H-archived: three-state reason — "the gate never opened" (blocked)
         // and "the model said nothing" are not language failures. Four days of
         // archived deliveries were misfiled as non-Chinese output before this.
-        const silentReason = classifySilentReason(spokenRaw, turnEndKindSince(voiceAgent.session, beforeSeq));
+        const silentReason = classifySilentReason(spokenRaw, turnEndKind);
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'spoke_failed', reason: silentReason });
         noteBeat('spoke_failed', { reason: silentReason });
       }
@@ -1963,6 +2237,7 @@ async function deliverPackage(
       event: 'spoke', text: text.slice(0, 80), seeds: account.seedIds,
       profile_ids: account.profileIds, source: account.source, spoken: account.spoken,
       ...(account.reason ? { reason: account.reason } : {}),
+      ...(reportedSpoken ? { reportedSpoken } : {}),
     });
     if (voiceSessionId && voiceSessionId !== homeId) {
       appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'delivered', sessionId: voiceSessionId });
@@ -1970,6 +2245,21 @@ async function deliverPackage(
     noteBeat('spoke', { text });
 
   } finally {
+    // The delivery turn is over: a later chat turn must not reuse this id to
+    // end itself, and a late duplicate report must not conclude anything.
+    // (Early returns land here too — B2 rework 低6's id clear + 低1's flag
+    // reset normally run right after agentTurn; these are the safety net.)
+    // B2 rework a3 低2: only clear OUR OWN id. A watchdog-overlapped beat may
+    // already have opened the NEXT delivery turn and set a fresh id + flag —
+    // wiping those would unguard the new turn (an id-blind clear here was
+    // exactly the stale-flag hazard 低1 closed at the front door). Paths:
+    // early-return branches still arrive with our id → cleared normally; the
+    // spoke path usually arrives with '' (early clear) → equality fails →
+    // no-op; an overlapped beat arrives with someone else's id → skipped.
+    if (getCurrentDeliveryId() === openedDeliveryId) {
+      setCurrentDeliveryId('');
+      resetConcludeRequested();
+    }
     liveTarget?.release();
   }
 }
@@ -1996,40 +2286,55 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
   // Native vision runs on this same agent (nativeVisionTurn); the guard above
   // already proved it exists.
   const visionAgent = bc.agent;
-  // spec ①② (2026-09-18): per-beat vision. v2.2.1-native.1: the agent reads the
-  // shot itself (`engine=native`, the default `auto`), ModLens stays the
-  // fallback (`engine=modlens`) — see data/settings/vision.json. Only when
-  // vision SUCCEEDED do the screen summary and taskbar titles reach the
-  // rumination agent; on failure `screen` stays undefined — no image, no titles,
-  // no invented "我在干嘛".
-  const screenVision = await describeScreenVision(guard, paths, {
-    moduleUrl: import.meta.url,
-    signal: bc.signal,
-    // Settings-page / composition `visionEngine` (v2.2.1-native.1): '' follows
-    // data/settings/vision.json, then the built-in default (auto).
-    configuredEngine: getRuntime().flags.visionEngine(),
-    turn: (shot, prompt, o) => nativeVisionTurn(deps, visionAgent, shot, prompt, {
-      timeoutMs: o.timeoutMs,
-      ...(o.signal === undefined ? {} : { signal: o.signal }),
-      label: 'vision',
-    }),
-  });
-  let screen: { vision: string; windows: string[] } | undefined;
-  if (screenVision.ok && screenVision.summary) {
-    const sj = readScreenJson(guard, paths);
-    const titles = sj ? [sj.title, ...sj.windows.map((w) => w.title)].filter((t) => t && t.trim()) : [];
-    screen = { vision: screenVision.summary, windows: titles.map((t) => t.trim().slice(0, 40)).slice(0, 10) };
-  }
-  appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
-    event: 'screen_vision', ok: screenVision.ok,
-    // engine names the engine behind the result (native / modlens); the event
-    // keeps its old name and keys, and never carries the picture or its path.
-    ...(screenVision.engine === undefined ? {} : { engine: screenVision.engine }),
-    ...(screenVision.ok ? {} : { error: (screenVision.error ?? '').slice(0, 100) }),
-  });
+  // N2: the screenshot is now spent only AFTER this beat has decided it will
+  // speak. Vision used to run before the empty-pool check, so a beat that then
+  // went silent ("no candidates") still burned a full native model round on a
+  // picture nobody would ever use. The idleMode fallback below (画像兜底) is a
+  // speaking path too, so it keeps its screen.
+  const runScreenVision = async (): Promise<{ vision: string; windows: string[] } | undefined> => {
+    // spec ①② (2026-09-18): per-beat vision. v2.2.1-native.1: the agent reads the
+    // shot itself (`engine=native`, the default `auto`), ModLens stays the
+    // fallback (`engine=modlens`) — see data/settings/vision.json. Only when
+    // vision SUCCEEDED do the screen summary and taskbar titles reach the
+    // rumination agent; on failure `screen` stays undefined — no image, no titles,
+    // no invented "我在干嘛".
+    const screenVision = await describeScreenVision(guard, paths, {
+      moduleUrl: import.meta.url,
+      signal: bc.signal,
+      // Settings-page / composition `visionEngine` (v2.2.1-native.1): '' follows
+      // data/settings/vision.json, then the built-in default (auto).
+      configuredEngine: getRuntime().flags.visionEngine(),
+      turn: (shot, prompt, o) => nativeVisionTurn(deps, visionAgent, shot, prompt, {
+        timeoutMs: o.timeoutMs,
+        ...(o.signal === undefined ? {} : { signal: o.signal }),
+        label: 'vision',
+      }),
+    });
+    let screen: { vision: string; windows: string[] } | undefined;
+    if (screenVision.ok && screenVision.summary) {
+      const sj = readScreenJson(guard, paths);
+      const titles = sj ? [sj.title, ...sj.windows.map((w) => w.title)].filter((t) => t && t.trim()) : [];
+      screen = { vision: screenVision.summary, windows: titles.map((t) => t.trim().slice(0, 40)).slice(0, 10) };
+    }
+    appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+      event: 'screen_vision', ok: screenVision.ok,
+      // engine names the engine behind the result (native / modlens); the event
+      // keeps its old name and keys, and never carries the picture or its path.
+      ...(screenVision.engine === undefined ? {} : { engine: screenVision.engine }),
+      // N4: when `auto` fell back to ModLens, keep WHY the native read failed —
+      // the native engine already scrubs the shot path and caps the text (160);
+      // the old audit line lost it entirely, so a native-only problem (no
+      // attachments service, model refuses images) was indistinguishable from a
+      // ModLens problem.
+      ...(screenVision.nativeError === undefined ? {} : { nativeError: screenVision.nativeError }),
+      ...(screenVision.ok ? {} : { error: (screenVision.error ?? '').slice(0, 100) }),
+    });
+    return screen;
+  };
+
   // spec ③ (2026-09-18): candidates are assembled by code — topic random 4 +
   // chat newest-evidence 2, complemented, cap 6. Empty package = no model call
-  // at all (全空不投递).
+  // at all (全空不投递), and since N2 no vision round either.
   const offered = assembleCandidates(activeSeeds(loadPool(guard, seedsFilePath(paths.dataDir))));
   if (offered.length === 0) {
     // v1.6.3 闲着模式：素材池为空时，若开启 idleMode，用本跳 digest 的话题切面兜底，
@@ -2046,6 +2351,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
         }));
         appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'idle_fallback', topics: fallback.length });
         // 画像兜底同样携带"我在干嘛"（vision 成功时才有；失败不编造）。
+        const screen = await runScreenVision();
         return deliverPackage(bc, fallback, {
           seedIds: [],
           doing: screen ? screen.windows.slice(0, 3).join('、').slice(0, 80) : undefined,
@@ -2056,6 +2362,7 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     noteBeat('silent', { reason: 'no candidates' });
     return;
   }
+  const screen = await runScreenVision();
   const seedsTop = offered.map((s) => `${s.id}: ${s.text.slice(0, 50)}`).join('\n');
   const staleLedger = scanPending(guard, ledgerFilePath(paths.dataDir), now).slice(0, 5)
     .map((e) => `- ${e.text}（${e.date}）`).join('\n');
@@ -2076,6 +2383,11 @@ async function expressionPhases(bc: BeatContext): Promise<void> {
     try {
       return await agentTurn(bc.deps, bc.agent!, ruminationPrompt, 'decision', IDLE_WAIT_TIMEOUT_MS, bc.signal);
     } catch (e) {
+      // N18-a3 中2: a cancellation landing in the decision turn is NOT a
+      // timeout — booking it as decision_deferred + noteBeat('silent') made a
+      // cancelled beat close normally (status written, no beat_aborted line),
+      // the audit telling the opposite of what happened. Let it unwind.
+      if (bc.signal.aborted) throw e;
       // A slow/hung decision turn used to kill the whole beat as beat_error
       // (2026-09-19: `decision: whenIdle timeout` right after vision succeeded
       // — most likely the model wandering off into web_search over the new
@@ -2475,13 +2787,31 @@ export async function beat(deps: OrchestratorDeps, trigger: BeatTrigger = 'inter
     }
     writeBeatStatus(deps, { beatStart, wandered, away: pausedAway });
   } catch (e) {
-    if (e instanceof BeatAbortedError) {
+    // N18 (rework 中1): the SIGNAL — not the error class — decides whether a
+    // beat was cancelled. A phase can reject with a plain Error while the
+    // signal is dying (e.g. a native-vision turn failing mid-abort); booking
+    // that as beat_error ran logger.error, set the settings card's lastBeat to
+    // 'error' and even ran markHomeRotateIfOverflow (abort text that happens
+    // to look like CONTEXT_WINDOW_EXCEEDED would misfire engine-room rotation).
+    // Cancellation books beat_aborted whatever the error's class.
+    const cancelled = e instanceof BeatAbortedError || ctl.signal.aborted;
+    if (cancelled) {
+      const stage = e instanceof BeatAbortedError ? e.stage : 'unknown';
+      const why = e instanceof BeatAbortedError ? e.why : abortText(ctl.signal);
       // ⑤A: cancellation is not a failure — no home rotation, no error status;
       // just a trace naming the stage that was called off, and why.
       try {
-        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', { event: 'beat_aborted', stage: e.stage, why: e.why });
+        appendAuditLine(paths.logsDir + '/heartbeat.jsonl', {
+          event: 'beat_aborted', stage, why,
+          // N18-a3 低4: keep the error text for the rethrow-style aborts (plain
+          // Errors that arrived while the signal was dying — the vision router's
+          // "beat cancelled mid-read", a probe dying mid-abort). Without it the
+          // swallowed-catch scenarios are untraceable; BeatAbortedError already
+          // carries its text in `why`.
+          ...(e instanceof BeatAbortedError ? {} : { error: String(e).slice(0, 120) }),
+        });
       } catch { /* audit must never break the beat */ }
-      deps.ctx.logger.info('heartbeat: beat aborted (%s: %s)', e.stage, e.why);
+      deps.ctx.logger.info('heartbeat: beat aborted (%s: %s)', stage, why);
     } else {
       deps.ctx.logger.error('heartbeat: beat failed: %s', String(e).slice(0, 200));
       markHomeRotateIfOverflow(e);
@@ -2587,7 +2917,7 @@ export function startOrchestrator(deps: OrchestratorDeps): void {
         beatCancel?.();
       } catch { /* never rethrow from the disposer */ }
       try {
-        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort('orchestrator disposed');
+        if (beatAbort && !beatAbort.signal.aborted) beatAbort.abort(DISPOSE_ABORT_TEXT);
       } catch { /* never rethrow from the disposer */ }
       appendAuditLine(deps.paths.logsDir + '/heartbeat.jsonl', { event: 'orchestrator_disposed', beatCancelled: cancelledInFlight });
       // H-02: every piece of module-level orchestrator state dies with this

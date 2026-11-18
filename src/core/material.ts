@@ -94,12 +94,94 @@ export function assembleCandidates<T extends CandidateSeed>(seeds: T[], opts: As
 
 /** ① opening declaration (section ① of the package). */
 export const PACKAGE_DECLARE =
-  '这是心跳插件素材投递,请你根据当前处境判断要不要开口:该说就选一条说,不该说就留白';
+  '这是心跳插件素材投递,请你根据当前处境判断要不要开口:该说就选一条说,不该说就按下面的沉默说明办';
 
-/** ④c (2026-10-16): silence is a legal answer — say so plainly, so a decided
- * silence really leaves a blank reply instead of a courtesy line. */
+/** The fixed line a decided silence speaks in the default rhythm. Exported so
+ *  a reply can be recognised as silence-only (concludeSilentTurn OFF) instead
+ *  of being miscounted as a spoken message. */
+export const SILENCE_TEXT = '本轮沉默';
+
+/** ④c (2026-10-16): silence is a legal answer. Default rhythm (concludeSilentTurn
+ *  OFF): she answers with the fixed line 「本轮沉默」 so silences are easy to
+ *  spot, then files the report while the turn stays open. */
 export const SILENCE_DECLARE =
-  '(决定不说的时候:回复里不要写任何正文,也不要写"嗯""在的"这种客套,只调一次 seed_report 报 spoken=silent 并写上 reason;空着就是真的沉默)';
+  `(决定不说的时候:本轮只回复「${SILENCE_TEXT}」四个字,不要写别的正文,也不要写"嗯""在的"这种套话,然后调用一次 seed_report 报 spoken=silent 并写上 reason)`;
+
+/** Experimental (2.3.0): with concludeSilentTurn ON the plugin ends the turn
+ *  once the report has landed, so the prompt asks for ZERO body text — a
+ *  courtesy line here would become a real message. */
+export const SILENCE_DECLARE_CONCLUDE =
+  `(决定不说的时候:回复里不要写任何正文,也不要写"${SILENCE_TEXT}"或"嗯""在的"这种套话,只调用一次 seed_report 报 spoken=silent 并写上 reason;报账完成后本轮会由插件结束)`;
+
+/** Wrappers a reply may legally put around the silence line. Stripped ONLY at
+ *  the ends: deleting them everywhere would splice 『本』轮沉默 into a silence. */
+const WRAP_CHARS = new Set([
+  ...'（）()【】[]《》〈〉〔〕「」『』"\'“”‘’',
+  ...'，。！？；：、,.!?;:~…—．～',
+]);
+
+const isZeroWidth = (ch: string): boolean =>
+  ch === '\u200B' || ch === '\u200C' || ch === '\u200D' || ch === '\uFEFF';
+
+const isWrapperChar = (ch: string): boolean => WRAP_CHARS.has(ch) || isZeroWidth(ch) || /\s/.test(ch);
+
+/** Trim leading/trailing brackets, quotes, punctuation, zero-width characters
+ *  and whitespace; never touch anything in the middle. */
+export function stripWrappers(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isWrapperChar(text.charAt(start))) start += 1;
+  while (end > start && isWrapperChar(text.charAt(end - 1))) end -= 1;
+  return text.slice(start, end);
+}
+
+/** Single-line entry point (kept for existing callers). */
+export function isSilenceOnlyLine(text: string): boolean {
+  return stripWrappers(text) === SILENCE_TEXT;
+}
+
+/** H-67: strip thinking blocks and tool-call trailing tags, then take the last
+ *  line carrying Chinese — the target agent's turn may end on a tool call, so
+ *  the sentence she actually spoke sits further up. */
+export function pickSpokenLine(raw: string): { text: string; spokeText: boolean } {
+  const lines = spokenLines(raw);
+  const cnLine = [...lines].reverse().find((l) => /[\u4e00-\u9fff]/.test(l));
+  const text = (cnLine ?? lines[lines.length - 1] ?? '').slice(0, 200);
+  return { text, spokeText: Boolean(text && /[\u4e00-\u9fff]/.test(text)) };
+}
+
+// Thinking-block handling (P15-1). The tag spellings below stay escaped on
+// purpose: when the contiguous angle-bracket form appears in source, tests or
+// an agent reply, the model stream treats it as a control marker and truncates
+// the output mid-sentence. Reading the files is fine; write them back through a
+// script and build fixtures by concatenation — never paste the literal tags.
+//
+// Two steps: complete pairs are removed (the opening tag may carry attributes,
+// the closing tag may sit whitespace away from its bracket); then, if an
+// opening tag is still present, the reply was truncated inside a thinking block
+// and nobody spoke after it, so everything from that tag to the end is dropped.
+// Lines that are nothing but a single tag are dropped last.
+const THINK_BLOCK_RE = /<\/?think(?:ing)?(?:\s[^>]*)?>[\s\S]*?<\/think(?:ing)?\s*>/gi;
+const THINK_UNCLOSED_OPEN_RE = /<(?!\/)think(?:ing)?(?:\s[^>]*)?>/i;
+const THINK_TAG_ONLY_LINE_RE = /^<\/?think(?:ing)?(?:\s[^>]*)?>$/i;
+
+/** Non-empty content lines after the same stripping pickSpokenLine does. */
+export function spokenLines(raw: string): string[] {
+  let text = raw.replace(THINK_BLOCK_RE, '');
+  const open = THINK_UNCLOSED_OPEN_RE.exec(text);
+  if (open) text = text.slice(0, open.index);
+  return text.trim()
+    .split('\n').map((l) => l.trim())
+    .filter((l) => l && !THINK_TAG_ONLY_LINE_RE.test(l) && !/^<\/?tool_calls?>$/i.test(l));
+}
+
+/** Silence ONLY when every non-empty line is the bare silence line. One extra
+ *  sentence anywhere means she spoke — it is already visible in the session and
+ *  must be accounted as speech, not swallowed as silence. */
+export function isSilenceOnlyText(raw: string): boolean {
+  const lines = spokenLines(raw);
+  return lines.length > 0 && lines.every((l) => stripWrappers(l) === SILENCE_TEXT);
+}
 
 /** ② each material as ONE sentence prefixed by its id — the persona reports
  * usage by id (seed_report), so the id must be visible in the package. */
@@ -154,7 +236,15 @@ export function wantHonestOption(materials: MaterialInput[], threshold = 2): boo
  */
 export function buildMaterialPrompt(
   materials: MaterialInput[],
-  opts: { threshold?: number; doing?: string; deliveryId?: string; notepad?: NotepadDigest } = {},
+  opts: {
+    threshold?: number;
+    doing?: string;
+    deliveryId?: string;
+    notepad?: NotepadDigest;
+    /** 2.3.0 experimental: the plugin concludes a silent turn after the report
+     *  lands, so the silence line must forbid ALL body text. */
+    concludeSilent?: boolean;
+  } = {},
 ): string {
   const lines: string[] = [];
   if (opts.doing && opts.doing.trim()) {
@@ -169,8 +259,10 @@ export function buildMaterialPrompt(
   if (wantHonestOption(materials, opts.threshold ?? 2)) {
     lines.push('(或者也可以说一句真心话,不带素材)');
   }
-  // ④b (v1.9.0): the delivery id ties the report back to THIS package.
-  lines.push(SILENCE_DECLARE);
+  // ④b (v1.9.0): the delivery id ties the report back to THIS package. The
+  // silence line above decides what a silent reply looks like, so the report
+  // instruction below must not contradict it.
+  lines.push(opts.concludeSilent ? SILENCE_DECLARE_CONCLUDE : SILENCE_DECLARE);
   if (opts.deliveryId) {
     lines.push(`(本次投递编号:${opts.deliveryId},报账时原样填进 delivery_id)`);
   }
@@ -181,11 +273,11 @@ export function buildMaterialPrompt(
 /** ④ standing report instruction (2026-10-06): one seed_report per delivery,
  * even for "used nothing". Reasons are the persona's own one-line why. */
 export const REPORT_DECLARE =
-  '最后,无论刚才说不说话、用没用素材,都要调用一次 seed_report 工具报账(不说话时正文就留空):' +
+  '最后,无论刚才说不说话、用没用素材,都要调用一次 seed_report 工具报账(沉默时按上面的沉默说明办):' +
   'spoken=material(说了素材)/heartfelt(说了不带素材的话)/silent(没说话);' +
   '用了素材就把素材编号填进 seed_ids(可多条,只填编号本身);用了画像条目当话题就填 profile_ids;' +
   '没用素材时用 reason 简单记一笔原因(不想说话/素材不搭/在忙或刚聊过,无需素材);' +
-  '并把本次投递编号填进 delivery_id。';
+  '并把本次投递编号填进 delivery_id。缺 delivery_id 或与本轮投递不符会被拒收,本次不记账。';
 
 /**
  * Attribution (2026-10-06): explicit nomination only, validated against THIS
@@ -198,10 +290,13 @@ export function explicitIds(candidates: MaterialInput[], ids: string[] = []): st
   return [...new Set(ids)].filter((id) => known.has(id));
 }
 
+/** The three things a report can claim. */
+export type SpokenKind = 'material' | 'heartfelt' | 'silent';
+
 /** The persona's seed_report, structurally typed so material.ts stays free of
  * a runtime dependency on the report store. */
 export interface DeliveryReportInput {
-  spoken: 'material' | 'heartfelt' | 'silent';
+  spoken: SpokenKind;
   seedIds: string[];
   profileIds: string[];
   reason?: string;
@@ -298,6 +393,118 @@ export function reconcileDelivery(
     profileIds: [],
     source: ids.length > 0 ? 'decision' : 'none',
   };
+}
+
+/** A report that disagrees with the settled facts (P1-2, 2.3.0). The books
+ *  follow `actual`; `reported` is kept for the audit line only. */
+export interface SpokenMismatch {
+  reported: SpokenKind;
+  actual: SpokenKind;
+}
+
+export interface ReconciledReply {
+  /** The line the user actually saw (last Chinese line). */
+  text: string;
+  /** pickSpokenLine's raw verdict: there is Chinese text in the reply. */
+  spokeText: boolean;
+  /** The whole reply is nothing but the fixed silence line. */
+  silenceOnly: boolean;
+  /** The reply has no content line at all after thinking/tool-tag stripping
+   *  (N15⑤: computed ONCE here — deliveryVerdict reads it instead of re-running
+   *  spokenLines on the raw text). */
+  bodyEmpty: boolean;
+  /** What the accounts must use: spoken text that is NOT a silence line. */
+  effectiveSpokeText: boolean;
+  account: DeliveryAccount;
+  /** What the report CLAIMED (reference only); null = no report at all. */
+  reportedSpoken: SpokenKind | null;
+  /** Reported vs settled disagreement; null when absent or aligned. */
+  spokenMismatch: SpokenMismatch | null;
+}
+
+/** The one reconciliation chain (rework R-C): pick the visible line, decide
+ *  silence from the WHOLE raw reply, then account. Both the orchestrator and
+ *  the tests call this — neither re-implements the middle steps. */
+export function reconcileReply(
+  rawText: string,
+  report: DeliveryReportInput | null,
+  decisionIds: string[],
+  materials: MaterialInput[],
+): ReconciledReply {
+  const { text, spokeText } = pickSpokenLine(rawText);
+  // P1-2 (2.3.0, attempt 3): silence-only is a FACT about the reply, never
+  // gated on the report — a rejected report must not turn a declared silence
+  // into speech (that would spend the daily slot and advance the cooldown).
+  const silenceOnly = isSilenceOnlyText(rawText);
+  const bodyEmpty = spokenLines(rawText).length === 0;
+  const effectiveSpokeText = spokeText && !silenceOnly;
+  const account = reconcileDelivery(materials, report, decisionIds, effectiveSpokeText);
+  // P1-2 (2.3.0): the FACTS (body empty or not) settle the books — the
+  // account above already does that; the report's spoken is a reference. Keep
+  // the disagreement here so callers audit it instead of re-judging.
+  const reportedSpoken = report?.spoken ?? null;
+  const spokenMismatch: SpokenMismatch | null =
+    reportedSpoken !== null && reportedSpoken !== account.spoken
+      ? { reported: reportedSpoken, actual: account.spoken }
+      : null;
+  return {
+    text,
+    spokeText,
+    silenceOnly,
+    bodyEmpty,
+    effectiveSpokeText,
+    account,
+    reportedSpoken,
+    spokenMismatch,
+  };
+}
+
+/** The one turn/end kind that means the model ran to a normal stop (B2 中2,
+ *  2.3.0): DSH's TurnEndReasonMap is { completed, blocked, error, aborted,
+ *  interrupted, max-tokens, forked } — every non-completed kind is NOT a
+ *  chosen silence. blocked/error/aborted/interrupted/max-tokens/forked keep
+ *  dedicated strings in orchestrator.classifySilentReason; unknown future
+ *  kinds fail closed there too. An allowlist, not a blocklist, so a kind this
+ *  codebase has never heard of can never be filed as "she chose silence". */
+export const TURN_END_SILENCE_KIND = 'completed';
+
+/** P1-2 (2.3.0, attempt 3): the FACT of the reply decides a silent beat — an
+ *  empty body, or a body that is nothing but the silence line. The report is a
+ *  reference, never a precondition: a rejected or missing report must not turn
+ *  a silent beat into a spoke_failed one. Only a turn that ended `completed`
+ *  can carry a fact-silence (N15①/B2 中2): blocked was never asked, error died
+ *  mid-flight, and aborted/interrupted/max-tokens/forked all mean the reply
+ *  was cut short — filing those as "she chose silence" is exactly the
+ *  misfiling N15① exists for. All of them keep the spoke_failed path. A
+ *  non-Chinese body is ALSO not a fact-silence: text existed and was discarded
+ *  by the Chinese gate, so it is a speech attempt that failed the contract,
+ *  not silence. */
+export interface DeliveryVerdict {
+  /** The reply's own body is silent (empty or only the silence line). */
+  factSilent: boolean;
+  /** The body is empty after thinking/tool-tag stripping. */
+  bodyEmpty: boolean;
+  /** Audit reason for a fact-silence; null when not factSilent. */
+  silentReason: string | null;
+}
+
+/** N15⑤ (2.3.0): takes the ALREADY-reconciled reply — the silence bits were
+ *  computed once in reconcileReply and are read from it here, never re-derived
+ *  from the raw text. */
+export function deliveryVerdict(reply: ReconciledReply, turnEndKind: string | null): DeliveryVerdict {
+  const bodyEmpty = reply.bodyEmpty;
+  const silentBody = bodyEmpty || reply.silenceOnly;
+  if (!silentBody || turnEndKind !== TURN_END_SILENCE_KIND) {
+    return { factSilent: false, bodyEmpty, silentReason: null };
+  }
+  const silentReason = reply.reportedSpoken
+    ? reply.reportedSpoken === 'silent'
+      ? `报账沉默:${reply.account.reason ?? '未说明'}`
+      : `按事实记沉默(报账 spoken=${reply.reportedSpoken},${bodyEmpty ? '正文为空' : '正文只有沉默行'})`
+    : bodyEmpty
+      ? '正文为空'
+      : '正文只有沉默行';
+  return { factSilent: true, bodyEmpty, silentReason };
 }
 
 /**

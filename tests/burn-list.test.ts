@@ -60,6 +60,31 @@ test('HB-07: a burn shreds migration backups and staging leftovers, subdirs incl
   }
 });
 
+test('2.3.0: book migration backups are burned (plaintext ledger/corrections copies)', () => {
+  const dir = sandboxDir('hb-burn-');
+  process.env.HEARTBEAT_DATA_DIR = path.join(dir, 'data');
+  resetWorkspaceForTest();
+  initWorkspace();
+  try {
+    const guard = createPathGuard(workspace().dataDir);
+    const dataDir = workspace().dataDir;
+    const plain = path.join(dataDir, 'ledger.md.bak-20261117-150912');
+    const collision = path.join(dataDir, 'corrections.md.bak-20261117-150912-1');
+    fs.writeFileSync(plain, 'x', 'utf8');
+    fs.writeFileSync(collision, 'x', 'utf8');
+
+    const res = executeBurn(guard, workspace());
+    assert.equal(fs.existsSync(plain), false);
+    assert.equal(fs.existsSync(collision), false);
+    assert.ok(res.burned.includes('ledger.md.bak-20261117-150912'));
+    assert.ok(res.burned.includes('corrections.md.bak-20261117-150912-1'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    delete process.env.HEARTBEAT_DATA_DIR;
+    resetWorkspaceForTest();
+  }
+});
+
 test('H-19: a burn shreds the journal archive shards too', () => {
   const dir = sandboxDir('hb-burn-');
   process.env.HEARTBEAT_DATA_DIR = path.join(dir, 'data');

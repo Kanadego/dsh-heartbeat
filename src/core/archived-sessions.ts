@@ -48,9 +48,10 @@ export function isArchivedSession(archived: Set<string>, id: string): boolean {
 }
 
 /** Split deliver targets into usable / skipped, preserving the caller's
- *  order in both groups. Filtering happens at the call site (deliverPackage),
- *  never inside `deliverTargets` itself — the bindings module stays
- *  single-purpose. */
+ *  order in both groups. LEGACY since P0-4: the session gate now owns every
+ *  archived decision, so no src caller remains — kept only for
+ *  tests/archived-deliver.test.ts, which pins the archived-only pre-gate
+ *  behaviour. Do not wire it back into the orchestrator. */
 export function splitDeliverTargets<T extends { sessionId: string }>(
   all: readonly T[],
   archived: Set<string>,

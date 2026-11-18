@@ -38,7 +38,18 @@ import {
 } from './seeds/pool.js';
 import { loadProfile, profileFilePath } from './profile/store.js';
 import { buildDigest } from './profile/digest.js';
-import { ledgerFilePath } from './ledger/ledger.js';
+import {
+  CORRECTIONS_DONE_HEADER,
+  CORRECTIONS_HEADER,
+  LEDGER_DONE_HEADER,
+  LEDGER_HEADER,
+  correctionsDoneFilePath,
+  correctionsFilePath,
+  ledgerDoneFilePath,
+  ledgerFilePath,
+  scanPending,
+  seedBookFile,
+} from './ledger/ledger.js';
 import { EXCERPT_HEADER, excerptFilePath } from './excerpt/excerpt.js';
 import { listWeeklyReports, readWeeklyReport } from './weekly/report.js';
 import { addBinding, loadBindings, removeBinding } from './core/bindings.js';
@@ -474,7 +485,7 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
         return err('bad-request', 'config.set needs a patch object');
       }
       const keys = Object.keys(patch).filter((k) =>
-        ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'visionEngine', 'psyEnabled', 'quietStart', 'quietEnd'].includes(k),
+        ['intervalMin', 'maxDailySend', 'timeInjectMin', 'statusbar', 'idleMode', 'tokenSaver', 'visionEngine', 'concludeSilentTurn', 'psyEnabled', 'quietStart', 'quietEnd'].includes(k),
       );
       if (keys.length === 0) return err('bad-request', 'config.set has no recognized field');
       try {
@@ -547,7 +558,32 @@ function buildEndpoints(deps: Omit<RpcDeps, 'ctx'>, isLive: (sessionId: string) 
 
     'ledger.open'() {
       const f = ledgerFilePath(paths.dataDir);
-      if (!fs.existsSync(guard.assert(f))) fs.writeFileSync(f, '# 账本\n', 'utf8');
+      seedBookFile(guard, f, LEDGER_HEADER);
+      openPath(f);
+      return ok({ path: f });
+    },
+
+    // 2.3.0: the live book only shows open rows; the archive is a read-only
+    // companion (same button row in the card). Missing archive = empty file.
+    'ledger.openDone'() {
+      const f = ledgerDoneFilePath(paths.dataDir);
+      seedBookFile(guard, f, LEDGER_DONE_HEADER);
+      openPath(f);
+      return ok({ path: f });
+    },
+
+    // 错题本 (v2.3.0): same two-button semantics as the ledger; `pending` is
+    // the count of unreviewed rows in the live book.
+    'corrections.open'() {
+      const f = correctionsFilePath(paths.dataDir);
+      seedBookFile(guard, f, CORRECTIONS_HEADER);
+      openPath(f);
+      return ok({ path: f, pending: scanPending(guard, f).length });
+    },
+
+    'corrections.openDone'() {
+      const f = correctionsDoneFilePath(paths.dataDir);
+      seedBookFile(guard, f, CORRECTIONS_DONE_HEADER);
       openPath(f);
       return ok({ path: f });
     },

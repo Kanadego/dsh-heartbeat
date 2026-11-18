@@ -176,6 +176,49 @@ interface OrchestratorDeps {
 }
 
 declare const name = "heartbeat";
+/** N3: the three engine literals a vision-engine setting may carry ('' = unset,
+ *  follows data/settings/vision.json → built-in auto). */
+declare const VISION_ENGINE_LITERALS: readonly ["native", "modlens", "auto"];
+type VisionEngineChoice = (typeof VISION_ENGINE_LITERALS)[number] | '';
+interface VisionEngineResolution {
+    /** The effective setting: one of the three literals, or '' (unset). */
+    value: VisionEngineChoice;
+    /** Non-empty inputs that are NOT one of the three literals, in the order
+     *  they were seen. An invalid value reads as unset — never as "has a value" —
+     *  and the caller is expected to audit it so a typo is visible on the
+     *  settings page's audit trail instead of silently ignored. */
+    invalid: {
+        source: 'config' | 'card';
+        value: string;
+    }[];
+}
+/**
+ * N18: audit the invalid engine values once per distinct source:value pair.
+ * The resolver runs on every beat, so a typo must be reported exactly once.
+ * 口径 (rework 低3): after ui-config's sanitize the production chain feeds this
+ * at most ONE config-side invalid value, so the old single-slot memory
+ * (`invalidEngineAudited: string | undefined`) was adequate on that path —
+ * this keyed Set is a DEFENSIVE improvement (it also stays correct if a future
+ * caller ever feeds card-side values), not a fix for a reproducible production
+ * bug. The set is owned by the caller and survives across beats.
+ * 只增不减是故意的 (rework 低2): the audit records "this typo exists", not
+ * "it exists N times" — the same value fixed and later re-entered is
+ * deliberately NOT re-audited; if the settings page ever needs a re-break
+ * notification, reset the set on that edge there, not here.
+ */
+declare function auditInvalidVisionEngines(invalid: readonly {
+    source: 'config' | 'card';
+    value: string;
+}[], alreadyAudited: Set<string>, write: (entry: Record<string, unknown>) => boolean | void): void;
+/**
+ * N3: resolve the two vision-engine inputs (composition-entry config first,
+ * then the settings card) in precedence order, resolving EACH before picking.
+ * The old one-liner (`config.trim() || ui.trim()`) treated any non-empty value
+ * as "has a value": config='bogus' shadowed a deliberate card='modlens', and
+ * downstream coercion then silently ran it as auto. Here an invalid value is
+ * unset, so the next input in precedence applies.
+ */
+declare function resolveVisionEngineSetting(configured: string, card: string): VisionEngineResolution;
 /**
  * Host services required by the orchestrator (verified present in
  * DSH 0.1.1-rc.2 via hb-probe: agents service + agent/created + followup).
@@ -322,4 +365,4 @@ declare function apply(ctx: OrchestratorDeps['ctx'] & {
     }): unknown;
 }, config?: HeartbeatConfig): void;
 
-export { Config, type HeartbeatConfig, apply, deepMerge, inject, name };
+export { Config, type HeartbeatConfig, type VisionEngineChoice, type VisionEngineResolution, apply, auditInvalidVisionEngines, deepMerge, inject, name, resolveVisionEngineSetting };

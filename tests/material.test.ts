@@ -6,6 +6,7 @@ import { strict as assert } from 'node:assert';
 import {
   PACKAGE_DECLARE,
   SILENCE_DECLARE,
+  SILENCE_DECLARE_CONCLUDE,
   REPORT_DECLARE,
   buildMaterialPrompt,
   buildRuminationPrompt,
@@ -28,15 +29,23 @@ const M3: MaterialInput = { id: 's4', text: '他们一起看完了那部电影',
 test('PACKAGE_DECLARE: section ① is the heartbeat material delivery declaration', () => {
   assert.ok(PACKAGE_DECLARE.includes('这是心跳插件素材投递'));
   assert.ok(PACKAGE_DECLARE.includes('要不要开口'));
-  assert.ok(PACKAGE_DECLARE.includes('该说就选一条说,不该说就留白'));
+  // Must not pre-empt the silence spec: mentioning 留白 alone contradicted the
+  // conclude-mode "zero body text" instruction that follows it (2.3.0).
+  assert.ok(PACKAGE_DECLARE.includes('不该说就按下面的沉默说明办'));
+  assert.ok(!PACKAGE_DECLARE.includes('不该说就留白'));
 });
 
-test('SILENCE_DECLARE: a decided silence leaves the reply blank (2026-10-16)', () => {
-  assert.ok(SILENCE_DECLARE.includes('不要写任何正文'));
+test('SILENCE_DECLARE: two-state silence spec (2.3.0) — default 本轮沉默, conclude mode forbids all body text', () => {
+  assert.ok(SILENCE_DECLARE.includes('本轮沉默'));
   assert.ok(SILENCE_DECLARE.includes('spoken=silent'));
-  const p = buildMaterialPrompt([M0]);
-  assert.ok(p.includes(SILENCE_DECLARE), 'the silence line is unconditional');
-  assert.ok(p.indexOf(SILENCE_DECLARE) < p.indexOf(REPORT_DECLARE), 'silence line comes before the report instruction');
+  assert.ok(SILENCE_DECLARE_CONCLUDE.includes('不要写任何正文'));
+  assert.ok(SILENCE_DECLARE_CONCLUDE.includes('spoken=silent'));
+  const off = buildMaterialPrompt([M0]);
+  assert.ok(off.includes(SILENCE_DECLARE), 'default: the fixed 本轮沉默 line');
+  assert.ok(!off.includes(SILENCE_DECLARE_CONCLUDE));
+  const on = buildMaterialPrompt([M0], { concludeSilent: true });
+  assert.ok(on.includes(SILENCE_DECLARE_CONCLUDE), 'conclude mode: zero-body-text line');
+  assert.ok(on.indexOf(SILENCE_DECLARE_CONCLUDE) < on.indexOf(REPORT_DECLARE), 'silence line comes before the report instruction');
 });
 
 test('materialLines: each line carries the material id so the persona can report by id', () => {

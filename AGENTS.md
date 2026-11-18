@@ -19,14 +19,15 @@
 
 ## 2. How to Use It
 
-### 2.1 As the Companion Agent (4 Injected Tools)
+### 2.1 As the Companion Agent (5 Injected Tools)
 
-When a session has `deliver: true`, the companion agent receives 4 tools (blocked inside the Engine Room):
+Chat agents get five tools in total (all of them are masked inside the Engine Room). `ledger`, `corrections`, `excerpt` and `seed_report` are global; `notepad` is declared only in sessions that pass the delivery gate (`deliver: true` and not archived/broken):
 
 | Tool | Actions | Purpose & Rules |
 |---|---|---|
 | `seed_report` | `spoken: "material" \| "heartfelt" \| "silent"` | **Mandatory on every heartbeat delivery package.** Pass `delivery_id` verbatim; if `spoken="material"`, pass used `seed_ids` (e.g. `["s3"]`). |
-| `ledger` | `add` · `list` · `done` | Shared todo & promise tracker (`data/ledger.md`). Register plans/todos proactively when mentioned by the user. |
+| `ledger` | `add` · `list` · `done` | Shared todo & promise tracker (`data/ledger.md`). Register plans/todos proactively when mentioned by the user. `done` moves the row out of the book into `data/ledger-done.md`. |
+| `corrections` | `add` · `list` · `done` | 错题本 / mistake book (`data/corrections.md`). Same switch as `ledger`: turning the ledger tool off hides this one too. `done` archives into `data/corrections-done.md`. |
 | `notepad` | `write` · `read` · `clear` | Single-slot sticky note (`data/notepad.json`, encrypted) left for the next beat's self. Writing overwrites the previous note; unread notes expire after delivery. |
 | `excerpt` | `add` · `list` · `remove` | Personal quote & moment scrapbook (`data/excerpt.md`). Append-only unless explicitly removed. |
 

@@ -41,6 +41,9 @@ export const BURN_LIST: BurnTarget[] = [
   // `.incoming-` staging files are the same data, only younger.
   { match: /\.bak-migrate-\d{14}$/, note: '迁移备份（迁移导入时的原文件副本）' },
   { match: /\.incoming-\d{14}$/, note: '迁移暂存残留（崩溃遗留的导入副本）' },
+  // 2.3.0: the ledger/corrections migration writes `<book>.md.bak-YYYYMMDD-HHMMSS`
+  // (with `-N` on a same-second collision) — a full plaintext copy of the book.
+  { match: /\.bak-\d{8}-\d{6}(-\d+)?$/, note: '书籍迁移备份（账本/错题本明文副本）' },
   { file: 'profile_rhythm.json', note: '作息聚合（纯统计）' },
   { file: 'screen.json', note: '屏幕快照（加密）' },
   { file: 'screen.jpg', note: '截图（加密）' },
@@ -48,6 +51,12 @@ export const BURN_LIST: BurnTarget[] = [
   { file: 'browse.json', note: '浏览流状态（加密）' },
   { file: 'seeds.jsonl', note: '素材池（加密）' },
   { file: 'ledger.md', note: '账本（明文，人可读是设计目标）' },
+  // 2.3.0: done rows live in the archive now, and the corrections book is the
+  // same memory in another file — a burn that leaves them behind leaves the
+  // completions / the user's 错题本 readable.
+  { file: 'ledger-done.md', note: '账本归档（已完成条目）' },
+  { file: 'corrections.md', note: '错题本（明文）' },
+  { file: 'corrections-done.md', note: '错题本归档（已复盘条目）' },
   { file: 'envpulse.json', note: '环境温度计快照' },
   { file: 'gate.json', note: '闸门运行时计数' },
   // v1.9.0 completion (H-19): these carry memory just as much as the rows

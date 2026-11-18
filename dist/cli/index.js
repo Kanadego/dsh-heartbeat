@@ -3,7 +3,7 @@ import {
   collectMigrationEntries,
   decryptContainer,
   encryptContainer
-} from "../chunk-AT32XCCI.js";
+} from "../chunk-43Q42HWH.js";
 import {
   BUNDLED_PRESET_ID,
   EXCERPT_HEADER,
@@ -17,13 +17,19 @@ import {
   presetStatus,
   readExcerpts,
   removeExcerpt
-} from "../chunk-F2XVKX55.js";
+} from "../chunk-KGOC6EX4.js";
 import {
+  CORRECTIONS_DONE_HEADER,
+  CORRECTIONS_HEADER,
+  LEDGER_DONE_HEADER,
   adviseWander,
   appendEntry,
   browseStatus,
   completeWander,
+  correctionsDoneFilePath,
+  correctionsFilePath,
   ensureRegistered,
+  ledgerDoneFilePath,
   ledgerFilePath,
   listWeeklyReports,
   loadInterests,
@@ -32,9 +38,10 @@ import {
   readLedger,
   readWeeklyReport,
   scanPending,
+  seedBookFile,
   sendNewMessageHint,
   weeklyDirPath
-} from "../chunk-XYBII5PR.js";
+} from "../chunk-HSTGRQLP.js";
 import {
   openPath
 } from "../chunk-OCBE2AKW.js";
@@ -47,7 +54,7 @@ import {
   loadPool,
   seedsFilePath,
   surfaceSeed
-} from "../chunk-N6SMIGYJ.js";
+} from "../chunk-QOLKUYQ3.js";
 import {
   appendAuditLine,
   loadProfile,
@@ -56,7 +63,7 @@ import {
   rebuildProfile,
   verifyProfile,
   wipeProfile
-} from "../chunk-ECXYNTEV.js";
+} from "../chunk-K47VV6IQ.js";
 import {
   containerKind,
   dshHomeDir,
@@ -65,11 +72,11 @@ import {
   upgradeVaultTree,
   vaultKeyPath,
   writeText
-} from "../chunk-M72T5MZU.js";
+} from "../chunk-GOLMRQRW.js";
 import {
   atomicWriteFileSync,
   shredFileSync
-} from "../chunk-IBBAISSW.js";
+} from "../chunk-66IUDHCY.js";
 
 // src/cli/index.ts
 import fs2 from "fs";
@@ -92,6 +99,9 @@ var BURN_LIST = [
   // `.incoming-` staging files are the same data, only younger.
   { match: /\.bak-migrate-\d{14}$/, note: "\u8FC1\u79FB\u5907\u4EFD\uFF08\u8FC1\u79FB\u5BFC\u5165\u65F6\u7684\u539F\u6587\u4EF6\u526F\u672C\uFF09" },
   { match: /\.incoming-\d{14}$/, note: "\u8FC1\u79FB\u6682\u5B58\u6B8B\u7559\uFF08\u5D29\u6E83\u9057\u7559\u7684\u5BFC\u5165\u526F\u672C\uFF09" },
+  // 2.3.0: the ledger/corrections migration writes `<book>.md.bak-YYYYMMDD-HHMMSS`
+  // (with `-N` on a same-second collision) — a full plaintext copy of the book.
+  { match: /\.bak-\d{8}-\d{6}(-\d+)?$/, note: "\u4E66\u7C4D\u8FC1\u79FB\u5907\u4EFD\uFF08\u8D26\u672C/\u9519\u9898\u672C\u660E\u6587\u526F\u672C\uFF09" },
   { file: "profile_rhythm.json", note: "\u4F5C\u606F\u805A\u5408\uFF08\u7EAF\u7EDF\u8BA1\uFF09" },
   { file: "screen.json", note: "\u5C4F\u5E55\u5FEB\u7167\uFF08\u52A0\u5BC6\uFF09" },
   { file: "screen.jpg", note: "\u622A\u56FE\uFF08\u52A0\u5BC6\uFF09" },
@@ -99,6 +109,12 @@ var BURN_LIST = [
   { file: "browse.json", note: "\u6D4F\u89C8\u6D41\u72B6\u6001\uFF08\u52A0\u5BC6\uFF09" },
   { file: "seeds.jsonl", note: "\u7D20\u6750\u6C60\uFF08\u52A0\u5BC6\uFF09" },
   { file: "ledger.md", note: "\u8D26\u672C\uFF08\u660E\u6587\uFF0C\u4EBA\u53EF\u8BFB\u662F\u8BBE\u8BA1\u76EE\u6807\uFF09" },
+  // 2.3.0: done rows live in the archive now, and the corrections book is the
+  // same memory in another file — a burn that leaves them behind leaves the
+  // completions / the user's 错题本 readable.
+  { file: "ledger-done.md", note: "\u8D26\u672C\u5F52\u6863\uFF08\u5DF2\u5B8C\u6210\u6761\u76EE\uFF09" },
+  { file: "corrections.md", note: "\u9519\u9898\u672C\uFF08\u660E\u6587\uFF09" },
+  { file: "corrections-done.md", note: "\u9519\u9898\u672C\u5F52\u6863\uFF08\u5DF2\u590D\u76D8\u6761\u76EE\uFF09" },
   { file: "envpulse.json", note: "\u73AF\u5883\u6E29\u5EA6\u8BA1\u5FEB\u7167" },
   { file: "gate.json", note: "\u95F8\u95E8\u8FD0\u884C\u65F6\u8BA1\u6570" },
   // v1.9.0 completion (H-19): these carry memory just as much as the rows
@@ -238,8 +254,12 @@ function usage() {
     "  seeds stats                       pool status JSON",
     "  ledger add <text>                 register an open item",
     "  ledger list [--pending]           list entries",
-    "  ledger done <id|substring>        mark an entry done",
-    "  ledger open                       open ledger.md in the default editor",
+    "  ledger done <id|substring>        mark an entry done (moves it to the archive)",
+    "  ledger open [--done]              open ledger.md (or its archive) in the default editor",
+    "  corrections add <text>            record a correction (\u9519\u9898\u672C)",
+    "  corrections list [--pending]      list unreviewed corrections",
+    "  corrections done <id|substring>   mark a correction reviewed (moves it to the archive)",
+    "  corrections open [--done]         open corrections.md (or its archive) in the default editor",
     "  excerpt add <text>                keep a line in the notebook",
     "  excerpt list [n]                  list entries (newest n if given)",
     "  excerpt remove <id|substring>     tear a page out",
@@ -384,7 +404,7 @@ async function verbSeeds(c) {
   }
 }
 async function verbLedger(c) {
-  const { guard, sub, rest, ledgerFile } = c;
+  const { guard, sub, rest, ledgerFile, seedAudit } = c;
   switch (sub) {
     case "add": {
       let text = rest.join(" ").trim();
@@ -410,7 +430,7 @@ async function verbLedger(c) {
         console.error("usage: ledger done <id|substring>");
         return 1;
       }
-      const e = markDone(guard, ledgerFile, key);
+      const e = markDone(guard, ledgerFile, key, Date.now(), void 0, void 0, seedAudit);
       if (!e) {
         console.log("NOT_FOUND");
         return 1;
@@ -419,16 +439,65 @@ async function verbLedger(c) {
       return 0;
     }
     case "open": {
-      const f = ledgerFile;
-      if (!fs2.existsSync(f)) {
-        console.log(`(ledger will be created at ${f})`);
-      }
+      const done = rest.includes("--done");
+      const f = done ? ledgerDoneFilePath(c.paths.dataDir) : ledgerFile;
+      if (done) seedBookFile(guard, f, LEDGER_DONE_HEADER);
+      else if (!fs2.existsSync(f)) console.log(`(ledger will be created at ${f})`);
       openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
     default:
       console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+async function verbCorrections(c) {
+  const { guard, sub, rest, correctionsFile, seedAudit } = c;
+  switch (sub) {
+    case "add": {
+      let text = rest.join(" ").trim();
+      if (text === "-") text = readStdinText();
+      if (!text) {
+        console.error("usage: corrections add <text|->");
+        return 1;
+      }
+      const e = appendEntry(guard, correctionsFile, text, Date.now(), CORRECTIONS_HEADER);
+      console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case "list": {
+      const { entries } = readLedger(guard, correctionsFile, CORRECTIONS_HEADER);
+      const items = rest.includes("--pending") ? scanPending(guard, correctionsFile) : entries;
+      for (const e of items) console.log(`${e.status === "open" ? " " : "x"} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log("(empty)");
+      return 0;
+    }
+    case "done": {
+      const key = rest.join(" ").trim();
+      if (!key) {
+        console.error("usage: corrections done <id|substring>");
+        return 1;
+      }
+      const e = markDone(guard, correctionsFile, key, Date.now(), void 0, void 0, seedAudit);
+      if (!e) {
+        console.log("NOT_FOUND");
+        return 1;
+      }
+      console.log(`DONE #${e.id}`);
+      return 0;
+    }
+    case "open": {
+      const done = rest.includes("--done");
+      const f = done ? correctionsDoneFilePath(c.paths.dataDir) : correctionsFile;
+      if (done) seedBookFile(guard, f, CORRECTIONS_DONE_HEADER);
+      else if (!fs2.existsSync(f)) console.log(`(corrections will be created at ${f})`);
+      openPath(f);
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown corrections subcommand: ${sub}`);
       return 1;
   }
 }
@@ -634,7 +703,7 @@ async function verbProfile(c) {
       return 0;
     }
     case "snapshot": {
-      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-SU2VGM4C.js");
+      const { snapshotDue, snapshotProfile, SNAPSHOT_THRESHOLD } = await import("../snapshot-6DFNGXTR.js");
       const { needed, lines } = snapshotDue(guard, paths.dataDir);
       console.log(`journal ${lines} \u6761\uFF08\u9608\u503C ${SNAPSHOT_THRESHOLD}\uFF09`);
       if (!needed && !rest.includes("--force")) {
@@ -739,7 +808,7 @@ async function verbSessions(c) {
   const root = path2.join(dshHomeDir(), "sessions");
   let found = 0;
   if (fs2.existsSync(root)) {
-    const { homeSessionId } = await import("../orchestrator-KU52BKSR.js");
+    const { homeSessionId } = await import("../orchestrator-OJJM5QSV.js");
     const own = homeSessionId(guard, paths);
     for (const slug of fs2.readdirSync(root)) {
       for (const id of fs2.readdirSync(path2.join(root, slug))) {
@@ -754,11 +823,11 @@ async function verbSessions(c) {
 }
 async function verbBind(c) {
   const { guard, paths, sub, rest } = c;
-  const { loadBindings, addBinding, removeBinding } = await import("../bindings-U2M3CO2D.js");
+  const { loadBindings, addBinding, removeBinding } = await import("../bindings-LTSGGNIH.js");
   switch (sub) {
     case "list": {
       const data = loadBindings(guard, paths.settingsDir);
-      const { homeSessionId } = await import("../orchestrator-KU52BKSR.js");
+      const { homeSessionId } = await import("../orchestrator-OJJM5QSV.js");
       const own = homeSessionId(guard, paths);
       if (own) console.log(`\u5FC3\u8DF3\u6B63\u8EAB: ${own}\uFF08\u51B3\u7B56\u8F6E\u6B21\u53D1\u751F\u5730\uFF1Bbind remove \u5B83 = \u91CD\u7F6E\u6B63\u8EAB\uFF09`);
       for (const b of data.bindings) {
@@ -786,7 +855,7 @@ async function verbBind(c) {
         return 1;
       }
       console.log(removeBinding(guard, paths.settingsDir, id) ? `UNBOUND ${id}` : "NOT_FOUND");
-      const { resetHomeSession } = await import("../orchestrator-KU52BKSR.js");
+      const { resetHomeSession } = await import("../orchestrator-OJJM5QSV.js");
       if (resetHomeSession(guard, paths, id)) {
         console.log("\u6CE8\u610F\uFF1A\u8FD9\u662F\u5FC3\u8DF3\u6B63\u8EAB\u4F1A\u8BDD\u3002\u5DF2\u91CD\u7F6E\u2014\u2014\u4E0B\u6B21\u5FC3\u8DF3\u5C06\u521B\u5EFA\u65B0\u7684\u6B63\u8EAB\u4F1A\u8BDD\uFF08\u65E7\u4F1A\u8BDD\u4E0D\u518D\u6709\u5FC3\u8DF3\uFF09");
       }
@@ -859,8 +928,8 @@ async function verbVault(c) {
 }
 async function verbFocus(c) {
   const { sub, rest, decisionLog } = c;
-  const { readFocusState, writeFocusState, clearFocusState } = await import("../focus-store-RNHBAFYS.js");
-  const { formatFocusClock } = await import("../orchestrator-KU52BKSR.js");
+  const { readFocusState, writeFocusState, clearFocusState } = await import("../focus-store-XGTPIVF6.js");
+  const { formatFocusClock } = await import("../orchestrator-OJJM5QSV.js");
   const audit = (entry) => {
     try {
       appendAuditLine(decisionLog, entry);
@@ -903,7 +972,7 @@ async function verbBili(c) {
     openImageProduction,
     renderQrPngProduction,
     saveBiliSession
-  } = await import("../bili-login-XQVEE4M6.js");
+  } = await import("../bili-login-KDDU63Z2.js");
   const outcome = await runBiliLogin({
     fetchImpl: fetch,
     renderQrPng: renderQrPngProduction,
@@ -924,6 +993,7 @@ var VERBS = {
   status: verbStatus,
   seeds: verbSeeds,
   ledger: verbLedger,
+  corrections: verbCorrections,
   excerpt: verbExcerpt,
   weekly: verbWeekly,
   logs: verbLogs,
@@ -970,6 +1040,7 @@ async function main(argv) {
     argv,
     seedsFile: seedsFilePath(paths.dataDir),
     ledgerFile: ledgerFilePath(paths.dataDir),
+    correctionsFile: correctionsFilePath(paths.dataDir),
     excerptFile: excerptFilePath(paths.dataDir),
     decisionLog,
     seedAudit

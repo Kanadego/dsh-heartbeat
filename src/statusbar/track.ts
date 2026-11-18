@@ -17,6 +17,7 @@ import { sessionEventCount, sessionEvents } from '../core/orchestrator.js';
 import type { HostSession } from '../core/orchestrator.js';
 import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
+import type { DeliverySessionVerdict } from '../core/session-gate.js';
 import { StatusReader } from './store.js';
 import type { StatusState } from './store.js';
 
@@ -143,6 +144,29 @@ export function resetTrackMemo(): void {
   lastTrack.clear();
 }
 
+/** P0-5: statusbar_skipped auditor — one line per switch INTO a skip reason,
+ *  nothing on every render (the section is recomputed each assembly). Passing
+ *  null resets the memo so a later skip logs again. Shared by Track A and
+ *  Track B; a session rides one track at a time, so the memo never conflicts. */
+const lastSkip = new Map<string, string>();
+
+export function noteStatusbarSkip(auditFile: string, sessionId: string, reason: string | null): void {
+  if (reason === null) {
+    lastSkip.delete(sessionId);
+    return;
+  }
+  if (lastSkip.get(sessionId) === reason) return;
+  lastSkip.set(sessionId, reason);
+  try {
+    appendAuditLine(auditFile, { event: 'statusbar_skipped', sessionId, reason });
+  } catch { /* audit failure must not break rendering */ }
+}
+
+/** Forget the skip memo (test helper). */
+export function resetStatusbarSkipMemo(): void {
+  lastSkip.clear();
+}
+
 /** Which transport serves this session right now (§17.7: no evidence yet →
  * Track B; the section flip happens once a request/context event lands). */
 export function trackFor(session: HostSession): 'system-prompt' | 'pre-step' {
@@ -158,7 +182,14 @@ export function registerStatusbarSection(
   },
   guard: PathGuard,
   paths: WorkspacePaths,
-  opts: { enabled(): boolean; reader: StatusReader },
+  opts: {
+    enabled(): boolean;
+    reader: StatusReader;
+    /** P0-5: delivery-session verdict (session-gate + bindings.deliver). When
+     * provided, non-delivery sessions render '' (the section drops); optional
+     * so callers/tests that do not wire the gate keep the legacy behaviour. */
+    isDeliverSession?(session: HostSession): DeliverySessionVerdict;
+  },
 ): void {
   ctx.inject(['systemPrompt'], (scoped) => {
     const spCtx = scoped as {
@@ -183,6 +214,16 @@ export function registerStatusbarSection(
         }
         const agent = (context as { agent?: { session?: HostSession } }).agent;
         if (!agent?.session) return '';
+        // P0-5: the statusbar only rides delivery sessions. Checked before the
+        // track pin so a skipped session never pollutes the track memo either.
+        if (opts.isDeliverSession) {
+          const delivery = opts.isDeliverSession(agent.session);
+          if (!delivery.allowed) {
+            noteStatusbarSkip(paths.logsDir + '/heartbeat.jsonl', agent.session.id, delivery.reason ?? 'not-deliver');
+            return '';
+          }
+          noteStatusbarSkip(paths.logsDir + '/heartbeat.jsonl', agent.session.id, null);
+        }
         // Read the TURN-PINNED track (2026-09-13 review #5): a mid-turn
         // capability flip must not activate the section inside the same turn
         // whose pre-step status line already went out on Track B.

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadArchivedSessionIds, isArchivedSession, splitDeliverTargets } from '../src/core/archived-sessions.js';
-import { classifySilentReason, turnEndKindSince, type HostSession } from '../src/core/orchestrator.js';
+import { classifySilentReason, turnEndKindSince, TURN_END_FAILURE_REASONS, type HostSession } from '../src/core/orchestrator.js';
 
 function writeRegistry(registry: unknown): string {
   const file = path.join(sandboxDir('hb-arch-'), 'workspace.json');
@@ -114,15 +114,46 @@ test('turnEndKindSince: blocked / normal end / no turn-end → null; last turn/e
   assert.equal(turnEndKindSince(bare, 0), 'end_turn');
 });
 
-test('classifySilentReason: three states, blocked outranks the rest', () => {
+test('classifySilentReason: failure kinds first (B2 中2/中5), then the blind spot and text states', () => {
   // blocked: the gate never opened — regardless of whatever raw text exists
   assert.equal(classifySilentReason('', 'blocked'), 'target turn blocked');
   assert.equal(classifySilentReason('some stray text', 'blocked'), 'target turn blocked');
-  // literally empty output, turn ended normally
-  assert.equal(classifySilentReason('', null), 'empty model output');
-  assert.equal(classifySilentReason('   \n  ', null), 'empty model output');
-  // legacy state: text exists but nothing speakable survived the filter
+  // N15①: an error end is a FAILED turn, not a chosen silence
+  assert.equal(classifySilentReason('', 'error'), 'target turn failed');
+  assert.equal(classifySilentReason('hello world', 'error'), 'target turn failed');
+  // B2 中2/中5: the other real DSH end kinds — every one is a cut-short
+  // reply (aborted = watchdog/host cancel; max-tokens may be reasoning eating
+  // the budget), each keeps a dedicated spoke_failed reason
+  assert.equal(classifySilentReason('', 'aborted'), 'target turn aborted');
+  assert.equal(classifySilentReason('', 'interrupted'), 'target turn interrupted');
+  assert.equal(classifySilentReason('', 'max-tokens'), 'target turn hit max tokens');
+  assert.equal(classifySilentReason('', 'forked'), 'target turn forked');
+  // a kind this codebase does not know fails closed with a generic string
+  assert.equal(classifySilentReason('', 'some-future-kind'), 'target turn some-future-kind');
+  // a normal completed end with nothing in the body IS a text-state question
+  assert.equal(classifySilentReason('', 'completed'), 'empty model output');
+  // B2 低4: with NO turn/end in the window we cannot claim "the model
+  // produced nothing" — a hidden end and an empty output are
+  // indistinguishable, so the blind spot gets its own honest string.
+  // Reverting to 'empty model output' here goes RED.
+  assert.equal(classifySilentReason('', null), 'turn end unknown');
+  assert.equal(classifySilentReason('   \n  ', null), 'turn end unknown');
+  // text that exists is a fact about the text itself, kind-independent
   assert.equal(classifySilentReason('hello world', null), 'non-Chinese output discarded');
+});
+
+test('B2 中2: the failure-kind map itself is pinned (dropping an entry must go red)', () => {
+  // Pinned against the exported map, not through classifySilentReason — the
+  // generic fallback for unknown kinds would produce the same string and mask
+  // an entry silently disappearing from the set.
+  assert.deepEqual(TURN_END_FAILURE_REASONS, {
+    blocked: 'target turn blocked',
+    error: 'target turn failed',
+    aborted: 'target turn aborted',
+    interrupted: 'target turn interrupted',
+    'max-tokens': 'target turn hit max tokens',
+    forked: 'target turn forked',
+  });
 });
 
 test('regression: one archived + one active target drops only the archived one', () => {

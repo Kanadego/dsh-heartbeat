@@ -42,7 +42,7 @@
 | `src/core/archived-sessions.ts` | 解析 DSH `storages/workspace.json` 的归档会话集合，供投递目标跳过与引擎室自动重建使用 |
 | `src/core/bindings.ts` | 会话绑定表（`home` / `observe` / `deliver`）读写与目标筛选 |
 | `src/core/path-guard.ts` | 路径沙箱守卫：所有读写强制校验在 `dataDir` 内，拦截 `..` 越界与外链 symlink |
-| `src/core/atomic-fs.ts` | 原子写文件（先写 `data/tmp/` 临时文件再 `rename`）與跨进程目录锁（`withFileLock`） |
+| `src/core/atomic-fs.ts` | 原子写文件（先写 `data/tmp/` 临时文件再 `rename`）；跨进程文件锁（`withFileLock`）在 `src/core/file-lock.ts` |
 | `src/config/schema.ts` | `Policy` 类型定义、运行时范围校验 `assertPolicy()`、用户覆盖层 `deepMerge()` |
 | `src/config/quiet-hours.ts` | 安静时段（`gate.quietHours`）与闲逛窗口（`browse.windows`）校验与用户层持久化 |
 | `src/gate/gate.ts` | 硬门禁状态机（安静时段 / 每日上限 / 冷却时间 / 同会话自上次投递后是否有用户回复） |
@@ -80,6 +80,7 @@
 | `data/ledger.md` | 明文 Markdown | `ledger/ledger.ts` | 共享待办与承诺账本 |
 | `data/excerpt.md` | 明文 Markdown | `excerpt/excerpt.ts` | 陪伴 Agent 的句子摘抄本 |
 | `data/settings/bindings.json` | 明文 JSON | `core/bindings.ts` | 会话绑定表（`home` + `sessions[]`） |
+| `data/settings/state.json` | 明文 JSON | `core/session-gate.ts` | 会话闸门的坏会话计数 `brokenStrikes`：同一 `sessionId` 连续几拍判坏 / 拉不起来，满 3 拍自动摘绑定；任何一次成功判定即清零。也是闸门 60 秒裁决缓存的落盘邻居（缓存本身在内存） |
 | `data/settings/ui-config.json` | 明文 JSON | `config/ui-config.ts` | 面板开关项（心跳总开关、屏幕感知、空闲模式、省流模式、心跳间隔等） |
 | `data/settings/policy.json` | 明文 JSON | `config/load.ts` | 用户策略覆盖层（深度合并到出厂 `config/policy.json` 之上） |
 | `data/settings/interests.json` | 明文 JSON | `browse/interests-store.ts` | 用户在面板新增/删除的闲逛兴趣词条 |
@@ -261,8 +262,9 @@ node dist/cli/index.js status
 | `beat_start` | `trigger` (`startup`/`interval`/`wake`/`retry`) | 单跳正式开始（通过专注模式与单飞锁之后，`orchestrator.ts:2225`） |
 | `phase_done` | `phase` (`A`/`B`/`consolidate`/`E`), `ms` | 某阶段正常跑完及耗时（`orchestrator.ts:2303`） |
 | `beat_watchdog` | `reason` | **异常**：单跳运行超过 45 分钟未结束，Watchdog 触发 `AbortController` 取消任务并释放锁（`orchestrator.ts:2219`） |
-| `beat_aborted` | `reason` | 被 Watchdog 或宿主关闭信号中途取消的跳（`orchestrator.ts:2334`） |
+| `beat_aborted` | `stage`, `why`（rethrow 型中止另带 `error`：普通 Error 撞上已中止 signal 时保留错误文本） | 被 Watchdog 或宿主关闭信号中途取消的跳（`orchestrator.ts` beat() 的顶层 catch） |
 | `beat_error` | `error` | **异常**：未捕获的单跳顶层错误（`orchestrator.ts:2341`） |
+| `turn_concluded` | `label`, `kind`, `window` | 模型回合正常收尾（`completed`）但取不到任何 assistant 文本，且**四重门控**全过（B2 中1/中2/低1）：①「实验性静默收尾」开关开着；②`label: expression`（B2 中1：weekly/browse 等零正文正常结束是真故障）；③结束 kind 是 allowlist 常量 `TURN_END_SILENCE_KIND`（= `completed`，blocked/error/aborted/interrupted/max-tokens/forked 是被截断的回复，永远不算收尾）；④**本轮真的发起过 conclude**——`seed_report` 实际调了宿主 `concludeTurn()`（B2 低1：只吐思考块的零正文回合不许改名成收尾）。此时沉默跳零正文结束是预期形态，记这条而不是故障线；其余情况（开关关、非 expression、失败 kind、没发起 conclude）仍记 `turn_extraction_empty`（本轮存在 terminalTurnError 时附 `turnError`）。归属判定由 report.ts 里的投递编号校验完成，`label` 只缩小范围、不保证「只在投递轮」（B2 低6） |
 
 #### B. 为什么没说话？（`silent` 与门禁 / 专注 / 省流）
 当发现心跳没有主动搭话时，查 `"event":"silent"` 的 `reason` 字段即可定位：
@@ -278,14 +280,29 @@ node dist/cli/index.js status
 | `awaiting-user-reply` | 上次投递到该陪伴会话后，用户还没有回过话（防单方面刷屏） |
 | `nothing-to-say` | 候选素材池为空，且未开启 `idleMode`（或画像也为空） |
 | `model-declined` | 投递包已送达陪伴会话，陪伴 Agent 调 `seed_report(spoken:"silent")` 主动选择本跳保持安静 |
+| `正文为空` | **v2.3.0 事实判定**：这一轮回复正文是空的（没有任何可见文字）且回合正常收尾（`completed`），按沉默记账，不花额度；不再因为「没有报账」被误记成 `spoke_failed`。`silent` 事件行恒带 `turnEndKind`（回合实际结束方式，N15①/B2 中5；silent 分支只在 `completed` 下进入，故恒为 `completed`）；报过账时另带 `reportedSpoken`（Agent 自报口径，无报账则无此字段）。**同现说明（B2 低2）**：开关关闭（或本轮没发起 conclude）时，零正文会**同时**记 `turn_extraction_empty`（回合取不到文本的故障线）和这条 silent——两行说的是同一件事，此时 reason 带后缀 `正文为空（回合无输出）`；收尾路径（开关开且已发起 conclude）不带后缀。正文只有沉默行的 silent 不与故障线同现，无后缀 |
+| `正文只有沉默行` | 正文只有「本轮沉默」那类沉默声明行，按沉默记账 |
+| `按事实记沉默(报账 spoken=X,正文为空)` / `…正文只有沉默行` | 报了账但正文空着：以**事实**为准记沉默，括号里是 Agent 自报的口径，供对账 |
+| `报账沉默:<reason>` | 报账说 `silent` 且正文也确实没有可发声内容（正文为空或只有沉默行两种形态都归这里），`<reason>` 是 Agent 给的原因；无 reason 时记 `报账沉默:未说明`。同现后缀规则与 `正文为空` 一致（B2 低2）：零正文且本轮未收尾（开关关或没发起 conclude）时同样追加「（回合无输出）」，收尾路径不带 |
+| `target turn blocked` / `target turn failed` / `target turn aborted` / `target turn interrupted` / `target turn hit max tokens` / `target turn forked` / `target turn <未知kind>` | 回合以失败型 kind 结束（B2 中2：只有 `completed` 才可能是事实沉默；blocked/error/aborted/interrupted/max-tokens/forked 与未知 kind 一律不算沉默），记 `spoke_failed` |
+| `turn end unknown` | 窗口里**看不到 turn/end**（B2 低4）：拿不到结束方式时无法区分「模型真的没说话」和「结束事件没扫到」，不再把这种合法沉默说成 `empty model output` 误导排障。**只出现在 `spoke_failed` 侧**（B2 返工 a2 要求1：`deliveryVerdict` 对 null kind 直接判非沉默走不进 silent 分支，所以 silent 行里永远不会见到这个 reason——排障时别去 `silent` 里找它）；正文有内容但全被中文闸滤掉的仍记 `non-Chinese output discarded`（那是关于文本本身的事实，与 kind 无关，同样只在 `spoke_failed` 侧） |
 
 #### C. 投递与陪伴会话异常（`deliver_*` / `spoke_*`）
 | `event` | 关键附加字段 | 含义与排障指引 |
 |---|---|---|
 | `delivered` / `spoke` | `sessionId`, `deliveryId`, `spoken`, `seedIds` | 投递包已送达陪伴会话，且陪伴 Agent 完成表达与报账（`orchestrator.ts:1835`） |
-| `deliver_target_skipped` | `sessionId`, `reason: "archived"` | 该绑定会话已在 DSH 中被归档，自动跳过（v2.2.0+，`orchestrator.ts:1656`） |
+| `session_skipped` | `sessionId`, `reason: "archived" \| "subagent" \| "broken"` | 会话闸门拦下这个会话（v2.3.0，`session-gate.ts`）：归档 / 子代理 / 日志连续三拍读不出来。裁决有 60 秒缓存，同一拍的观察与投递只记一条 |
+| `binding_auto_removed` | `sessionId`, `reason: "archived" \| "subagent" \| "broken" \| "unreachable"` | 闸门判定该绑定作废，已从 `data/settings/bindings.json` 自动摘掉（归档与子代理首次即摘；`broken` 与 `unreachable` 要连续 3 拍。`unreachable` = 真的尝试拉起过、但会话根本拉不起来——这种会话永远到不了健康探针，只能靠这条计数摘掉） |
+| `binding_auto_remove_failed` | `sessionId`, `error` | **异常**：摘绑定写盘失败，绑定还在，下一拍重试 |
+| `statusbar_skipped` | `sessionId`, `reason` | 非投递会话不渲染状态栏（v2.3.0，`statusbar/track.ts`）；同一会话同一裁决只记一条 |
+| `time_inject_skipped` | `sessionId`, `reason: "subagent"` | 子代理会话不注入时间（v2.3.0，`statusbar/time-inject.ts`） |
+| `notepad_blocked` | `sessionId` | 心事匣在投递闸门之外的会话里被调用，工具直接拒绝（v2.3.0，声明层已用宿主 `when` 隐藏，这里是执行层兜底） |
+| `no_deliver_target` | `targets` | 绑定都在但全部过不了闸门（v2.3.0）；紧跟一条 `spoke_failed: no deliver target` |
+| `report_rejected` | `reason: "unknown delivery" \| "duplicate delivery" \| "lock timeout" \| "write failed"`, `deliveryId?`, `currentDeliveryId?` | **P1-1 报账锁**：`delivery_id` 缺失、与当前投递包不符、或这一投已经报过，拒收且不入账；`lock timeout`（B2 中3）＝跨进程锁取不到，**临界区没跑**；`write failed`（B2 返工中）＝临界区**跑过**但内部抛错（appendSeedReport 的 DPAPI/解密/ENOSPC/EACCES 等）——两种都不入账、审计后把错误抛给宿主，`lock timeout` 只认 `FileLockTimeoutError`（v2.3.0，`seeds/report.ts`）。回显口径：与当前投递包**不符**的拒收文案绝不回显活编号，活编号只在这条审计里；**重复报账**的文案回显的 id 是调用方自己刚填且已与活包一致的，不泄露新信息（B2 低6，对齐 N15③ 前提） |
+| `spoken_mismatch` | `reported`, `actual`, `deliveryId?` | 报账口径与实际正文不符（v2.3.0）：`reported` 是 Agent 自报的 `spoken`，`actual` 是从正文里区出来的事实 |
+| `conclude_silent_requested` / `conclude_silent_failed` | `deliveryId`, `reason?`, `error?` | 开着「实验性静默收尾」且 silent 报账通过投递编号校验后，`seed_report` 调宿主 `concludeTurn()` 请求收尾（v2.3.0 P15-3 由 `conclude_silent` 更名：这是「已请求」，宿主取消竞态下最终态以 turn/end 事件为准；失败记 `_failed`，`reason: no-host-api / threw`，见 `seeds/report.ts`） |
 | `spoke_deferred` | `sessionId`, `reason` | 目标陪伴会话正忙（如用户在跑超长回合），等待 10 分钟仍未空闲，本跳延后到下一跳重试 |
-| `spoke_failed` | `reason` | **投递失败**，常见 `reason`：<br>• `no deliver-bound session`：未绑定任何投递会话<br>• `all deliver targets archived`：绑定的投递会话全部被归档了<br>• `deliver session could not be resumed`：目标会话文件损坏或不存在 |
+| `spoke_failed` | `reason` | **投递失败**，常见 `reason`：<br>• `no deliver-bound session`：未绑定任何投递会话<br>• `all deliver targets archived`：绑定的投递会话全部被归档了<br>• `deliver session could not be resumed`：目标会话文件损坏或不存在<br>• `turn end unknown`（B2 低4）：窗口里扫不到 turn/end，无法区分「模型没说话」和「结束事件没扫到」——这个 reason 只在这条事件里出现，`silent` 行永远不会有（见 §B 同名行） |
 | `report_missing` | `sessionId`, `deliveryId` | 陪伴 Agent 收到了投递包并回复了文字，但**漏调了 `seed_report` 工具** |
 
 #### D. 引擎室（Home Session）生命周期与旋转
@@ -306,6 +323,22 @@ node dist/cli/index.js status
 | `bili_login` | `outcome` (`0`=成功) | CLI 扫码登录 B 站完成 |
 | `consolidation` / `consolidation_failed` | `ops`, ` inboxConsumed` / `reason` | 画像整合成功或失败（失败时自动保持原画像不变） |
 | `weekly_generated` / `weekly_llm_failed` | `week`, `file` / `reason` | 周报生成成功，或引擎室 LLM 调用失败回退为确定性统计模板 |
+
+#### F. 账本 / 错题本归档（v2.3.0 N16）
+| `event` | 关键附加字段 | 含义与排障指引 |
+|---|---|---|
+| `book_done_deduped` | `id`?, `archive`, `rowDate`, `rowTime`, `doneDate`, `doneTime`, `reason` | 一次完成把行从活页摘走后，归档按去重规则**没有**追加新行——这次完成在归档里少一行，只有本审计可查。`reason` 取值：`same-stamp`（章与归档行完全相同，崩溃重放）/ `retry-window`（归档后 10 分钟内的重试）/ `retry-window-extended`（墙钟宽限：夏令时会把 10 个真实分钟拉成 70 个墙钟分钟；**设计取舍**：同 id+text 在 70 墙钟分钟内的真实二次完成也会被吞，归档少一行、周报按归档行计 done 会少计 1）/ `future-stamp`（归档行的章在 now 之后 24h 内，按重试处理）。`id` 只在插件生成的 6 位十六进制 id 上落盘，手写 id 不进审计（隐私）；`rowDate`/`rowTime` 是被吞行在归档里**自己的章**（定位用），`doneDate`/`doneTime` 是本次重试的新章 |
+| `ledger_done_migrated` / `corrections_done_migrated` | `count`, `found` | 首启迁移把活页里的 done 行搬进归档：`count` 是**实际新增**的归档行数（崩溃重放为 0），`found` 是迁移前书里持有的 done 行数，供 0-of-N 对账 |
+
+> **已知限制（N16② 评审）**：去重窗口按设计单边覆盖。时区**向西**移动时新章落在归档章之前，由 `future-stamp` 兜住；时区**向东**移动时 now 领先归档章最多约 14 个墙钟小时，与「数小时后的真实重做」不可区分，因此不扩窗——同一次完成可能归档两行，周报可能多计 1（测试钉住此现状）。
+
+#### G. 屏幕视觉（v2.3.0）
+
+| `event` | 关键附加字段 | 含义与排障指引 |
+|---|---|---|
+| `screen_vision` | `ok`, `engine`?, `nativeError`?, `error`? | 每跳的桌面截屏识别结果（`orchestrator.ts` 阶段 A）。`engine` 是实际出结果的引擎（`native` / `modlens`，`auto` 回退成功时也记 `modlens`）；`auto` 回退时 `nativeError` 保留原生读失败的原因（已 scrub 截图路径、截 160 字符）；`ok:false` 时 `error` 截 100 字符。**绝不记画面、窗口标题原文或截图路径** |
+| `vision_engine_invalid` | `source`, `value` | 引擎取值不在 `auto`/`native`/`modlens` 内，被忽略并按 `auto` 处理；按 `source:value` 去重，写盘失败下拍重试（`src/index.ts`） |
+| `vision_modality_probe_failed` | `provider`, `model`, `error` | `auto` 先探宿主是否支持图片输入失败（`orchestrator.ts` 的 modality probe）；本跳按「不支持原生」处理，走 ModLens 回退 |
 
 ---
 

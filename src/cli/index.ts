@@ -31,11 +31,18 @@ import {
 } from '../seeds/pool.js';
 import type { SeedSource, SeedTag } from '../seeds/types.js';
 import {
+  CORRECTIONS_DONE_HEADER,
+  CORRECTIONS_HEADER,
+  LEDGER_DONE_HEADER,
   appendEntry,
+  correctionsDoneFilePath,
+  correctionsFilePath,
+  ledgerDoneFilePath,
   ledgerFilePath,
   markDone,
   readLedger,
   scanPending,
+  seedBookFile,
 } from '../ledger/ledger.js';
 import {
   EXCERPT_HEADER,
@@ -95,8 +102,12 @@ function usage(): string {
     '  seeds stats                       pool status JSON',
     '  ledger add <text>                 register an open item',
     '  ledger list [--pending]           list entries',
-    '  ledger done <id|substring>        mark an entry done',
-    '  ledger open                       open ledger.md in the default editor',
+    '  ledger done <id|substring>        mark an entry done (moves it to the archive)',
+    '  ledger open [--done]              open ledger.md (or its archive) in the default editor',
+    '  corrections add <text>            record a correction (错题本)',
+    '  corrections list [--pending]      list unreviewed corrections',
+    '  corrections done <id|substring>   mark a correction reviewed (moves it to the archive)',
+    '  corrections open [--done]         open corrections.md (or its archive) in the default editor',
     '  excerpt add <text>                keep a line in the notebook',
     '  excerpt list [n]                  list entries (newest n if given)',
     '  excerpt remove <id|substring>     tear a page out',
@@ -179,6 +190,7 @@ interface CliCtx {
   argv: string[];
   seedsFile: string;
   ledgerFile: string;
+  correctionsFile: string;
   excerptFile: string;
   decisionLog: string;
   seedAudit: (entry: Record<string, unknown>) => void;
@@ -277,7 +289,7 @@ async function verbSeeds(c: CliCtx): Promise<number> {
 }
 
 async function verbLedger(c: CliCtx): Promise<number> {
-  const { guard, sub, rest, ledgerFile } = c;
+  const { guard, sub, rest, ledgerFile, seedAudit } = c;
   switch (sub) {
     case 'add': {
       let text = rest.join(' ').trim();
@@ -303,7 +315,8 @@ async function verbLedger(c: CliCtx): Promise<number> {
         console.error('usage: ledger done <id|substring>');
         return 1;
       }
-      const e = markDone(guard, ledgerFile, key);
+      // N16①: seedAudit lands the swallow record in logs/heartbeat.jsonl.
+      const e = markDone(guard, ledgerFile, key, Date.now(), undefined, undefined, seedAudit);
       if (!e) {
         console.log('NOT_FOUND');
         return 1;
@@ -312,16 +325,66 @@ async function verbLedger(c: CliCtx): Promise<number> {
       return 0;
     }
     case 'open': {
-      const f = ledgerFile;
-      if (!fs.existsSync(f)) {
-        console.log(`(ledger will be created at ${f})`);
-      }
+      const done = rest.includes('--done');
+      const f = done ? ledgerDoneFilePath(c.paths.dataDir) : ledgerFile;
+      if (done) seedBookFile(guard, f, LEDGER_DONE_HEADER);
+      else if (!fs.existsSync(f)) console.log(`(ledger will be created at ${f})`);
       openPath(f);
       console.log(`opened ${f}`);
       return 0;
     }
     default:
       console.error(`unknown ledger subcommand: ${sub}`);
+      return 1;
+  }
+}
+
+async function verbCorrections(c: CliCtx): Promise<number> {
+  const { guard, sub, rest, correctionsFile, seedAudit } = c;
+  switch (sub) {
+    case 'add': {
+      let text = rest.join(' ').trim();
+      if (text === '-') text = readStdinText();
+      if (!text) {
+        console.error('usage: corrections add <text|->');
+        return 1;
+      }
+      const e = appendEntry(guard, correctionsFile, text, Date.now(), CORRECTIONS_HEADER);
+      console.log(`OPEN #${e.id} ${e.text.slice(0, 60)}`);
+      return 0;
+    }
+    case 'list': {
+      const { entries } = readLedger(guard, correctionsFile, CORRECTIONS_HEADER);
+      const items = rest.includes('--pending') ? scanPending(guard, correctionsFile) : entries;
+      for (const e of items) console.log(`${e.status === 'open' ? ' ' : 'x'} #${e.id} ${e.date} ${e.text.slice(0, 60)}`);
+      if (items.length === 0) console.log('(empty)');
+      return 0;
+    }
+    case 'done': {
+      const key = rest.join(' ').trim();
+      if (!key) {
+        console.error('usage: corrections done <id|substring>');
+        return 1;
+      }
+      const e = markDone(guard, correctionsFile, key, Date.now(), undefined, undefined, seedAudit);
+      if (!e) {
+        console.log('NOT_FOUND');
+        return 1;
+      }
+      console.log(`DONE #${e.id}`);
+      return 0;
+    }
+    case 'open': {
+      const done = rest.includes('--done');
+      const f = done ? correctionsDoneFilePath(c.paths.dataDir) : correctionsFile;
+      if (done) seedBookFile(guard, f, CORRECTIONS_DONE_HEADER);
+      else if (!fs.existsSync(f)) console.log(`(corrections will be created at ${f})`);
+      openPath(f);
+      console.log(`opened ${f}`);
+      return 0;
+    }
+    default:
+      console.error(`unknown corrections subcommand: ${sub}`);
       return 1;
   }
 }
@@ -864,6 +927,7 @@ const VERBS: Record<string, Verb> = {
   status: verbStatus,
   seeds: verbSeeds,
   ledger: verbLedger,
+  corrections: verbCorrections,
   excerpt: verbExcerpt,
   weekly: verbWeekly,
   logs: verbLogs,
@@ -911,6 +975,7 @@ export async function main(argv: string[]): Promise<number> {
     argv,
     seedsFile: seedsFilePath(paths.dataDir),
     ledgerFile: ledgerFilePath(paths.dataDir),
+    correctionsFile: correctionsFilePath(paths.dataDir),
     excerptFile: excerptFilePath(paths.dataDir),
     decisionLog,
     seedAudit,

@@ -20,6 +20,12 @@ import type { PathGuard } from '../core/path-guard.js';
 import type { WorkspacePaths } from '../core/paths.js';
 import { sessionEvents } from '../core/orchestrator.js';
 import type { HostSession } from '../core/orchestrator.js';
+import { isSubagentSession, type DeliverySessionVerdict } from '../core/session-gate.js';
+import { noteStatusbarSkip } from './track.js';
+
+// Extracted to core/session-gate.ts (P0-4); re-exported so existing importers
+// (this module and tests/time-inject-subagent.test.ts) keep working.
+export { isSubagentSession };
 
 /** Pure gate (§17.6): every condition must hold for an injection. */
 export function shouldInjectTime(input: {
@@ -62,28 +68,6 @@ export function turnOriginIsUserSplice(session: HostSession): boolean {
     return inserted.some((m) => (m as { source?: { kind?: unknown } } | undefined)?.source?.kind === 'user');
   }
   return false;
-}
-
-/** `SessionHeader` fields we care about (dsh-session ≥ v4 headers). HostSession
- * deliberately declares only the minimal surface, so `header` is read through a
- * local assertion instead of widening the interface. */
-interface SessionHeaderProbe {
-  header?: {
-    origin?: string;
-    delegationDepth?: number;
-  };
-}
-
-/** Subagent sessions must not receive time injections (their context has no
- * use for "now" and every hop pollutes it). Verdict order: header fields
- * first (cheap, exact), then a bounded scan of the first 8 events for the
- * `subagent/descriptor` marker every subagent session logs at seq 0. */
-export function isSubagentSession(session: HostSession | undefined): boolean {
-  if (!session) return false;
-  const header = (session as HostSession & SessionHeaderProbe).header;
-  if (header?.origin === 'subagent') return true;
-  if (typeof header?.delegationDepth === 'number' && header.delegationDepth > 0) return true;
-  return sessionEvents(session).slice(0, 8).some((e) => e?.type === 'subagent/descriptor');
 }
 
 function formatElapsed(ms: number): string {
@@ -176,6 +160,11 @@ export interface TimeInjectionOptions {
   /** Pin this turn's track at step===1 (before throttle logic) — every turn
    * start re-pins, so mid-turn capability flips land at the next boundary. */
   pinTrack(sessionId: string, session: HostSession): 'system-prompt' | 'pre-step';
+  /** P0-5: delivery-session verdict (session-gate + bindings.deliver). When
+   * provided, Track B's trailing status line is withheld for every session it
+   * rejects; the time line itself is untouched. Optional so hosts/tests that
+   * never wire the gate keep the old behaviour. */
+  isDeliverSession?(session: HostSession): DeliverySessionVerdict;
 }
 
 interface PreStepPayload {
@@ -236,10 +225,17 @@ export function registerTimeInjection(
         lastMessageTime: lastMessageTime(payload.agent.session),
       });
       // §17.5: Track B rides the same message with a trailing status line
-      // (D21: status text itself never carries time words).
+      // (D21: status text itself never carries time words). P0-5: only delivery
+      // sessions get the line; everyone else keeps the time text alone.
       if (opts.getStatusLine && track) {
-        const statusLine = opts.getStatusLine(payload.agent.session, track);
-        if (statusLine) text += `\n${statusLine}`;
+        const delivery = opts.isDeliverSession?.(payload.agent.session);
+        if (delivery && !delivery.allowed) {
+          noteStatusbarSkip(opts.paths.logsDir + '/heartbeat.jsonl', sessionId, delivery.reason ?? 'not-deliver');
+        } else {
+          if (delivery) noteStatusbarSkip(opts.paths.logsDir + '/heartbeat.jsonl', sessionId, null);
+          const statusLine = opts.getStatusLine(payload.agent.session, track);
+          if (statusLine) text += `\n${statusLine}`;
+        }
       }
       const message = createUserMessage({
         content: [{ type: 'text', text }],

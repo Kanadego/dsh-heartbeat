@@ -24,6 +24,9 @@ export interface UiConfig {
    *  data/settings/vision.json and the built-in default (auto); the two
    *  literal engines are the explicit choices. */
   visionEngine?: '' | 'auto' | 'native' | 'modlens';
+  /** Experimental (2.3.0): end the turn after a silent report lands. Off by
+   *  default — the default rhythm stays "say 本轮沉默, then report". */
+  concludeSilentTurn?: boolean;
 }
 
 const RANGES = {
@@ -48,6 +51,8 @@ function sanitize(raw: unknown): UiConfig {
   if (r.visionEngine === '' || r.visionEngine === 'auto' || r.visionEngine === 'native' || r.visionEngine === 'modlens') {
     out.visionEngine = r.visionEngine;
   }
+  // Only a real boolean enables this; unset/invalid reads as false.
+  if (typeof r.concludeSilentTurn === 'boolean') out.concludeSilentTurn = r.concludeSilentTurn;
   return out;
 }
 

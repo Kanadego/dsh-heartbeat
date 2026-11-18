@@ -71,16 +71,17 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 - **周报**：每 7 天自动生成一份平实记录，复盘这周的表达、静默与新认识。
 - **设置**：调整心跳间隔、静默时段、专注模式（一键暂停 N 分钟，到点自动恢复）、换机加密迁移，以及打开账本和摘抄本。
 
-## 给 Agent 的四个工具
+## 给 Agent 的五个工具
 
 > **给 AI Agent 的快速指引**：如果你是正在使用或协助维护本仓库的 Agent，请直接阅读 **[AGENTS.md](AGENTS.md)** 获取完整的工具调用铁律、CLI 速查、构建测试命令与代码红线；深度参数与审计日志字典见 **[DESIGN.md](DESIGN.md)**。
 
-插件向你的日常会话注册了 4 个轻量工具，agent 会自己调用，不需要你手动下令：
+插件向你的日常会话注册了 5 个轻量工具，agent 会自己调用，不需要你手动下令（心跳引擎室内部一个都看不到；心事匣只在通过闸门的投递会话里出现）：
 
 | 工具                  | 文件与存储                       | 用来干什么                                                             |
 | --------------------- | -------------------------------- | ---------------------------------------------------------------------- |
 | `notepad`（心事匣）   | `data/notepad.json`（加密）      | 只有一格的便签，把这跳没说完的话留给下一跳的自己；写新盖旧，不写自动清 |
-| `ledger`（账本）      | `data/ledger.md`（明文可手编）   | 记待办和承诺，聊到计划自己记上、做完自己勾掉                           |
+| `ledger`（账本）      | `data/ledger.md` + `ledger-done.md`（明文可手编） | 记待办和承诺，聊到计划自己记上、做完自己勾掉；勾掉的移进归档 `ledger-done.md`，周报读归档 |
+| `corrections`（错题本） | `data/corrections.md` + `corrections-done.md`（明文可手编） | 记犯过的错与教训；跟账本同一个开关，关掉账本工具时它一起消失，复盘完移进归档 |
 | `excerpt`（摘抄本）   | `data/excerpts.md`（明文可手编） | 抄下你说过的话或想留住的小事，只增不减（除非主动抹掉）                 |
 | `seed_report`（报账） | `data/seed_report.jsonl`         | 每次收到心跳投递包后报一次账（用了哪条素材 / 说了真心话 / 决定沉默）   |
 
@@ -89,7 +90,7 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 所有运行数据都收在 `~/.dsh/heartbeat-data`（也可通过插件配置 `dataDir` 或环境变量 `HEARTBEAT_DATA_DIR` 改位置）：
 
 - **敏感数据整文件加密**：素材池（`seeds.jsonl`）、用户画像（`profile.*`）、心事匣、周报、屏幕快照与 B 站登录态均以 **AES-256-GCM** 加密落盘；主密钥 `data/vault.key` 在 Windows 上由系统 **DPAPI（仅当前账户可解）** 保护。
-- **你写的东西保持明文**：设置项（`data/settings/`）、账本（`ledger.md`）、摘抄本（`excerpts.md`）和审计日志（`data/logs/heartbeat.jsonl`）直接用编辑器就能翻看。
+- **你写的东西保持明文**：设置项（`data/settings/`）、账本与错题本（`ledger.md` / `ledger-done.md` / `corrections.md` / `corrections-done.md`）、摘抄本（`excerpts.md`）和审计日志（`data/logs/heartbeat.jsonl`）直接用编辑器就能翻看。两份归档只增不减，可以随时手删（删了只影响历史周报的统计）。
 - **隐私不出界**：全屏截图仅在视觉识别成功时提取一句状态摘要（「他此刻大概在…」），识别失败时画面与窗口标题绝不进入任何提示词；引擎室内部轮次受工具白名单硬限制。
 - **换机与焚毁**：换电脑可在面板「设置 → 换机迁移」用口令打包导出、新机导入自动重加密；想彻底清空可跑 CLI `burn --yes`（三次覆写后删除运行时数据）。
 
@@ -117,7 +118,7 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 | 状态与节律 | `status`（策略总览） · `focus [分钟]` / `focus off`（开启或关闭专注模式）                                  |
 | 会话绑定   | `sessions list` · `bind list` · `bind add <id> [--observe]` · `bind remove <id>`                           |
 | 素材与闲逛 | `seeds list [--archived]` · `seeds add <text>` · `seeds gc` · `browse status` · `bili login`               |
-| 账本与摘抄 | `ledger list [--pending]` / `ledger open` · `excerpt list [n]` / `excerpt open`                            |
+| 账本与摘抄 | `ledger list [--pending]` / `ledger open [--done]` · `corrections add <text>` / `corrections list [--pending]` / `corrections done <id>` / `corrections open [--done]` · `excerpt list [n]` / `excerpt open` |
 | 画像与周报 | `profile list` / `profile export` / `profile verify` / `profile rebuild` · `weekly show`                   |
 | 维护与安全 | `preset status` / `preset install` · `migrate export` / `import` · `vault status` · `burn [--yes] [--all]` |
 
@@ -136,7 +137,8 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 
 | 插件版本                    | 适配的 DSH 版本                 |
 | --------------------------- | ------------------------------- |
-| **v2.2.0 – v2.2.1**（当前） | `0.2.0-rc.1` – `0.2.2-rc.1`     |
+| **v2.3.0**（当前）          | `0.2.1-rc.5` – `0.2.2-rc.1`     |
+| v2.2.0 – v2.2.1             | `0.2.0-rc.1` – `0.2.2-rc.1`     |
 | v2.1.1 – v2.1.2             | `0.2.0-rc.1` – `0.2.1-rc.5`     |
 | v2.0.0 – v2.0.1             | `0.2.0-rc.1` – `0.2.1-rc.2`     |
 | v1.x 历史版本               | 见 [CHANGELOG.md](CHANGELOG.md) |
@@ -146,6 +148,21 @@ dsh plugin --profile web add @kanadego/dsh-heartbeat
 ## 版本更新
 
 <details open>
+<summary><b>v2.3.x</b></summary>
+
+### v2.3.0 · 2026-11-18（会话闸门 · 报账锁 · 账本归档 · 心事匣 · 原生看图）
+
+- **会话闸门**：投递前核对目标会话，已归档 / 子代理 / 连续三拍读不出来（含真的拉不起来）就自动摘掉绑定并记审计，不再对着空会话说话。
+- **报账锁**：投递包带唯一 `delivery_id`，重复或拿错编号的报账直接拒收并留审计，答案不会串到下一投。
+- **沉默按事实记账**：回合正常收尾但正文空的，按沉默记账、不花额度；失败型结束一律不算沉默。
+- **账本归档**：`done` 移进 `ledger-done.md` / `corrections-done.md`，重放与重试不重复归档、不复活旧行；首启自动迁移旧 done 行；`corrections` 成为全局工具，CLI 加 `ledger open --done` 与 `corrections` 子命令。
+- **心事匣与状态栏**：只在允许投递的会话可见/渲染。
+- **截屏识别**：优先宿主原生看图，ModLens 降为回退；被中止的跳按「取消」记账，不是识图失败。
+- **面板**：RPC 晚注册的宿主不再报「不可用」，挂载自动重探；只读态显示「—」而不是兜底配置值。
+
+</details>
+
+<details>
 <summary><b>v2.2.x</b></summary>
 
 ### v2.2.1 · 2026-11-10（引擎室归档自愈 · 类型声明修复）

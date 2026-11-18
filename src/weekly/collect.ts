@@ -10,7 +10,7 @@ import type { WorkspacePaths } from '../core/paths.js';
 import type { Policy } from '../config/schema.js';
 import { readAuditLines } from '../core/audit-log.js';
 import { readJournalTexts } from '../profile/store.js';
-import { readLedger, pendingOlderThan, ledgerFilePath } from '../ledger/ledger.js';
+import { readLedger, pendingOlderThan, ledgerFilePath, ledgerDoneFilePath, LEDGER_DONE_HEADER } from '../ledger/ledger.js';
 import { loadPool, seedsFilePath, activeSeeds } from '../seeds/pool.js';
 import { readSeedReports, reportFilePath } from '../seeds/report.js';
 import { summarizeRhythm } from '../rhythm/rhythm.js';
@@ -121,14 +121,21 @@ export function collectWeeklyFacts(guard: PathGuard, paths: WorkspacePaths, poli
   }
 
   // 3) ledger: added / done-this-week / stale open items.
+  // 2.3.0: the live book holds only open rows; completions live in the archive
+  // (same line format, same parser). added/stale still read the book.
   const ledger = { added: [] as string[], done: [] as string[], stale: [] as { text: string; days: number }[] };
   try {
     const { entries } = readLedger(guard, ledgerFilePath(paths.dataDir));
     for (const e of entries) {
+      if (e.status !== 'open') continue;
       const t = Date.parse(`${e.date}T${e.time}:00`);
-      if (Number.isFinite(t) && t >= start && t <= end) {
-        (e.status === 'done' ? ledger.done : ledger.added).push(trim(e.text, 40));
-      }
+      if (Number.isFinite(t) && t >= start && t <= end) ledger.added.push(trim(e.text, 40));
+    }
+    const { entries: archived } = readLedger(guard, ledgerDoneFilePath(paths.dataDir), LEDGER_DONE_HEADER);
+    for (const e of archived) {
+      if (e.status !== 'done') continue;
+      const t = Date.parse(`${e.date}T${e.time}:00`);
+      if (Number.isFinite(t) && t >= start && t <= end) ledger.done.push(trim(e.text, 40));
     }
     for (const e of pendingOlderThan(guard, ledgerFilePath(paths.dataDir), LEDGER_STALE_DAYS, now)) {
       const t = Date.parse(`${e.date}T${e.time}:00`);

@@ -36,7 +36,7 @@ after(() => {
   resetWorkspaceForTest();
 });
 
-function makeTool(): {
+function makeTool(currentDeliveryId?: () => string): {
   dir: string;
   guard: PathGuard;
   file: string;
@@ -45,20 +45,23 @@ function makeTool(): {
   const dir = workspace().dataDir;
   const guard = createPathGuard(dir);
   const file = reportFilePath(dir);
-  return { dir, guard, file, tool: buildSeedReportTool(guard, file) as {
+  return { dir, guard, file, tool: buildSeedReportTool(guard, file, undefined, undefined, currentDeliveryId) as {
     execute(args: unknown): Promise<{ ok: boolean; message: string }>;
   } };
 }
 
 test('seed_report execute: material requires seed_ids; silent stores a bare fact', async () => {
-  const { tool } = makeTool();
+  let current = '';
+  const { tool } = makeTool(() => current);
   const bad = await tool.execute({ spoken: 'material' });
   assert.equal(bad.ok, false);
   assert.ok(bad.message.includes('seed_ids'));
 
-  const ok = await tool.execute({ spoken: 'material', seed_ids: ['s3', ' s5 '] });
+  current = 'dshape0001';
+  const ok = await tool.execute({ spoken: 'material', seed_ids: ['s3', ' s5 '], delivery_id: 'dshape0001' });
   assert.equal(ok.ok, true);
-  const silent = await tool.execute({ spoken: 'silent', reason: '在忙或刚聊过' });
+  current = 'dshape0002';
+  const silent = await tool.execute({ spoken: 'silent', reason: '在忙或刚聊过', delivery_id: 'dshape0002' });
   assert.equal(silent.ok, true);
 
   const junk = await tool.execute({ spoken: 'nope' });
@@ -66,8 +69,8 @@ test('seed_report execute: material requires seed_ids; silent stores a bare fact
 });
 
 test('seed_report execute: reason only rides on non-material reports', async () => {
-  const { guard, file, tool } = makeTool();
-  await tool.execute({ spoken: 'material', seed_ids: ['s1'], reason: '素材不搭' });
+  const { guard, file, tool } = makeTool(() => 'dreason001');
+  await tool.execute({ spoken: 'material', seed_ids: ['s1'], reason: '素材不搭', delivery_id: 'dreason001' });
   const [e] = readSeedReports(guard, file);
   assert.equal(e!.spoken, 'material');
   assert.equal(e!.reason, undefined, 'material reports are about ids; reason would muddle aggregates');
@@ -94,8 +97,8 @@ test('ring: one report past REPORT_KEEP drops the oldest, newest last; window re
 });
 
 test('v1.9.0: ids are accepted in the shapes a model actually writes ([s3] / "s3")', async () => {
-  const { guard, file, tool } = makeTool();
-  const ok = await tool.execute({ spoken: 'material', seed_ids: ['[s3]', ' "s5" ', '`s7`', '{s9}', ' s1 '] });
+  const { guard, file, tool } = makeTool(() => 'dshapes001');
+  const ok = await tool.execute({ spoken: 'material', seed_ids: ['[s3]', ' "s5" ', '`s7`', '{s9}', ' s1 '], delivery_id: 'dshapes001' });
   assert.equal(ok.ok, true);
   const [e] = readSeedReports(guard, file);
   // brackets/quotes/backticks/braces stripped, whitespace gone — package ids are bare
@@ -105,8 +108,10 @@ test('v1.9.0: ids are accepted in the shapes a model actually writes ([s3] / "s3
 });
 
 test('v1.9.0: the delivery id round-trips through the ring and the window read', async () => {
-  const { guard, file, tool } = makeTool();
+  let current = '';
+  const { guard, file, tool } = makeTool(() => current);
   const stamp = Date.now();
+  current = `d${stamp}`;
   await tool.execute({ spoken: 'heartfelt', delivery_id: `  d${stamp}  ` });
   const [e] = readSeedReports(guard, file);
   assert.equal(e!.deliveryId, `d${stamp}`);
@@ -115,6 +120,7 @@ test('v1.9.0: the delivery id round-trips through the ring and the window read',
   assert.equal(win[0]!.deliveryId, `d${stamp}`);
   // an over-long id is clipped, never stored whole
   const huge = 'd' + 'x'.repeat(200);
+  current = huge.slice(0, 64);
   await tool.execute({ spoken: 'heartfelt', delivery_id: huge });
   const all = readSeedReports(guard, file);
   assert.equal(all[all.length - 1]!.deliveryId!.length, 64);

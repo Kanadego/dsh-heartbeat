@@ -16,14 +16,20 @@ export interface AuditEvent {
  * unserialisable payload must never abort a beat (one caller inside a catch
  * block turning a handled failure into an unhandled one is the worst case).
  * Failures go to stderr so they stay visible instead of silently vanishing.
+ * N18-a3 中3: returns whether the line actually landed — true on success, false
+ * on the caught failure (it still never THROWS). Callers that use the audit as
+ * a once-per-typo memory (auditInvalidVisionEngines) must treat `false` as
+ * "not written" and let the entry retry on the next beat.
  */
-export function appendAuditLine(file: string, event: Omit<AuditEvent, 'ts'> & { ts?: string }): void {
+export function appendAuditLine(file: string, event: Omit<AuditEvent, 'ts'> & { ts?: string }): boolean {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const line = JSON.stringify({ ts: event.ts ?? new Date().toISOString(), ...event });
     fs.appendFileSync(file, line + '\n', 'utf8');
+    return true;
   } catch (e) {
     process.stderr.write(`[heartbeat] audit append failed: ${file}: ${String(e)}\n`);
+    return false;
   }
 }
 

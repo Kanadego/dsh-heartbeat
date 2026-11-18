@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { initWorkspace, resetWorkspaceForTest, workspace } from '../src/core/paths.js';
 import { createPathGuard } from '../src/core/path-guard.js';
-import { loadUiConfig, saveUiConfig, uiConfigPath, USER_UI_FILE } from '../src/config/ui-config.js';
+import { loadUiConfig, saveUiConfig, uiConfigPath, USER_UI_FILE, type UiConfig } from '../src/config/ui-config.js';
 import { loadPolicy, updateUserPolicy } from '../src/config/load.js';
+import { installHeartbeatRpc } from '../src/rpc.js';
 
 let sandbox = '';
 let guard: ReturnType<typeof createPathGuard>;
@@ -91,4 +92,70 @@ test('ui-config: the card vision-engine choice persists, clears, and drops junk'
   const junk = saveUiConfig(guard, paths.settingsDir, { visionEngine: 'NATIVE' as never });
   assert.equal(junk.visionEngine, undefined);
   assert.equal(loadUiConfig(guard, paths.settingsDir).visionEngine, undefined);
+});
+
+test('rpc config.set: concludeSilentTurn reaches ui.json and reads back true (real load/save)', async () => {
+  const policy = loadPolicy(guard, paths.configDir, paths.settingsDir);
+  // Mirror index.ts's live wiring: the snapshot is derived from the sanitized
+  // ui.json layer, so a junk value can never read as "on".
+  const ui = {
+    get: () => {
+      const stored = loadUiConfig(guard, paths.settingsDir);
+      return {
+        intervalMin: stored.intervalMin ?? policy.heartbeat.intervalMin,
+        maxDailySend: stored.maxDailySend ?? policy.gate.maxDailySend,
+        timeInjectMin: stored.timeInjectMin ?? 25,
+        statusbar: stored.statusbar ?? false,
+        idleMode: stored.idleMode ?? false,
+        tokenSaver: stored.tokenSaver ?? false,
+        visionEngine: stored.visionEngine ?? '',
+        concludeSilentTurn: stored.concludeSilentTurn === true,
+        psyEnabled: policy.profile.psyEnabled,
+        quietStart: policy.gate.quietHours.start,
+        quietEnd: policy.gate.quietHours.end,
+      };
+    },
+    set: (patch: UiConfig) => { saveUiConfig(guard, paths.settingsDir, patch); },
+  };
+
+  interface Route {
+    fetch(request: Request): Promise<Response>;
+  }
+  let route: Route | undefined;
+  const scoped = {
+    connection: {
+      admit() { /* host gate */ },
+      fetch: { register(r: Route) { route = r; return () => { /* dispose */ }; } },
+    },
+    agents: { get: () => undefined },
+    effect(fn: () => unknown) { fn(); return () => { /* dispose */ }; },
+  };
+  installHeartbeatRpc(
+    { inject(_s: string[], cb: (s: unknown) => void) { cb(scoped); }, logger: { info() { /* quiet */ } } } as never,
+    { paths, guard, policy, ui } as never,
+  );
+  assert.ok(route, 'the route must be registered during install');
+
+  const setRpc = async (payload: unknown): Promise<{ ok: boolean; value?: unknown }> => {
+    const res = await route!.fetch(new Request('http://127.0.0.1/api/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'client-request', rpcId: 'uicfg', payload }),
+    }));
+    const body = await res.json() as { result: { ok: boolean; value?: unknown } };
+    return body.result;
+  };
+
+  const on = await setRpc({ endpoint: 'config.set', concludeSilentTurn: true });
+  assert.equal(on.ok, true);
+  assert.equal((on.value as { concludeSilentTurn: boolean }).concludeSilentTurn, true);
+  assert.equal(JSON.parse(fs.readFileSync(uiConfigPath(paths.settingsDir), 'utf8')).concludeSilentTurn, true);
+  const snap = await setRpc({ endpoint: 'config.get' });
+  assert.equal((snap.value as { concludeSilentTurn: boolean }).concludeSilentTurn, true);
+
+  // A non-boolean is a recognised field (accepted, not a bad-request) but the
+  // sanitizer drops it: snapshot false, nothing invalid on disk, no throw.
+  const junk = await setRpc({ endpoint: 'config.set', concludeSilentTurn: 'yes' });
+  assert.equal(junk.ok, true);
+  assert.equal((junk.value as { concludeSilentTurn: boolean }).concludeSilentTurn, false);
+  assert.equal('concludeSilentTurn' in JSON.parse(fs.readFileSync(uiConfigPath(paths.settingsDir), 'utf8')), false);
 });

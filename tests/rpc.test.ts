@@ -249,6 +249,15 @@ test('config.set: the card vision engine is a recognised field', async () => {
   assert.equal((r.value as { visionEngine: string }).visionEngine, 'modlens');
 });
 
+test('config.set: the experimental concludeSilentTurn switch is recognised on its own', async () => {
+  const r = await result({ endpoint: 'config.set', concludeSilentTurn: true });
+  assert.equal(r.ok, true, 'the fixed key name must pass the whitelist alone');
+  assert.equal(setCalls.length, 1);
+  assert.equal((r.value as { concludeSilentTurn: boolean }).concludeSilentTurn, true);
+  const audit = fs.readFileSync(path.join(workspace().logsDir, 'heartbeat.jsonl'), 'utf8');
+  assert.match(audit, /concludeSilentTurn/);
+});
+
 test('config.set: a recognised patch goes to the setter and is audited', async () => {
   const r = await result({ endpoint: 'config.set', intervalMin: 45, maxDailySend: 5 });
   assert.equal(r.ok, true);

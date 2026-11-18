@@ -243,6 +243,7 @@ const LOCALE_NS = "heartbeat";
 				"profile.collapse": "收起",
 				"config.saved": "已保存（即时生效，无需重启）",
 				"config.saveFailed": "保存失败：{error}",
+				"config.readonly": "当前宿主不支持在应用内改设置，请改 data/settings/policy.json 后重启",
 				"config.interval": "心跳间隔（分钟）",
 				"config.cap": "每日表达上限（条）",
 				"config.timeInject": "时间注入间隔（分钟）",
@@ -279,6 +280,11 @@ const LOCALE_NS = "heartbeat";
 				"config.visionEngine.auto": "自动：先原生，失败回退 ModLens",
 				"config.visionEngine.native": "只用原生（agent 自己看图）",
 				"config.visionEngine.modlens": "只用 ModLens CLI",
+				"config.group.silence": "静默收尾（实验性）",
+				"config.group.silenceDesc": "模型决定不说话时，本轮怎么收尾。",
+				"config.concludeSilent": "静默收尾开关",
+				"config.concludeSilentHint": "打开后模型不再补白，报账完成即结束本轮，界面只留思考与工具块",
+				"config.concludeSilentWarn": "若同时启用 dsh-client-auto-continue 等插件的自主循环/自动继续，空的 completed 回合可能被续跑，请先关闭那类模式",
 				"config.group.focus": "专注模式",
 				"config.group.focusDesc": "需要安静时手动暂停心跳，到点自动恢复。它是即时生效的独立开关：点按钮立刻暂停/恢复，不走下面的「保存」。",
 				"config.effect.now": "多久生效：保存后定时器立刻按新间隔重排，下一次心跳就按新间隔走（无需重启）。",
@@ -309,6 +315,7 @@ const LOCALE_NS = "heartbeat";
 				"section.interests": "兴趣范围",
 				"section.profile": "用户画像（只读）",
 				"section.ledger": "账本",
+				"section.corrections": "错题本",
 				"section.excerpt": "摘抄本",
 				"section.weekly": "周报",
 				"section.migrate": "换机迁移",
@@ -316,7 +323,13 @@ const LOCALE_NS = "heartbeat";
 				"ledger.opened": "已打开：{path}",
 				"ledger.failed": "失败：{error}",
 				"ledger.open": "一键打开账本",
-				"ledger.hint": "账本是心跳 agent 的待办与话题来源，可直接手编",
+				"ledger.openDone": "打开归档",
+				"ledger.hint": "账本是心跳 agent 的待办与话题来源，可直接手编；勾掉的事项会移入归档",
+				"corrections.opened": "已打开：{path}（待复盘 {pending} 条）",
+				"corrections.failed": "失败：{error}",
+				"corrections.open": "一键打开错题本",
+				"corrections.openDone": "打开归档",
+				"corrections.hint": "我出错时记一笔，提炼进人设卡或记忆后勾掉；勾掉的会移入归档",
 				"excerpt.opened": "已打开：{path}",
 				"excerpt.failed": "失败：{error}",
 				"excerpt.open": "一键打开摘抄本",
@@ -471,6 +484,7 @@ const LOCALE_NS = "heartbeat";
 				"profile.collapse": "Collapse",
 				"config.saved": "Saved (takes effect immediately, no restart needed)",
 				"config.saveFailed": "Failed to save: {error}",
+				"config.readonly": "This host cannot change settings in the app — edit data/settings/policy.json and restart",
 				"config.interval": "Heartbeat interval (minutes)",
 				"config.cap": "Daily expression limit",
 				"config.timeInject": "Time injection interval (minutes)",
@@ -507,6 +521,11 @@ const LOCALE_NS = "heartbeat";
 				"config.visionEngine.auto": "Auto: native first, ModLens on failure",
 				"config.visionEngine.native": "Native only (agent reads the image)",
 				"config.visionEngine.modlens": "ModLens CLI only",
+				"config.group.silence": "Silent turn close (experimental)",
+				"config.group.silenceDesc": "How a beat ends when the model decides not to speak.",
+				"config.concludeSilent": "Conclude silent turn",
+				"config.concludeSilentHint": "When on, the model no longer fills the silence: once the report is filed the turn ends, leaving only the thinking and tool blocks in the UI",
+				"config.concludeSilentWarn": "If autonomous loops / auto-continue from plugins such as dsh-client-auto-continue are also enabled, the empty completed turn may be resumed — turn those modes off first",
 				"config.group.focus": "Focus mode",
 				"config.group.focusDesc": "Pause the heartbeat manually when you need quiet; it resumes automatically when time is up. This is an instant, independent switch: clicking the button pauses/resumes right away, without going through Save below.",
 				"config.effect.now": "When it takes effect: after saving, the timer is rescheduled to the new interval immediately, so the very next heartbeat follows it (no restart needed).",
@@ -537,6 +556,7 @@ const LOCALE_NS = "heartbeat";
 				"section.interests": "Interest scope",
 				"section.profile": "User profile (read-only)",
 				"section.ledger": "Ledger",
+				"section.corrections": "Corrections",
 				"section.excerpt": "Excerpt book",
 				"section.weekly": "Weekly report",
 				"section.migrate": "Migrate to a new machine",
@@ -544,7 +564,13 @@ const LOCALE_NS = "heartbeat";
 				"ledger.opened": "Opened: {path}",
 				"ledger.failed": "Failed: {error}",
 				"ledger.open": "Open the ledger",
-				"ledger.hint": "The ledger is the heartbeat agent's source of todos and topics, and can be edited by hand",
+				"ledger.openDone": "Open archive",
+				"ledger.hint": "The ledger is the heartbeat agent's source of todos and topics, and can be edited by hand; checked-off items move to the archive",
+				"corrections.opened": "Opened: {path} ({pending} awaiting review)",
+				"corrections.failed": "Failed: {error}",
+				"corrections.open": "Open the corrections book",
+				"corrections.openDone": "Open archive",
+				"corrections.hint": "When I get something wrong, log it here; once folded into the persona card or memory, check it off — reviewed items move to the archive",
 				"excerpt.opened": "Opened: {path}",
 				"excerpt.failed": "Failed: {error}",
 				"excerpt.open": "Open the excerpt book",
@@ -563,6 +589,9 @@ const LOCALE_NS = "heartbeat";
 		};
 		const fill = (text, params) => String(text).replace(/\{(\w+)\}/g, (match, key) => (params && key in params ? String(params[key]) : match));
 		let localeSvc = null;
+		// 宿主能力探测结果（模块级）：apply 时探一次，设置页挂载时若仍不可用再强探一次。
+		// 只记 rpc 是否可用；只升不降（见过可用之后不再因一次取不到而回落）。
+		const hostCaps = { probed: false, rpc: false };
 		const t = (key, params) => {
 			if (localeSvc) return localeSvc.bind(LOCALE_NS)(key, params);
 			const text = DICT.zh[key];
@@ -601,6 +630,20 @@ const LOCALE_NS = "heartbeat";
 			const getConnection = () => {
 				try { return ctx.get("connection"); } catch { return undefined; }
 			};
+			// 探测一次；force 用于设置页挂载时复探（每个挂载只探一次）。
+			// 只允许「不可用 → 可用」升级：已可用后即使这次取不到 connection 也不降级。
+			const probeHost = (opts) => {
+				const force = !!(opts && opts.force);
+				if (hostCaps.probed && !force) return hostCaps;
+				hostCaps.probed = true;
+				const conn = getConnection();
+				if (!hostCaps.rpc) {
+					hostCaps.rpc = !!(conn && conn.rpc && typeof conn.rpc.call === "function");
+				}
+				return hostCaps;
+			};
+			probeHost();
+			// connection 每次调用现取（晚注册的宿主照样能用）；没有闸门缓存。
 			const rpc = async (endpoint, payload) => {
 				const conn = getConnection();
 				if (!conn || !conn.rpc || typeof conn.rpc.call !== "function") {
@@ -1201,11 +1244,28 @@ const LOCALE_NS = "heartbeat";
 			// 三代宿主（0.1.1 scope / 0.1.5 installSection / 0.1.7 profile
 			// 表单）行为统一，保存即时生效、无需重载。
 			function ConfigSection() {
+				// 每次挂载强制重探一次（apply 时 connection 可能还没注册）；这是整张卡的
+				// 唯一重探时机——挂载后才注册 connection 的宿主，要切走再回来才会升级。
+				// 只有「本不可用、这次探到可用」才推进 state 触发重渲染。
+				const [, recheck] = React.useReducer((x) => x + 1, 0);
+				const readonly = !hostCaps.rpc;
+				React.useEffect(() => {
+					const was = hostCaps.rpc;
+					probeHost({ force: true });
+					if (!was && hostCaps.rpc) recheck();
+				}, []);
 				const [value, setValue] = React.useState(null);
 				const [loadErr, setLoadErr] = React.useState(null);
 				React.useEffect(() => {
-					rpc("config.get").then(setValue, (e) => setLoadErr(String(e).slice(0, 100)));
-				}, []);
+					if (readonly) return;
+					// alive 守卫与 focus.status 同款：deps 变化/卸载后旧请求迟到不许覆盖新值。
+					let alive = true;
+					rpc("config.get").then(
+						(v) => { if (alive) setValue(v); },
+						(e) => { if (alive) setLoadErr(String(e).slice(0, 100)); },
+					);
+					return () => { alive = false; };
+				}, [readonly]);
 				const interval = value && Number(value.intervalMin) > 0 ? Number(value.intervalMin) : 60;
 				const cap = value && Number(value.maxDailySend) > 0 ? Number(value.maxDailySend) : 10;
 				const timeInject = value && value.timeInjectMin === 0 ? 0 : (value && Number(value.timeInjectMin) > 0 ? Number(value.timeInjectMin) : 25);
@@ -1214,6 +1274,8 @@ const LOCALE_NS = "heartbeat";
 				const tokenSaver = !!value && value.tokenSaver === true;
 				// 视觉引擎（v2.2.1-native.1）：'' = 跟随 vision.json / 内置 auto。
 				const visionEngine = value && typeof value.visionEngine === "string" ? value.visionEngine : "";
+				// 静默收尾（2.3.0 实验性）：默认关。
+				const concludeSilent = !!value && value.concludeSilentTurn === true;
 				const psyEnabled = !!value && value.psyEnabled === true;
 				// 静默时段（v2.2）：policy 用户层字段（gate.quietHours），保存后下一跳生效。
 				const quietStart = value && typeof value.quietStart === "string" ? value.quietStart : "01:30";
@@ -1225,11 +1287,14 @@ const LOCALE_NS = "heartbeat";
 				const [draftIdle, setDraftIdle] = React.useState(idleMode);
 				const [draftTokenSaver, setDraftTokenSaver] = React.useState(tokenSaver);
 				const [draftVisionEngine, setDraftVisionEngine] = React.useState(visionEngine);
+				const [draftConcludeSilent, setDraftConcludeSilent] = React.useState(concludeSilent);
 				const [draftPsy, setDraftPsy] = React.useState(psyEnabled);
 				const [draftQuietStart, setDraftQuietStart] = React.useState(quietStart);
 				const [draftQuietEnd, setDraftQuietEnd] = React.useState(quietEnd);
 				const [status, setStatus] = React.useState("");
-				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftVisionEngine(visionEngine); setDraftPsy(psyEnabled); setDraftQuietStart(quietStart); setDraftQuietEnd(quietEnd); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, visionEngine, psyEnabled, quietStart, quietEnd]);
+				// 保存失败单独一行红字：不再只靠按钮旁的 status 一行灰字（issue #7）。
+				const [saveErr, setSaveErr] = React.useState("");
+				React.useEffect(() => { setDraftInterval(interval); setDraftCap(cap); setDraftTimeInject(timeInject); setDraftStatusbar(statusbar); setDraftIdle(idleMode); setDraftTokenSaver(tokenSaver); setDraftVisionEngine(visionEngine); setDraftConcludeSilent(concludeSilent); setDraftPsy(psyEnabled); setDraftQuietStart(quietStart); setDraftQuietEnd(quietEnd); }, [interval, cap, timeInject, statusbar, idleMode, tokenSaver, visionEngine, concludeSilent, psyEnabled, quietStart, quietEnd]);
 				// v2.1.0 面板改造：分组小节文案走 DICT 的 config.group.*。
 				// 「多久生效」依据 src/rpc.ts 的 config.set 实现判定：
 				//   intervalMin → applyHeartbeatInterval 立即重排定时器（保存后立刻生效）；
@@ -1241,9 +1306,20 @@ const LOCALE_NS = "heartbeat";
 				const [focus, setFocus] = React.useState(null);
 				const [draftFocusMin, setDraftFocusMin] = React.useState(30);
 				const [focusBusy, setFocusBusy] = React.useState(false);
+				// 专注动作失败单独一格：不能借 status（那格会显示「已保存」），
+				// 否则成功一次就把不相干的保存回执误清掉。
+				const [focusErr, setFocusErr] = React.useState("");
 				React.useEffect(() => {
-					rpc("focus.status").then(setFocus, () => { /* 旧宿主无此端点：不显示状态，按钮仍可试 */ });
-				}, []);
+					// 只读挂载也要跑这一次首拉：只读态同样要渲染「恢复」分支，跳过它
+					// 只读界面就永远只剩「暂停」。deps 是 [readonly]，升级成可编辑后补拉一次。
+					// alive 守卫：旧请求迟到（deps 变化或卸载）不许覆盖新一轮的状态。
+					let alive = true;
+					rpc("focus.status").then(
+						(v) => { if (alive) setFocus(v); },
+						() => { /* 旧宿主无此端点：不显示状态，按钮仍可试 */ },
+					);
+					return () => { alive = false; };
+				}, [readonly]);
 				const toggleFocus = async (pause) => {
 					if (focusBusy) return;
 					setFocusBusy(true);
@@ -1255,13 +1331,16 @@ const LOCALE_NS = "heartbeat";
 							await rpc("focus.resume");
 							setFocus({ paused: false });
 						}
+						// 成功只清专注自己的失败文案，不碰 status（保存回执）。
+						setFocusErr("");
 					} catch (e) {
-						setStatus(L("config.focusFailed", { error: String(e).slice(0, 80) }));
+						setFocusErr(L("config.focusFailed", { error: String(e).slice(0, 80) }));
 					} finally {
 						setFocusBusy(false);
 					}
 				};
 				const save = async () => {
+					if (readonly) return;
 					try {
 						const di = Math.max(1, Math.min(1440, Math.floor(Number(draftInterval) || 0)));
 						const dc = Math.max(1, Math.min(50, Math.floor(Number(draftCap) || 0)));
@@ -1274,18 +1353,24 @@ const LOCALE_NS = "heartbeat";
 							idleMode: !!draftIdle,
 							tokenSaver: !!draftTokenSaver,
 							visionEngine: draftVisionEngine,
+							concludeSilentTurn: !!draftConcludeSilent,
 							psyEnabled: !!draftPsy,
 							quietStart: draftQuietStart,
 							quietEnd: draftQuietEnd,
 						});
 						setValue(v);
 						setStatus(t("config.saved"));
+						// 成功必须清掉上一次的失败红字，否则红绿并存。
+						setSaveErr("");
 					} catch (e) {
-						setStatus(L("config.saveFailed", { error: String(e).slice(0, 80) }));
+						setStatus("");
+						setSaveErr(L("config.saveFailed", { error: String(e).slice(0, 80) }));
 					}
 				};
-				if (loadErr && !value) return React.createElement("div", { style: hintStyle }, L("common.loadFailed", { error: loadErr }));
-				if (!value) return React.createElement("div", { style: hintStyle }, t("common.loading"));
+				if (!readonly) {
+					if (loadErr && !value) return React.createElement("div", { style: hintStyle }, L("common.loadFailed", { error: loadErr }));
+					if (!value) return React.createElement("div", { style: hintStyle }, t("common.loading"));
+				}
 				// 分组小节的标题 + 一句人话说明；生效说明按 label 宽度（140 + gap 8）缩进对齐。
 				const groupTitle = (title, desc) => React.createElement(
 					"div",
@@ -1300,41 +1385,65 @@ const LOCALE_NS = "heartbeat";
 						control,
 						hint ? React.createElement("span", { style: hintStyle }, hint) : null),
 					effect ? React.createElement("div", { style: { ...hintStyle, marginLeft: 148 } }, effect) : null);
-				const toggleBtn = (on, set) => React.createElement("button", { style: on ? buttonStyle : buttonGhost, onClick: () => set(!on) }, on ? "☑ " + t("common.on") : "☐ " + t("common.off"));
+				// 只读态拿不到真实配置：输入框空着 + 占位符，开关与引擎下拉显示「—」，
+				// 不把兜底值（60/10/25/01:30、statusbar 关闭、follow auto）当配置事实展示。
+				const inputValue = (draft) => (readonly ? "" : draft);
+				const inputPlaceholder = readonly ? "—" : undefined;
+				// 只读态下拉用一个占位选项占住选中位；真实引擎选项照常列出但不可选。
+				const VISION_UNSET = "__unset__";
+				// 只读态不挂 onClick：disabled 只是 DOM 闸门，程序化触发仍会改 draft。
+				// 样式也按 (!readonly && on) 选，避免只读态整排灰底透出「都关着」的暗示。
+				const toggleBtn = (on, set) => React.createElement("button", {
+					style: !readonly && on ? buttonStyle : buttonGhost,
+					disabled: readonly,
+					onClick: readonly ? undefined : () => set(!on),
+				}, readonly ? "—" : (on ? "☑ " + t("common.on") : "☐ " + t("common.off")));
 				return React.createElement(
 					"div",
-					null,
+					{ className: "hb-config" },
+					// ── 非 Web 宿主：设置卡只读，顶部说明改法（issue #7）──
+					readonly
+						? React.createElement("div", {
+							className: "hb-configReadonly",
+							style: { ...hintStyle, padding: "8px 10px", borderRadius: 9, border: "1px solid rgba(245,184,61,.5)", background: "rgba(245,184,61,.14)", color: "var(--dsw-alias-label-primary)", fontWeight: 600 },
+						}, t("config.readonly"))
+						: null,
 					// ── 节律 ──
 					groupTitle(t("config.group.rhythm"), t("config.group.rhythmDesc")),
 					paramRow(t("config.interval"),
-						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftInterval, onChange: (e) => setDraftInterval(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, disabled: readonly, placeholder: inputPlaceholder, value: inputValue(draftInterval), onChange: (e) => setDraftInterval(e.target.value) }),
 						null, EFFECT_NOW),
 					paramRow(t("config.cap"),
-						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, value: draftCap, onChange: (e) => setDraftCap(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 50, disabled: readonly, placeholder: inputPlaceholder, value: inputValue(draftCap), onChange: (e) => setDraftCap(e.target.value) }),
 						null, EFFECT_NEXT),
 					// ── 时间与状态栏 ──
 					groupTitle(t("config.group.time"), t("config.group.timeDesc")),
 					paramRow(t("config.timeInject"),
-						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, value: draftTimeInject, onChange: (e) => setDraftTimeInject(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "number", min: 0, max: 1440, disabled: readonly, placeholder: inputPlaceholder, value: inputValue(draftTimeInject), onChange: (e) => setDraftTimeInject(e.target.value) }),
 						t("config.timeInjectOff"), EFFECT_NEXT),
 					paramRow(t("config.quietHours"),
 						React.createElement(
 							"span",
 							null,
-							React.createElement("input", { style: inputStyle, type: "time", value: draftQuietStart, onChange: (e) => setDraftQuietStart(e.target.value) }),
+							React.createElement("input", { style: inputStyle, type: "time", disabled: readonly, value: inputValue(draftQuietStart), onChange: (e) => setDraftQuietStart(e.target.value) }),
 							"–",
-							React.createElement("input", { style: inputStyle, type: "time", value: draftQuietEnd, onChange: (e) => setDraftQuietEnd(e.target.value) })),
+							React.createElement("input", { style: inputStyle, type: "time", disabled: readonly, value: inputValue(draftQuietEnd), onChange: (e) => setDraftQuietEnd(e.target.value) })),
 						t("config.quietHoursHint"), EFFECT_NEXT),
 					paramRow(t("config.statusbar"), toggleBtn(draftStatusbar, setDraftStatusbar), t("config.statusbarHint"), EFFECT_NEXT),
 					// ── 视觉（v2.2.1-native.1）：每跳截屏识别走哪个引擎 ──
 					groupTitle(t("config.group.vision"), t("config.group.visionDesc")),
 					paramRow(t("config.visionEngine"),
-						React.createElement("select", { style: { ...inputStyle, width: 230 }, value: draftVisionEngine, onChange: (e) => setDraftVisionEngine(e.target.value) },
+						React.createElement("select", { style: { ...inputStyle, width: 230 }, "data-role": "visionEngine", disabled: readonly, value: readonly ? VISION_UNSET : draftVisionEngine, onChange: (e) => setDraftVisionEngine(e.target.value) },
+							readonly ? React.createElement("option", { value: VISION_UNSET }, "—") : null,
 							React.createElement("option", { value: "" }, t("config.visionEngine.follow")),
 							React.createElement("option", { value: "auto" }, t("config.visionEngine.auto")),
 							React.createElement("option", { value: "native" }, t("config.visionEngine.native")),
 							React.createElement("option", { value: "modlens" }, t("config.visionEngine.modlens"))),
 						t("config.visionEngineHint"), EFFECT_NEXT),
+					// ── 静默收尾（2.3.0 实验性）：默认关；警告始终可见 ──
+					groupTitle(t("config.group.silence"), t("config.group.silenceDesc")),
+					paramRow(t("config.concludeSilent"), toggleBtn(draftConcludeSilent, setDraftConcludeSilent), t("config.concludeSilentHint"), EFFECT_NEXT),
+					React.createElement("div", { style: { ...hintStyle, marginLeft: 148, color: "#e5484d" } }, t("config.concludeSilentWarn")),
 					// ── 表达 ──
 					groupTitle(t("config.group.express"), t("config.group.expressDesc")),
 					paramRow(t("config.tokenSaver"), toggleBtn(draftTokenSaver, setDraftTokenSaver), t("config.tokenSaverHint"), EFFECT_NEXT),
@@ -1344,16 +1453,20 @@ const LOCALE_NS = "heartbeat";
 					groupTitle(t("config.group.focus"), t("config.group.focusDesc")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("span", { style: labelStyle }, t("config.focus")),
-						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, value: draftFocusMin, onChange: (e) => setDraftFocusMin(e.target.value) }),
+						React.createElement("input", { style: inputStyle, type: "number", min: 1, max: 1440, disabled: readonly, placeholder: inputPlaceholder, value: inputValue(draftFocusMin), onChange: (e) => setDraftFocusMin(e.target.value) }),
 						React.createElement("span", { style: hintStyle }, t("config.focusMinutes")),
+						// 只读态不挂 onClick（同 toggleBtn）：disabled 只是 DOM 闸门，程序化调用会真发 focus RPC。
 						focus && focus.paused
-							? React.createElement("button", { style: buttonStyle, disabled: focusBusy, onClick: () => { void toggleFocus(false); } }, t("config.focusResume"))
-							: React.createElement("button", { style: buttonGhost, disabled: focusBusy, onClick: () => { void toggleFocus(true); } }, t("config.focusPause"))),
+							? React.createElement("button", { style: buttonStyle, disabled: focusBusy || readonly, onClick: readonly ? undefined : () => { void toggleFocus(false); } }, t("config.focusResume"))
+							: React.createElement("button", { style: buttonGhost, disabled: focusBusy || readonly, onClick: readonly ? undefined : () => { void toggleFocus(true); } }, t("config.focusPause"))),
 					React.createElement("div", { style: { ...hintStyle, marginLeft: 148 } }, focus && focus.paused ? L("config.focusPaused", { clock: focus.clock || "" }) : t("config.focusHint")),
+					focusErr ? React.createElement("div", { className: "hb-focusError", style: { ...hintStyle, marginLeft: 148, color: "#e5484d", fontWeight: 600 } }, focusErr) : null,
+					// ── 保存失败：设置卡里单独一行可见报错（不再静默）──
+					saveErr ? React.createElement("div", { className: "hb-configError", style: { ...hintStyle, color: "#e5484d", fontWeight: 600 } }, saveErr) : null,
 					// ── 保存固定在分组最后；成功/失败提示沿用现有 status 逻辑 ──
 					React.createElement("div", { style: rowStyle },
-						React.createElement("button", { style: buttonStyle, onClick: () => { void save(); } }, t("common.save")),
-						React.createElement("span", { style: status ? { ...hintStyle, fontWeight: 600 } : hintStyle }, status || t("config.saveHint"))),
+						React.createElement("button", { style: { ...buttonStyle, ...(readonly ? { opacity: 0.5, cursor: "not-allowed" } : null) }, disabled: readonly, title: readonly ? t("config.readonly") : undefined, onClick: () => { void save(); } }, t("common.save")),
+						React.createElement("span", { style: status ? { ...hintStyle, fontWeight: 600 } : hintStyle }, status || (readonly ? t("config.readonly") : t("config.saveHint")))),
 				);
 			}
 
@@ -1476,12 +1589,26 @@ const LOCALE_NS = "heartbeat";
 				{ id: "weekly", labelKey: "panel.tab.weekly" },
 				{ id: "config", labelKey: "panel.tab.config" },
 			];
-			// 账本 + 摘抄本：原 HeartbeatSection 内联块原样迁出（含两条 rpc 调用）。
+			// 账本 + 错题本 + 摘抄本：原 HeartbeatSection 内联块原样迁出（含 rpc 调用）。
+			// v2.3.0：账本与错题本各并排两个按钮——主按钮开 live 文件，第二个只读打开归档。
 			function LedgerExcerptBlocks() {
 				const [ledgerMsg, setLedgerMsg] = React.useState("");
 				const openLedger = () => rpc("ledger.open").then(
 					(v) => setLedgerMsg(L("ledger.opened", { path: v.path })),
 					(e) => setLedgerMsg(L("ledger.failed", { error: String(e).slice(0, 80) })),
+				);
+				const openLedgerDone = () => rpc("ledger.openDone").then(
+					(v) => setLedgerMsg(L("ledger.opened", { path: v.path })),
+					(e) => setLedgerMsg(L("ledger.failed", { error: String(e).slice(0, 80) })),
+				);
+				const [correctionsMsg, setCorrectionsMsg] = React.useState("");
+				const openCorrections = () => rpc("corrections.open").then(
+					(v) => setCorrectionsMsg(L("corrections.opened", { path: v.path, pending: v.pending })),
+					(e) => setCorrectionsMsg(L("corrections.failed", { error: String(e).slice(0, 80) })),
+				);
+				const openCorrectionsDone = () => rpc("corrections.openDone").then(
+					(v) => setCorrectionsMsg(L("ledger.opened", { path: v.path })),
+					(e) => setCorrectionsMsg(L("corrections.failed", { error: String(e).slice(0, 80) })),
 				);
 				const [excerptMsg, setExcerptMsg] = React.useState("");
 				const openExcerpt = () => rpc("excerpt.open").then(
@@ -1494,7 +1621,13 @@ const LOCALE_NS = "heartbeat";
 					React.createElement("div", { style: blockHead }, t("section.ledger")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void openLedger(); } }, t("ledger.open")),
+						React.createElement("button", { style: buttonGhost, onClick: () => { void openLedgerDone(); } }, t("ledger.openDone")),
 						React.createElement("span", { style: hintStyle }, ledgerMsg || t("ledger.hint"))),
+					React.createElement("div", { style: blockHead }, t("section.corrections")),
+					React.createElement("div", { style: rowStyle },
+						React.createElement("button", { style: buttonStyle, onClick: () => { void openCorrections(); } }, t("corrections.open")),
+						React.createElement("button", { style: buttonGhost, onClick: () => { void openCorrectionsDone(); } }, t("corrections.openDone")),
+						React.createElement("span", { style: hintStyle }, correctionsMsg || t("corrections.hint"))),
 					React.createElement("div", { style: blockHead }, t("section.excerpt")),
 					React.createElement("div", { style: rowStyle },
 						React.createElement("button", { style: buttonStyle, onClick: () => { void openExcerpt(); } }, t("excerpt.open")),

@@ -48,7 +48,21 @@ function fmtView(v: NotepadView): string {
   return `心事匣里现在有：${v.text}\n（留于${beats}，已搁 ${fmtMinutes(v.sinceMinutes)}，${wakes}）`;
 }
 
-export function buildNotepadTool(guard: PathGuard, file: string): unknown {
+export interface NotepadToolGate {
+  /** P0-3: true only for delivery sessions (session-gate passes AND the
+   *  bindings entry has deliver === true). Omitted on hosts that cannot resolve
+   *  a session/exec agent — see execute's fallback below. */
+  isDeliverySession?(session: { id?: string }): boolean;
+  /** Audit sink for notepad_blocked (execute-time fallback on hosts whose
+   *  ToolRuntime ignores `when`). */
+  onBlocked?(sessionId: string | null): void;
+}
+
+interface NotepadExecContext {
+  agent?: { session?: { id?: string } };
+}
+
+export function buildNotepadTool(guard: PathGuard, file: string, gate: NotepadToolGate = {}): unknown {
   return {
     name: 'notepad',
     description:
@@ -91,7 +105,17 @@ export function buildNotepadTool(guard: PathGuard, file: string): unknown {
     timeoutMs: 5000,
     // Read-modify-write on one file, and the note's lifecycle depends on it.
     isConcurrencySafe: () => false,
-    async execute(args: unknown): Promise<unknown> {
+    async execute(args: unknown, exec?: unknown): Promise<unknown> {
+      // P0-3 fallback: some hosts ignore ToolRegistrationOptions.when. When the
+      // exec context names a session, enforce the same gate here. A missing
+      // agent (legacy callers/direct tests) keeps the pre-2.3.0 behaviour.
+      const session = (exec as NotepadExecContext | undefined)?.agent?.session;
+      if (gate.isDeliverySession && session?.id && !gate.isDeliverySession(session)) {
+        try {
+          gate.onBlocked?.(session.id);
+        } catch { /* audit must never break the tool */ }
+        return { ok: false, message: '心事匣只在投递对话里用' };
+      }
       const a = (args ?? {}) as NotepadToolArgs;
       const action = String(a.action ?? '');
       try {
